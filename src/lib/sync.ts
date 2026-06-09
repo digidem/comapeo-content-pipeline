@@ -33,7 +33,7 @@ export interface SyncPageOutput {
   rawBlocks: NotionBlockList;
   /** Content hash */
   hash: string;
-  /** Whether content changed (true if no previous hash to compare) */
+  /** Always true from convertPageData — caller determines actual changed state by comparing with stored hash */
   changed: boolean;
 }
 

@@ -14,6 +14,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import matter from "gray-matter";
 import { NotionClient } from "../lib/notion-client.js";
 import { syncPage } from "../lib/sync.js";
@@ -51,6 +52,9 @@ async function main() {
     case "rag:chunks":
       await cmdRagChunks(args);
       break;
+    case "db:migrate":
+      await cmdDbMigrate(args);
+      break;
     default:
       console.error(`Unknown command: ${command}`);
       printUsage();
@@ -77,6 +81,20 @@ async function cmdSyncPage(args: Record<string, string>) {
     client,
     usedSlugs: new Set(),
   });
+
+  // Skip logic: check existing metadata for matching content_hash (unless --force)
+  const metadataPath = join(outDir, `${pageId}.metadata.json`);
+  if (args.force !== "true" && existsSync(metadataPath)) {
+    try {
+      const existingMeta = JSON.parse(readFileSync(metadataPath, "utf8"));
+      if (existingMeta.content_hash === result.metadata.content_hash) {
+        console.log(`Content unchanged, skipped: ${pageId}`);
+        return;
+      }
+    } catch {
+      // Corrupt or unreadable metadata — proceed with write
+    }
+  }
 
   // Write artifacts
   mkdirSync(outDir, { recursive: true });
@@ -358,6 +376,42 @@ async function cmdDiff(args: Record<string, string>) {
   console.log("Args:", args);
 }
 
+async function cmdDbMigrate(args: Record<string, string>) {
+  const remote = args.remote === "true";
+  const migrationFile = join(process.cwd(), "migrations/0001_initial.sql");
+
+  if (!existsSync(migrationFile)) {
+    console.error(`Migration file not found: ${migrationFile}`);
+    process.exit(1);
+  }
+
+  const mode = remote ? "--remote" : "--local";
+  console.log(`Applying D1 migrations (${remote ? "remote" : "local"})...`);
+
+  const result = spawnSync(
+    "npx",
+    [
+      "wrangler",
+      "d1",
+      "execute",
+      "comapeo-content-pipeline",
+      mode,
+      "--file=migrations/0001_initial.sql",
+    ],
+    { stdio: ["inherit", "pipe", "pipe"] },
+  );
+
+  if (result.stdout.length > 0) {
+    console.log(result.stdout.toString());
+  }
+  if (result.stderr.length > 0) {
+    console.error(result.stderr.toString());
+  }
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
+}
+
 // ── Helpers ──
 
 function createClient(): NotionClient {
@@ -409,6 +463,7 @@ Commands:
   rag:chunks              Generate RAG chunks
   validate                Validate manifest
   diff --page <page_id>   Show diff for a page
+  db:migrate               Apply D1 migrations (--remote for production)
 
 Options:
   --out <dir>             Output directory

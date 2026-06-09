@@ -1,0 +1,82 @@
+{
+  "object": "list",
+  "results": [
+    {
+      "object": "block",
+      "id": "ml1",
+      "type": "heading_1",
+      "has_children": false,
+      "heading_1": {
+        "rich_text": [
+          { "type": "text", "text": { "content": "Instalación de CoMapeo" }, "plain_text": "Instalación de CoMapeo", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" } }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "id": "ml2",
+      "type": "paragraph",
+      "has_children": false,
+      "paragraph": {
+        "rich_text": [
+          { "type": "text", "text": { "content": "Esta guía explica cómo instalar CoMapeo en su dispositivo móvil." }, "plain_text": "Esta guía explica cómo instalar CoMapeo en su dispositivo móvil.", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" } }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "id": "ml3",
+      "type": "heading_2",
+      "has_children": false,
+      "heading_2": {
+        "rich_text": [
+          { "type": "text", "text": { "content": "Requisitos del sistema" }, "plain_text": "Requisitos del sistema", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" } }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "id": "ml4",
+      "type": "bulleted_list_item",
+      "has_children": false,
+      "bulleted_list_item": {
+        "rich_text": [
+          { "type": "text", "text": { "content": "Android 8.0 ou superior" }, "plain_text": "Android 8.0 ou superior", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" } }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "id": "ml5",
+      "type": "bulleted_list_item",
+      "has_children": false,
+      "bulleted_list_item": {
+        "rich_text": [
+          { "type": "text", "text": { "content": "GPS y Bluetooth habilitados" }, "plain_text": "GPS y Bluetooth habilitados", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" } }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "id": "ml6",
+      "type": "bulleted_list_item",
+      "has_children": false,
+      "bulleted_list_item": {
+        "rich_text": [
+          { "type": "text", "text": { "content": "Conexão à internet estável" }, "plain_text": "Conexão à internet estável", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" } }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "id": "ml7",
+      "type": "paragraph",
+      "has_children": false,
+      "paragraph": {
+        "rich_text": [
+          { "type": "text", "text": { "content": "Para mais informações, consulte o guia completo de instalação." }, "plain_text": "Para mais informações, consulte o guia completo de instalação.", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" } }
+        ]
+      }
+    }
+  ]
+}

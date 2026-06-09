@@ -338,6 +338,23 @@ export const queue = async (batch: MessageBatch<SyncJobMessage>, env: Env): Prom
       const converted = convertPageData({ pageId, rawPage: page, rawBlocks });
       const { metadata, canoncialMd, hash } = converted;
 
+      // Skip logic: compare content_hash + status with stored row (spec §8.2)
+      const existing = await env.DB.prepare(
+        "SELECT content_hash, status FROM source_pages WHERE page_id = ?",
+      ).bind(pageId).first<{ content_hash: string; status: string }>();
+
+      if (existing && existing.content_hash === metadata.content_hash && existing.status === metadata.status) {
+        console.log(`Skipping page ${pageId}: content unchanged`);
+        await env.DB.prepare(
+          "UPDATE sync_jobs SET status = 'skipped', error = 'content unchanged', finished_at = datetime('now') WHERE id = ?",
+        ).bind(msg.id).run();
+        // Still update watermark so cron doesn't re-enqueue
+        await env.DB.prepare(
+          "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('last_sync_watermark', ?, datetime('now'))",
+        ).bind(new Date().toISOString()).run();
+        continue;
+      }
+
       const metadataKey = R2_PATHS.metadata(pageId);
       const docKey = R2_PATHS.doc(metadata.locale, metadata.section, metadata.slug);
 
