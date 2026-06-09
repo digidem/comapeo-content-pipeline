@@ -4,7 +4,7 @@ Issues discovered during end-to-end testing. Fix in priority order.
 
 ---
 
-## 1. `sync:full` broken — Notion query endpoint returns 400
+## 1. ✅ `sync:full` broken — Notion query endpoint returns 400
 
 **Symptom:** `pnpm pipeline sync:full` fails with `Notion API error 400: Invalid request URL`.
 
@@ -20,7 +20,7 @@ Issues discovered during end-to-end testing. Fix in priority order.
 
 ---
 
-## 2. Content hash non-deterministic on repeated syncs
+## 2. ✅ Content hash non-deterministic on repeated syncs
 
 **Symptom:** Running `sync:page` twice on the same page produces different `content_hash` values, breaking the skip-unchanged logic.
 
@@ -40,7 +40,7 @@ Issues discovered during end-to-end testing. Fix in priority order.
 
 ---
 
-## 3. Worker doesn't re-upload downloaded assets to R2
+## 3. ✅ Worker doesn't re-upload downloaded assets to R2
 
 **Symptom:** `convertPageData()` downloads Notion images and replaces URLs in Markdown with `assets/{sha256}.{ext}` paths, but the actual binary data is never stored in R2.
 
@@ -55,7 +55,7 @@ Issues discovered during end-to-end testing. Fix in priority order.
 
 ---
 
-## 4. Worker blocks fetch is not recursive
+## 4. ✅ Worker blocks fetch is not recursive
 
 **Symptom:** Queue consumer fetches top-level blocks only (`/blocks/{pageId}/children`). Nested blocks (toggle content, bullet children, etc.) are not fetched.
 
@@ -70,7 +70,7 @@ Issues discovered during end-to-end testing. Fix in priority order.
 
 ---
 
-## 5. No integration test for full queue consumer flow
+## 5. ✅ No integration test for full queue consumer flow
 
 **Symptom:** `src/worker/index.test.ts` tests HTTP routes but not the queue consumer processing logic (`queueHandler`).
 
@@ -85,7 +85,7 @@ Issues discovered during end-to-end testing. Fix in priority order.
 
 ---
 
-## 6. Rich text annotations: strikethrough, underline, color not supported
+## 6. ✅ Rich text annotations: strikethrough, underline, color not supported
 
 **Symptom:** The Notion converter handles bold, italic, code but doesn't convert strikethrough, underline, or colored text.
 
@@ -100,11 +100,11 @@ Issues discovered during end-to-end testing. Fix in priority order.
 
 ## Summary
 
-| # | Issue | Impact |
-|---|-------|--------|
-| 1 | `sync:full` query endpoint 400 | **Blocks full sync** |
-| 2 | Non-deterministic content hash | Breaks skip-unchanged |
-| 3 | Assets not uploaded to R2 | Expiring image URLs |
-| 4 | No recursive block fetch in Worker | Missing nested content |
-| 5 | No queue consumer integration test | Test gap |
-| 6 | Missing rich text annotations | Minor MD incompleteness |
+| # | Issue | Impact | Status |
+|---|-------|--------|--------|
+| 1 | `sync:full` query endpoint 400 | **Blocks full sync** | ✅ Fixed — migrated to `/v1/search` |
+| 2 | Non-deterministic content hash | Breaks skip-unchanged | ✅ Verified deterministic — tests confirm |
+| 3 | Assets not uploaded to R2 | Expiring image URLs | ✅ Fixed — `assetBinaries` surfaced + uploaded |
+| 4 | No recursive block fetch in Worker | Missing nested content | ✅ Fixed — Worker uses `NotionClient.getPageBlocks()` |
+| 5 | No queue consumer integration test | Test gap | ✅ 3 integration tests added |
+| 6 | Missing rich text annotations | Minor MD incompleteness | ✅ Fixed — strikethrough `~~`, underline `<u>`, color `<span>` |

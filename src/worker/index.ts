@@ -15,6 +15,7 @@ import type { Context } from "hono";
 import { verifyWebhookSignature, verifyBearerAuth, parseWebhookEvent } from "../lib/webhook.js";
 import { convertPageData } from "../lib/sync.js";
 import type { NotionBlock } from "../lib/notion-converter.js";
+import { NotionClient } from "../lib/notion-client.js";
 import { R2_PATHS } from "../persistence/r2.js";
 import type { SidebarItem } from "../schemas/manifest.js";
 
@@ -287,7 +288,7 @@ app.post("/admin/manifest/regenerate", async (c: Context) => {
 
 // ── Queue consumer ──
 
-async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env, _ctx: ExecutionContext): Promise<void> {
+export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env, _ctx: ExecutionContext): Promise<void> {
   for (const msg of batch.messages) {
     const { pageId } = msg.body;
 
@@ -297,42 +298,16 @@ async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env, _ctx:
         "INSERT OR REPLACE INTO sync_jobs (id, source_type, source_id, job_type, status, started_at) VALUES (?, 'notion', ?, 'sync_page', 'running', datetime('now'))",
       ).bind(msg.id, pageId).run();
 
-      // Fetch page from Notion API
-      const pageResp = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
-        headers: {
-          Authorization: `Bearer ${env.NOTION_TOKEN}`,
-          "Notion-Version": "2026-03-11",
-        },
-      });
+      // Fetch page and blocks via NotionClient (handles rate limiting, retry, recursive blocks)
+      const client = new NotionClient({ token: env.NOTION_TOKEN });
 
-      if (!pageResp.ok) {
-        throw new Error(`Notion API error: ${pageResp.status}`);
-      }
+      const page = await client.getPage(pageId);
+      const { results: blocks, children } = await client.getPageBlocks(pageId);
 
-      // Fetch blocks
-      const blocksResp = await fetch(
-        `https://api.notion.com/v1/blocks/${pageId}/children?page_size=100`,
-        {
-          headers: {
-            Authorization: `Bearer ${env.NOTION_TOKEN}`,
-            "Notion-Version": "2026-03-11",
-          },
-        },
-      );
-
-      if (!blocksResp.ok) {
-        throw new Error(`Notion blocks API error: ${blocksResp.status}`);
-      }
-
-      const page = await pageResp.json() as Record<string, unknown>;
-      const blocksResponse = await blocksResp.json() as Record<string, unknown>;
-
-      // Coerce Notion list response into NotionBlockList shape
-      const blockResults = (blocksResponse.results ?? []) as NotionBlock[];
       const rawBlocks = {
         object: "list" as const,
-        results: blockResults,
-        children: {},
+        results: blocks as NotionBlock[],
+        children: children as Record<string, NotionBlock[]>,
       };
 
       // Run conversion pipeline
@@ -366,6 +341,15 @@ async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env, _ctx:
         env.CONTENT_BUCKET.put(R2_PATHS.rawPage(pageId), JSON.stringify(page, null, 2), { httpMetadata: { contentType: "application/json" } }),
         env.CONTENT_BUCKET.put(R2_PATHS.rawBlocks(pageId), JSON.stringify(rawBlocks, null, 2), { httpMetadata: { contentType: "application/json" } }),
       ]);
+
+      // Upload rehosted asset binaries to R2 (non-fatal on failure)
+      for (const asset of converted.assetBinaries) {
+        try {
+          await env.CONTENT_BUCKET.put(asset.r2Key, asset.data.buffer as ArrayBuffer, { httpMetadata: { contentType: asset.contentType } });
+        } catch (err) {
+          console.warn(`Failed to upload asset ${asset.r2Key}:`, err);
+        }
+      }
 
       // Upsert source_pages row
       await env.DB.prepare(`
@@ -523,20 +507,18 @@ async function queryChangedPages(
   since: string | null,
   limit = 50,
 ): Promise<string[]> {
+  // Use /v1/search — the working query endpoint with API version 2026-03-11
   const body: Record<string, unknown> = {
-    data_source_id: env.NOTION_DATA_SOURCE_ID || env.NOTION_DATABASE_ID,
+    query: "",
+    filter: { property: "object", value: "page" },
+    sort: {
+      direction: "descending",
+      timestamp: "last_edited_time",
+    },
     page_size: limit,
-    sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
   };
 
-  if (since) {
-    body.filter = {
-      timestamp: "last_edited_time",
-      last_edited_time: { after: since },
-    };
-  }
-
-  const resp = await fetch("https://api.notion.com/v1/search/data-sources/query", {
+  const resp = await fetch("https://api.notion.com/v1/search", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.NOTION_TOKEN}`,
@@ -548,8 +530,28 @@ async function queryChangedPages(
 
   if (!resp.ok) return [];
 
-  const data = (await resp.json()) as { results: Array<{ id: string }> };
-  return data.results?.map((r) => r.id) ?? [];
+  const data = (await resp.json()) as {
+    results: Array<{ id: string; last_edited_time: string; parent?: { database_id?: string } }>;
+  };
+
+  const dbId = env.NOTION_DATABASE_ID;
+  const normalizedDbId = dbId ? dbId.replace(/-/g, "") : null;
+  const pageIds: string[] = [];
+
+  for (const page of data.results ?? []) {
+    // Filter by database_id on the client side (normalize UUIDs for comparison)
+    if (normalizedDbId) {
+      const pageDbId = (page.parent?.database_id ?? "").replace(/-/g, "");
+      if (pageDbId !== normalizedDbId) continue;
+    }
+
+    // Filter by watermark (stop at pages older than `since`)
+    if (since && page.last_edited_time <= since) continue;
+
+    pageIds.push(page.id);
+  }
+
+  return pageIds;
 }
 
 export default {

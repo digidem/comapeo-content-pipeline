@@ -87,6 +87,92 @@ describe("richTextToMarkdown", () => {
     expect(text).toBe("[click here](https://example.com)");
   });
 
+  it("handles strikethrough", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: "deleted",
+        annotations: {
+          bold: false, italic: false, strikethrough: true,
+          underline: false, code: false, color: "default",
+        },
+      },
+    ]);
+    expect(text).toBe("~~deleted~~");
+  });
+
+  it("handles underline", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: "underlined",
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: true, code: false, color: "default",
+        },
+      },
+    ]);
+    expect(text).toBe("<u>underlined</u>");
+  });
+
+  it("handles color (foreground)", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: "colored",
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: false, code: false, color: "blue",
+        },
+      },
+    ]);
+    expect(text).toBe('<span style="color:blue">colored</span>');
+  });
+
+  it("ignores default color", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: "plain",
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: false, code: false, color: "default",
+        },
+      },
+    ]);
+    expect(text).toBe("plain");
+  });
+
+  it("ignores background colors", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: "bg",
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: false, code: false, color: "blue_background",
+        },
+      },
+    ]);
+    // background colors are skipped — no span wrapper
+    expect(text).toBe("bg");
+  });
+
+  it("combines multiple annotations", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: "fancy",
+        annotations: {
+          bold: true, italic: true, strikethrough: true,
+          underline: true, code: false, color: "green",
+        },
+      },
+    ]);
+    // Order: bold → italic → strikethrough → underline → code → color
+    expect(text).toBe('<span style="color:green"><u>~~***fancy***~~</u></span>');
+  });
+
   it("handles empty input", () => {
     expect(richTextToMarkdown([])).toBe("");
   });

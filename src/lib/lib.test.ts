@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   slugify,
   generateSlug,
@@ -12,6 +15,10 @@ import {
   serializeDoc,
   parseDoc,
 } from "./index.js";
+import { convertPageData } from "../lib/sync.js";
+import type { NotionBlockList } from "../lib/notion-converter.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── slug ──
 
@@ -237,5 +244,85 @@ describe("serializeDoc / parseDoc", () => {
     expect(parsed.frontmatter.id).toBe("test");
     expect(parsed.frontmatter.slug).toBe("/test");
     expect(parsed.body.trim()).toBe(body);
+  });
+});
+
+// ── Determinism: convertPageData produces identical hashes on repeated calls ──
+
+describe("convertPageData determinism", () => {
+  it("produces the same content_hash and markdown on repeated calls", async () => {
+    // Load a fixture that has no images (simple-page.json)
+    const fixturePath = join(__dirname, "../../test/fixtures/notion/simple-page.json");
+    const rawBlocks = JSON.parse(readFileSync(fixturePath, "utf8")) as NotionBlockList;
+
+    const rawPage = {
+      id: "test-page-id",
+      last_edited_time: "2026-01-01T00:00:00.000Z",
+      properties: {
+        "Content elements": {
+          id: "title",
+          type: "title",
+          title: [{ type: "text", text: { content: "Welcome to CoMapeo" }, plain_text: "Welcome to CoMapeo", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+        },
+      },
+    };
+
+    const result1 = await convertPageData({
+      pageId: "test-page-id",
+      rawPage,
+      rawBlocks,
+    });
+
+    const result2 = await convertPageData({
+      pageId: "test-page-id",
+      rawPage,
+      rawBlocks,
+    });
+
+    // Content hash must be identical
+    expect(result1.hash).toBe(result2.hash);
+    expect(result1.metadata.content_hash).toBe(result2.metadata.content_hash);
+
+    // Markdown body must be identical
+    expect(result1.canoncialMd).toBe(result2.canoncialMd);
+
+    // raw_hash must be identical (sortedKeys handles JSON determinism)
+    expect(result1.metadata.raw_hash).toBe(result2.metadata.raw_hash);
+  });
+
+  it("produces the same content_hash with different rawPage field ordering", async () => {
+    const fixturePath = join(__dirname, "../../test/fixtures/notion/simple-page.json");
+    const rawBlocks = JSON.parse(readFileSync(fixturePath, "utf8")) as NotionBlockList;
+
+    // Same page data but keys in different order
+    const rawPage1 = {
+      id: "test-page-id",
+      properties: {
+        "Content elements": {
+          type: "title",
+          id: "title",
+          title: [{ plain_text: "Welcome to CoMapeo", type: "text", text: { content: "Welcome to CoMapeo" }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+        },
+      },
+      last_edited_time: "2026-01-01T00:00:00.000Z",
+    };
+
+    const rawPage2 = {
+      last_edited_time: "2026-01-01T00:00:00.000Z",
+      id: "test-page-id",
+      properties: {
+        "Content elements": {
+          id: "title",
+          type: "title",
+          title: [{ annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" }, text: { content: "Welcome to CoMapeo" }, plain_text: "Welcome to CoMapeo", type: "text" }],
+        },
+      },
+    };
+
+    const result1 = await convertPageData({ pageId: "test-page-id", rawPage: rawPage1, rawBlocks });
+    const result2 = await convertPageData({ pageId: "test-page-id", rawPage: rawPage2, rawBlocks });
+
+    expect(result1.hash).toBe(result2.hash);
+    expect(result1.metadata.raw_hash).toBe(result2.metadata.raw_hash);
   });
 });

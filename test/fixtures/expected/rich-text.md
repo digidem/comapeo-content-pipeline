@@ -4,4 +4,8 @@ Inline code: `npm install` to get started.
 
 Visit [our website](https://comapeo.org) for more.
 
-~Strikethrough text~
+~~Strikethrough text~~
+
+<u>Underlined text</u>
+
+<span style="color:red">Red colored text</span>

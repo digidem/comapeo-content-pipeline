@@ -24,6 +24,12 @@ export interface SyncPageInput {
   locale?: string;
 }
 
+export interface AssetBinary {
+  r2Key: string;
+  data: Uint8Array;
+  contentType: string;
+}
+
 export interface SyncPageOutput {
   metadata: PageMetadata;
   /** Canonical markdown with frontmatter */
@@ -36,6 +42,8 @@ export interface SyncPageOutput {
   hash: string;
   /** Always true from convertPageData — caller determines actual changed state by comparing with stored hash */
   changed: boolean;
+  /** Downloaded asset binaries keyed by R2 key (for upload to R2/disk) */
+  assetBinaries: AssetBinary[];
 }
 
 /** Overrides for page properties — take precedence over values extracted from rawPage. */
@@ -96,6 +104,7 @@ export async function convertPageData(input: {
   // ── Asset rehosting ──
   // Download Notion-hosted images, replace URLs with stable R2 paths.
   const assets: PageAsset[] = [];
+  const assetBinaries: AssetBinary[] = [];
   const extracted = extractAssetUrls(markdownBody);
   const notionAssets = extracted.filter((a) => a.isNotion);
 
@@ -111,6 +120,8 @@ export async function convertPageData(input: {
         sha256,
         mime_type: contentType,
       });
+
+      assetBinaries.push({ r2Key, data, contentType });
 
       // Replace URL in markdown body
       markdownBody = markdownBody.replaceAll(url, r2Key);
@@ -149,6 +160,7 @@ export async function convertPageData(input: {
     rawBlocks,
     hash,
     changed: true, // Caller determines this by comparing with stored hash
+    assetBinaries,
   };
 }
 

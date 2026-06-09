@@ -104,6 +104,17 @@ async function cmdSyncPage(args: Record<string, string>) {
     JSON.stringify(result.metadata, null, 2),
   );
 
+  // Write rehosted asset binaries
+  for (const asset of result.assetBinaries) {
+    try {
+      const assetPath = join(outDir, asset.r2Key);
+      mkdirSync(join(assetPath, ".."), { recursive: true });
+      writeFileSync(assetPath, asset.data);
+    } catch (err) {
+      console.warn(`Failed to write asset: ${asset.r2Key}`, err);
+    }
+  }
+
   console.log(`  Title: ${result.metadata.title}`);
   console.log(`  Slug: ${result.metadata.slug}`);
   console.log(`  Hash: ${result.hash}`);
@@ -152,6 +163,17 @@ async function cmdSyncFull(args: Record<string, string>) {
           result.canoncialMd,
         );
         allMetadata.push(result.metadata);
+
+        // Write rehosted asset binaries
+        for (const asset of result.assetBinaries) {
+          try {
+            const assetPath = join(outDir, asset.r2Key);
+            mkdirSync(join(assetPath, ".."), { recursive: true });
+            writeFileSync(assetPath, asset.data);
+          } catch (err) {
+            console.warn(`Failed to write asset: ${asset.r2Key}`, err);
+          }
+        }
 
         // Track latest edited time for watermark
         if (result.metadata.notion_last_edited_time > maxLastEditedTime) {

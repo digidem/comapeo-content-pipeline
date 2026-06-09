@@ -153,7 +153,10 @@ export class NotionClient {
   // ── API methods ──
 
   /**
-   * Query the Notion data source for pages, sorted by last_edited_time DESC.
+   * Query Notion pages from the database, sorted by last_edited_time DESC.
+   *
+   * Uses /v1/search (the working endpoint with API version 2026-03-11).
+   * Results are filtered client-side by parent database_id when configured.
    */
   async queryDataSource(params: {
     dataSourceId?: string;
@@ -161,34 +164,45 @@ export class NotionClient {
     startCursor?: string;
     pageSize?: number;
   }): Promise<NotionPageResponse> {
-    const dsId = params.dataSourceId || this.dataSourceId;
-    if (!dsId && !this.databaseId) {
-      throw new Error("Either dataSourceId or databaseId is required");
-    }
-
-    // Use data source query endpoint (v5)
+    // Use /v1/search — the working query endpoint
     const body: Record<string, unknown> = {
-      data_source_id: dsId || this.databaseId,
+      query: "",
+      filter: { property: "object", value: "page" },
+      sort: {
+        direction: "descending",
+        timestamp: "last_edited_time",
+      },
       page_size: params.pageSize ?? 100,
-      sorts: [
-        {
-          timestamp: "last_edited_time",
-          direction: "descending",
-        },
-      ],
     };
 
-    if (params.filter) {
-      body.filter = params.filter;
-    }
     if (params.startCursor) {
       body.start_cursor = params.startCursor;
     }
 
-    return this.request<NotionPageResponse>(
-      "/search/data-sources/query",
+    // If a filter with `last_edited_time` is provided, add it (used by Worker cron)
+    if (params.filter) {
+      body.filter = params.filter;
+    }
+
+    const resp = await this.request<NotionPageResponse>(
+      "/search",
       { method: "POST", body },
     );
+
+    // Client-side filter by parent database_id when configured.
+    // Normalize UUIDs (strip dashes) — Notion API returns dashed UUIDs but
+    // env vars may be set without dashes.
+    const dbId = this.databaseId;
+    if (dbId && resp.results) {
+      const normalizedDbId = dbId.replace(/-/g, "");
+      resp.results = resp.results.filter((page) => {
+        const parent = page as unknown as { parent?: { database_id?: string } };
+        const pageDbId = parent?.parent?.database_id?.replace(/-/g, "") ?? "";
+        return pageDbId === normalizedDbId;
+      });
+    }
+
+    return resp;
   }
 
   /**

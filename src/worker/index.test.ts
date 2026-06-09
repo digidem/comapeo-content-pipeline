@@ -4,11 +4,28 @@
  * Uses Hono's built-in `app.request()` for HTTP route testing.
  * Mock D1, R2, and Queue bindings via plain objects.
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // We only import types and the default export (Hono app) + queue consumer.
 // The worker module has side effects (global type declarations) — fine.
-import { app } from "./index.js";
+import { app, queueHandler } from "./index.js";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { convertBlocks } from "../lib/notion-converter.js";
+import { contentHash } from "../lib/hash.js";
+import type { NotionBlockList } from "../lib/notion-converter.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ── Helper to find a prepare call whose SQL contains a substring ──
+function findPrepareCall(
+  prepareMock: ReturnType<typeof vi.fn>,
+  sqlSubstring: string,
+): string[] | undefined {
+  const calls = prepareMock.mock.calls as string[][];
+  return calls.find((c) => c.length >= 1 && typeof c[0] === "string" && c[0].includes(sqlSubstring));
+}
 
 // Local Env shape (matches worker's interface but exported for testing)
 interface Env {
@@ -266,5 +283,171 @@ describe("Worker HTTP routes", () => {
       expect(body.regenerated).toBe(true);
       expect(body.docs_count).toBe(1);
     });
+  });
+});
+
+// ── Queue consumer integration tests ──
+
+describe("queue consumer", () => {
+  let env: ReturnType<typeof buildEnv>;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    env = buildEnv();
+
+    // Mock setTimeout so rate limiting resolves instantly
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(
+      ((fn: () => void) => {
+        fn();
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      }) as unknown as typeof setTimeout,
+    );
+
+    // Mock global fetch for Notion API calls
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function buildMessageBatch(pageId: string, jobId = "job-1") {
+    return {
+      messages: [
+        {
+          body: { type: "sync_page" as const, pageId, sourceId: "test-ds-id" },
+          id: jobId,
+          timestamp: new Date(),
+          attempts: 1,
+        },
+      ],
+      queue: "test-queue",
+      ackAll: vi.fn(),
+      retryAll: vi.fn(),
+    };
+  }
+
+  it("processes a sync job end-to-end: fetches page, converts, writes R2 + D1", async () => {
+    // Load fixture blocks (simple page, no images → no asset downloads)
+    const fixturePath = join(__dirname, "../../test/fixtures/notion/simple-page.json");
+    const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));
+
+    // Mock page response
+    const pageResponse = {
+      id: "test-page-id",
+      last_edited_time: "2026-01-01T00:00:00.000Z",
+      properties: {
+        "Content elements": {
+          id: "title",
+          type: "title",
+          title: [{ type: "text", text: { content: "Welcome" }, plain_text: "Welcome", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+        },
+      },
+    };
+
+    // Mock blocks response (first call for top-level blocks)
+    const blocksResponse = {
+      object: "list",
+      results: fixtureBlocks.results,
+      next_cursor: null,
+      has_more: false,
+    };
+
+    // Set up fetch mock: first call = getPage, second = getBlockChildren
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify(pageResponse), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(blocksResponse), { status: 200 }));
+
+    // D1: no existing page (first sync → no skip)
+    env.DB.first.mockResolvedValue(null);
+
+    const batch = buildMessageBatch("test-page-id");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await queueHandler(batch as any, env, {} as any);
+
+    // Verify Notion API was called
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Verify R2 writes (metadata, doc, raw page, raw blocks)
+    const putCalls = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls;
+    const putKeys = putCalls.map((c: unknown[]) => c[0]);
+    expect(putKeys).toContain("pages/test-page-id/metadata.json");
+    expect(putKeys).toContain("docs/en/docs/welcome.md");
+    expect(putKeys).toContain("pages/test-page-id/raw-page.json");
+    expect(putKeys).toContain("pages/test-page-id/raw-blocks.json");
+
+    // Verify D1 upsert (INSERT OR REPLACE into source_pages)
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "INSERT OR REPLACE INTO source_pages")).toBeDefined();
+
+    // Verify job marked complete
+    expect(findPrepareCall(prepareMock, "completed")).toBeDefined();
+
+    // Verify watermark updated
+    expect(findPrepareCall(prepareMock, "last_sync_watermark")).toBeDefined();
+  });
+
+  it("skips page when content_hash and status unchanged", async () => {
+    const fixturePath = join(__dirname, "../../test/fixtures/notion/simple-page.json");
+    const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));
+
+    // Compute expected hash from the fixture — same as convertPageData would compute
+    const markdownBody = convertBlocks(fixtureBlocks as NotionBlockList);
+    const expectedHash = contentHash(markdownBody);
+
+    const pageResponse = {
+      id: "test-page-id",
+      last_edited_time: "2026-01-01T00:00:00.000Z",
+      properties: {
+        "Content elements": {
+          id: "title", type: "title",
+          title: [{ type: "text", text: { content: "Welcome" }, plain_text: "Welcome", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+        },
+      },
+    };
+
+    const blocksResponse = {
+      object: "list", results: fixtureBlocks.results, next_cursor: null, has_more: false,
+    };
+
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify(pageResponse), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(blocksResponse), { status: 200 }));
+
+    // D1 returns matching content_hash and status → should skip
+    // (status will be "draft" since fixture has no Drafting Status property)
+    env.DB.first.mockResolvedValue({
+      content_hash: expectedHash,
+      status: "draft",
+    });
+
+    const batch = buildMessageBatch("test-page-id", "job-skip");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await queueHandler(batch as any, env, {} as any);
+
+    // Verify R2 was NOT written (skip happened)
+    const putCalls = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls;
+    expect(putCalls.length).toBe(0);
+
+    // Verify job marked skipped
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "skipped")).toBeDefined();
+  });
+
+  it("records failure when Notion API errors", async () => {
+    // Mock a 500 error from Notion
+    fetchMock.mockResolvedValueOnce(new Response("Internal Server Error", { status: 500, statusText: "Internal Server Error" }));
+
+    const batch = buildMessageBatch("error-page", "job-err");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await queueHandler(batch as any, env, {} as any);
+
+    // Verify job marked failed
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "failed")).toBeDefined();
   });
 });

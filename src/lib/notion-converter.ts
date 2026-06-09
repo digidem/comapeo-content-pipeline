@@ -145,13 +145,19 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
         text = `*${text}*`;
       }
       if (rt.annotations.strikethrough) {
-        text = `~${text}~`;
+        text = `~~${text}~~`;
+      }
+      if (rt.annotations.underline) {
+        text = `<u>${text}</u>`;
       }
       if (rt.annotations.code) {
         text = "`" + text + "`";
       }
-      if (rt.annotations.underline) {
-        text = `<u>${text}</u>`;
+
+      // Color (foreground only — skip "default" and background colors)
+      const color = rt.annotations.color;
+      if (color && color !== "default" && !color.endsWith("_background")) {
+        text = `<span style="color:${color}">${text}</span>`;
       }
 
       // Links: prefer href from mention, then text.link, then annotations

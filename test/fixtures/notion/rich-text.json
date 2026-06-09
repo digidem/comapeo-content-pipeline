@@ -52,6 +52,28 @@
           { "type": "text", "text": { "content": "Strikethrough text" }, "plain_text": "Strikethrough text", "annotations": { "bold": false, "italic": false, "strikethrough": true, "underline": false, "code": false, "color": "default" } }
         ]
       }
+    },
+    {
+      "object": "block",
+      "id": "p5",
+      "type": "paragraph",
+      "has_children": false,
+      "paragraph": {
+        "rich_text": [
+          { "type": "text", "text": { "content": "Underlined text" }, "plain_text": "Underlined text", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": true, "code": false, "color": "default" } }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "id": "p6",
+      "type": "paragraph",
+      "has_children": false,
+      "paragraph": {
+        "rich_text": [
+          { "type": "text", "text": { "content": "Red colored text" }, "plain_text": "Red colored text", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "red" } }
+        ]
+      }
     }
   ]
 }
