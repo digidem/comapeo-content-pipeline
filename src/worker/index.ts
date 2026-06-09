@@ -141,15 +141,21 @@ app.get("/health/deep", async (c: Context) => {
 
 app.post("/webhooks/notion", async (c: Context) => {
   const env = c.env as Env;
-  const signature = c.req.header("x-notion-verification-signature") || "";
   const rawBody = await c.req.raw.clone().arrayBuffer();
+  const body = await c.req.json<Record<string, unknown>>();
 
-  // Verify signature
+  // Notion one-time endpoint verification: echo back the verification_token
+  // This happens when you first add the webhook URL in the Notion dashboard.
+  if (body.verification_token) {
+    console.log("Notion verification token:", body.verification_token);
+    return c.json({ verification_token: body.verification_token }, 200);
+  }
+
+  // Runtime events: verify HMAC signature
+  const signature = c.req.header("x-notion-verification-signature") || "";
   if (!verifyWebhookSignature(new Uint8Array(rawBody), signature, env.NOTION_WEBHOOK_VERIFICATION_TOKEN)) {
     return c.json({ error: "invalid signature" }, 401);
   }
-
-  const body = await c.req.json<Record<string, unknown>>();
   const event = parseWebhookEvent(body);
 
   if (!event) {

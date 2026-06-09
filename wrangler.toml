@@ -1,6 +1,7 @@
 name = "comapeo-content-pipeline"
 main = "src/worker/index.ts"
-compatibility_date = "2025-06-09"
+compatibility_date = "2026-03-11"
+compatibility_flags = ["nodejs_compat"]
 
 [observability]
 enabled = true
@@ -12,16 +13,17 @@ bucket_name = "comapeo-content"
 [[d1_databases]]
 binding = "DB"
 database_name = "comapeo-content-pipeline"
-database_id = ""
+database_id = "36ce5add-3ac5-4d7e-a2d0-f8a0b66ef2db"
 
 [[queues.producers]]
 binding = "SYNC_QUEUE"
 queue = "comapeo-content-sync"
 
-[[queues.consumers]]
-queue = "comapeo-content-sync"
-max_batch_size = 1
-max_batch_timeout = 1
+# Queue consumer disabled until handler is fixed (needs ctx param + correct Cloudflare format)
+# [[queues.consumers]]
+# queue = "comapeo-content-sync"
+# max_batch_size = 1
+# max_batch_timeout = 1
 
 [triggers]
 crons = ["*/5 * * * *"]
