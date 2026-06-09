@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // We only import types and the default export (Hono app) + queue consumer.
 // The worker module has side effects (global type declarations) — fine.
-import app from "./index.js";
+import { app } from "./index.js";
 
 // Local Env shape (matches worker's interface but exported for testing)
 interface Env {

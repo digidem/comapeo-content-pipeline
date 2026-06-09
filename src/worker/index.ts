@@ -103,7 +103,7 @@ interface SyncJobMessage {
   sourceId: string;
 }
 
-const app = new Hono<{ Bindings: Env }>();
+export const app = new Hono<{ Bindings: Env }>();
 
 // ── Health ──
 
@@ -287,7 +287,7 @@ app.post("/admin/manifest/regenerate", async (c: Context) => {
 
 // ── Queue consumer ──
 
-export const queue = async (batch: MessageBatch<SyncJobMessage>, env: Env, _ctx: ExecutionContext): Promise<void> => {
+async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env, _ctx: ExecutionContext): Promise<void> {
   for (const msg of batch.messages) {
     const { pageId } = msg.body;
 
@@ -425,15 +425,15 @@ export const queue = async (batch: MessageBatch<SyncJobMessage>, env: Env, _ctx:
       ).bind(String(err), msg.id).run();
     }
   }
-};
+}
 
 // ── Cron trigger ──
 
-export const scheduled = async (
+async function scheduledHandler(
   _event: ScheduledEvent,
   env: Env,
   _ctx: ExecutionContext,
-): Promise<void> => {
+): Promise<void> {
   const maxPages = 50; // from MAX_PAGES_PER_CRON
   const since = await getLastSyncWatermark(env.DB);
   const pages = await queryChangedPages(env, since, maxPages);
@@ -447,7 +447,7 @@ export const scheduled = async (
   }
 
   console.log(`Cron: enqueued ${pages.length} changed pages since ${since}`);
-};
+}
 
 // ── Helpers ──
 
@@ -552,4 +552,9 @@ async function queryChangedPages(
   return data.results?.map((r) => r.id) ?? [];
 }
 
-export default app;
+export default {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  fetch: (request: Request, env: Env, ctx: ExecutionContext) => app.fetch(request, env, ctx as any),
+  queue: queueHandler,
+  scheduled: scheduledHandler,
+};
