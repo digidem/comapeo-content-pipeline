@@ -1,0 +1,19 @@
+{
+  "object": "list",
+  "results": [
+    {
+      "object": "block",
+      "id": "ub1",
+      "type": "unsupported",
+      "has_children": false,
+      "unsupported": {}
+    },
+    {
+      "object": "block",
+      "id": "ub2",
+      "type": "child_database",
+      "has_children": false,
+      "child_database": { "title": "My DB" }
+    }
+  ]
+}

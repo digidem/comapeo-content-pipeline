@@ -1,0 +1,66 @@
+{
+  "object": "list",
+  "results": [
+    {
+      "object": "block",
+      "id": "q1",
+      "type": "quote",
+      "has_children": true,
+      "quote": {
+        "rich_text": [
+          { "type": "text", "text": { "content": "Important note" }, "plain_text": "Important note", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" } }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "id": "b1",
+      "type": "bulleted_list_item",
+      "has_children": true,
+      "bulleted_list_item": {
+        "rich_text": [
+          { "type": "text", "text": { "content": "First item" }, "plain_text": "First item", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" } }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "id": "n1",
+      "type": "numbered_list_item",
+      "has_children": false,
+      "numbered_list_item": {
+        "rich_text": [
+          { "type": "text", "text": { "content": "Step one" }, "plain_text": "Step one", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" } }
+        ]
+      }
+    }
+  ],
+  "children": {
+    "q1": [
+      {
+        "object": "block",
+        "id": "q1c1",
+        "type": "paragraph",
+        "has_children": false,
+        "paragraph": {
+          "rich_text": [
+            { "type": "text", "text": { "content": "Quote child content." }, "plain_text": "Quote child content.", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" } }
+          ]
+        }
+      }
+    ],
+    "b1": [
+      {
+        "object": "block",
+        "id": "b1c1",
+        "type": "bulleted_list_item",
+        "has_children": false,
+        "bulleted_list_item": {
+          "rich_text": [
+            { "type": "text", "text": { "content": "Nested bullet" }, "plain_text": "Nested bullet", "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" } }
+          ]
+        }
+      }
+    ]
+  }
+}
