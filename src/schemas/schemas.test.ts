@@ -83,6 +83,22 @@ describe("ContentManifestSchema", () => {
       })
     ).toThrow();
   });
+
+  it("accepts Docusaurus sidebar format in sidebars", () => {
+    const manifest = {
+      schema_version: "1.0" as const,
+      generated_at: new Date().toISOString(),
+      source: { type: "notion" as const, database_id: "db1", data_source_id: "ds1" },
+      docs: [],
+      sidebars: {
+        en: [
+          { type: "category", label: "Getting Started", items: ["install", "account"] },
+          "introduction",
+        ],
+      },
+    };
+    expect(() => ContentManifestSchema.parse(manifest)).not.toThrow();
+  });
 });
 
 describe("PageMetadataSchema", () => {

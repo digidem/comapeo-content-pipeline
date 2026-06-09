@@ -1,5 +1,25 @@
 import { z } from "zod";
 
+// ── Docusaurus sidebar types ──
+
+/** A single item in a Docusaurus sidebar array */
+export type SidebarItem = string | SidebarCategory;
+export interface SidebarCategory {
+  type: "category";
+  label: string;
+  items: SidebarItem[];
+}
+
+/** Recursive Zod schema for Docusaurus sidebar items */
+export const SidebarItemSchema: z.ZodType<SidebarItem> = z.union([
+  z.string(),
+  z.object({
+    type: z.literal("category"),
+    label: z.string(),
+    items: z.lazy(() => z.array(SidebarItemSchema)),
+  }),
+]);
+
 /** A single document entry in the content manifest */
 export const ManifestDocSchema = z.object({
   page_id: z.string(),
@@ -32,7 +52,7 @@ export const ContentManifestSchema = z.object({
     data_source_id: z.string(),
   }),
   docs: z.array(ManifestDocSchema),
-  sidebars: z.record(z.string(), z.string()),
+  sidebars: z.record(z.string(), z.array(SidebarItemSchema)),
   rag: z
     .object({
       chunks_manifest_key: z.string(),

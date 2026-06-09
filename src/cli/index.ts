@@ -228,25 +228,21 @@ async function cmdDocsPull(args: Record<string, string>) {
     const content = readFileSync(srcFile, "utf8");
 
     // Build Docusaurus-compatible output path
-    const section = doc.section ? `${doc.section}/` : "";
-    const outPath = join(outDir, doc.locale, "docs", section, `${doc.slug}.md`);
-
-    // For non-en locales, write to i18n structure
-    let finalPath: string;
-    if (doc.locale === "en") {
-      finalPath = join(outDir, section, `${doc.slug}.md`);
-    } else {
-      finalPath = join(
-        outDir,
-        "..",
-        "i18n",
-        doc.locale,
-        "docusaurus-plugin-content-docs",
-        "current",
-        section,
-        `${doc.slug}.md`,
-      );
-    }
+    // en:   {outDir}/docs/{section}/{slug}.md
+    // non-en: {outDir}/i18n/{locale}/docusaurus-plugin-content-docs/current/{section}/{slug}.md
+    const section = doc.section || undefined;
+    const finalPath =
+      doc.locale === "en"
+        ? join(outDir, "docs", ...(section ? [section] : []), `${doc.slug}.md`)
+        : join(
+            outDir,
+            "i18n",
+            doc.locale,
+            "docusaurus-plugin-content-docs",
+            "current",
+            ...(section ? [section] : []),
+            `${doc.slug}.md`,
+          );
 
     mkdirSync(join(finalPath, ".."), { recursive: true });
     writeFileSync(finalPath, content);
@@ -372,8 +368,75 @@ async function cmdRagChunks(args: Record<string, string>) {
 }
 
 async function cmdDiff(args: Record<string, string>) {
-  console.log("Diff command — not yet implemented");
-  console.log("Args:", args);
+  const positional = JSON.parse(args._ || "[]") as string[];
+  const pageId = positional[0] || args.page;
+  if (!pageId) {
+    console.error("Usage: pnpm pipeline diff --page <page_id>");
+    process.exit(1);
+  }
+
+  const client = createClient();
+  const outDir = args.out || process.cwd();
+  const metadataPath = args.metadata || join(outDir, `${pageId}.metadata.json`);
+
+  console.log(`Fetching page from Notion: ${pageId}...`);
+  let result: Awaited<ReturnType<typeof syncPage>>;
+  try {
+    result = await syncPage({ pageId, client, usedSlugs: new Set() });
+  } catch (err) {
+    console.error(`Failed to fetch page: ${err}`);
+    process.exit(1);
+  }
+
+  const current = result.metadata;
+
+  // No stored metadata — show current info only
+  if (!existsSync(metadataPath)) {
+    console.log(`\nPage: ${pageId}`);
+    console.log(`Title: ${current.title}`);
+    console.log(`Status: ${current.status}`);
+    console.log(`Hash: ${current.content_hash}`);
+    console.log(`Last edited: ${current.notion_last_edited_time}`);
+    console.log(`\nNo stored metadata found at: ${metadataPath}`);
+    return;
+  }
+
+  let stored: Record<string, unknown>;
+  try {
+    stored = JSON.parse(readFileSync(metadataPath, "utf8"));
+  } catch {
+    console.error(`Failed to parse stored metadata: ${metadataPath}`);
+    process.exit(1);
+  }
+
+  // Compare fields
+  const fields: Array<{ label: string; key: string }> = [
+    { label: "title", key: "title" },
+    { label: "content_hash", key: "content_hash" },
+    { label: "status", key: "status" },
+    { label: "last_edited", key: "notion_last_edited_time" },
+  ];
+
+  const changes: Array<{ label: string; old: string; cur: string }> = [];
+  for (const { label, key } of fields) {
+    const oldVal = String(stored[key] ?? "");
+    const curVal = String((current as Record<string, unknown>)[key] ?? "");
+    if (oldVal !== curVal) {
+      changes.push({ label, old: oldVal, cur: curVal });
+    }
+  }
+
+  console.log(`\nPage: ${pageId}`);
+  console.log(`Title: ${current.title}`);
+
+  if (changes.length === 0) {
+    console.log("\nNo changes detected");
+  } else {
+    console.log("\nChanges:");
+    for (const c of changes) {
+      console.log(`  ${c.label}: "${c.old}" → "${c.cur}"`);
+    }
+  }
 }
 
 async function cmdDbMigrate(args: Record<string, string>) {

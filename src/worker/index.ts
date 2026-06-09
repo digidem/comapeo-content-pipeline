@@ -16,6 +16,7 @@ import { verifyWebhookSignature, verifyBearerAuth, parseWebhookEvent } from "../
 import { convertPageData } from "../lib/sync.js";
 import type { NotionBlock } from "../lib/notion-converter.js";
 import { R2_PATHS } from "../persistence/r2.js";
+import type { SidebarItem } from "../schemas/manifest.js";
 
 // Minimal Cloudflare Workers type declarations (avoid @cloudflare/workers-types conflicts with @types/node)
 declare global {
@@ -450,21 +451,12 @@ export const scheduled = async (
 
 // ── Helpers ──
 
-interface SidebarEntry {
-  doc_id: string;
-  slug: string;
-  section: string | null;
-  section_order: number | null;
-  title: string;
-}
-
-interface Sidebar {
-  locale: string;
-  entries: SidebarEntry[];
-}
-
 /**
- * Read existing sidebar from R2, add/update the synced page entry, write back.
+ * Read existing Docusaurus sidebar from R2, upsert the page's entry, write back.
+ *
+ * Format: `SidebarItem[]` (Docusaurus sidebar JSON).
+ * - Uncategorized pages (no section): plain string ID.
+ * - Categorized pages: placed inside the matching category's items array.
  */
 async function regenerateSidebar(
   env: Env,
@@ -473,33 +465,44 @@ async function regenerateSidebar(
 ): Promise<void> {
   const sidebarKey = R2_PATHS.sidebar(locale);
 
-  let sidebar: Sidebar;
+  let items: SidebarItem[];
   const existing = await env.CONTENT_BUCKET.get(sidebarKey);
   if (existing) {
-    sidebar = JSON.parse(await existing.text()) as Sidebar;
+    items = JSON.parse(await existing.text()) as SidebarItem[];
   } else {
-    sidebar = { locale, entries: [] };
+    items = [];
   }
 
-  const entry: SidebarEntry = {
-    doc_id: metadata.docusaurus_id,
-    slug: metadata.slug,
-    section: metadata.section,
-    section_order: metadata.section_order,
-    title: metadata.title,
-  };
+  const docId = metadata.docusaurus_id;
+  const section = metadata.section;
 
-  // Replace existing entry for this doc or append
-  const idx = sidebar.entries.findIndex((e) => e.doc_id === entry.doc_id);
-  if (idx >= 0) {
-    sidebar.entries[idx] = entry;
+  // Remove any previous occurrence of this docId from categories and top-level
+  for (const item of items) {
+    if (typeof item !== "string" && item.type === "category") {
+      item.items = item.items.filter((id) => id !== docId);
+    }
+  }
+  items = items.filter((id) => id !== docId);
+
+  if (section) {
+    // Find or create the category
+    let category = items.find(
+      (item): item is Extract<typeof item, { type: "category" }> =>
+        typeof item !== "string" && item.type === "category" && item.label === section,
+    );
+    if (!category) {
+      category = { type: "category", label: section, items: [] };
+      items.push(category);
+    }
+    category.items.push(docId);
   } else {
-    sidebar.entries.push(entry);
+    // Uncategorized: plain string
+    items.push(docId);
   }
 
   await env.CONTENT_BUCKET.put(
     sidebarKey,
-    JSON.stringify(sidebar, null, 2),
+    JSON.stringify(items, null, 2),
     { httpMetadata: { contentType: "application/json" } },
   );
 }

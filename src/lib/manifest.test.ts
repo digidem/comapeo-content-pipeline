@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { generateManifest } from "./manifest.js";
+import { generateManifest, generateSidebarJson } from "./manifest.js";
 import type { PageMetadata } from "../schemas/metadata.js";
 
 const basePage: PageMetadata = {
@@ -60,8 +60,9 @@ describe("generateManifest", () => {
 
     // But sidebar only contains active
     const enSidebar = manifest.sidebars.en;
-    expect(enSidebar).toContain("basics/getting-started");
-    expect(enSidebar).not.toContain("draft1");
+    const sidebarIds = JSON.stringify(enSidebar);
+    expect(sidebarIds).toContain("basics/getting-started");
+    expect(sidebarIds).not.toContain("draft1");
   });
 
   it("generates correct R2 keys", () => {
@@ -73,5 +74,66 @@ describe("generateManifest", () => {
 
     expect(manifest.docs[0].r2_doc_key).toBe("docs/en/docs/basics/getting-started.md");
     expect(manifest.docs[0].r2_metadata_key).toBe("pages/abc123/metadata.json");
+  });
+
+  it("produces Docusaurus sidebar format", () => {
+    const manifest = generateManifest({
+      databaseId: "db1",
+      dataSourceId: "ds1",
+      pages: [basePage],
+    });
+
+    const sidebar = manifest.sidebars.en;
+    expect(sidebar).toHaveLength(1);
+    expect(sidebar[0]).toEqual({
+      type: "category",
+      label: "basics",
+      items: ["basics/getting-started"],
+    });
+  });
+});
+
+describe("generateSidebarJson", () => {
+  it("groups pages by section into categories", () => {
+    const pages: PageMetadata[] = [
+      { ...basePage, docusaurus_id: "intro", section: null, section_order: 0 },
+      { ...basePage, docusaurus_id: "install", section: "Getting Started", section_order: 1 },
+      { ...basePage, docusaurus_id: "account", section: "Getting Started", section_order: 2 },
+      { ...basePage, docusaurus_id: "advanced", section: "Advanced", section_order: 10 },
+    ];
+
+    const sidebar = generateSidebarJson(pages);
+
+    // "Getting Started" (min order 1) comes before "Advanced" (min order 10)
+    expect(sidebar).toHaveLength(3);
+    expect(sidebar[0]).toEqual({
+      type: "category",
+      label: "Getting Started",
+      items: ["install", "account"],
+    });
+    expect(sidebar[1]).toEqual({
+      type: "category",
+      label: "Advanced",
+      items: ["advanced"],
+    });
+    // Uncategorized at the end
+    expect(sidebar[2]).toBe("intro");
+  });
+
+  it("returns empty array for no active pages", () => {
+    const pages: PageMetadata[] = [
+      { ...basePage, status: "draft" },
+    ];
+    expect(generateSidebarJson(pages)).toEqual([]);
+  });
+
+  it("handles all uncategorized pages", () => {
+    const pages: PageMetadata[] = [
+      { ...basePage, docusaurus_id: "doc-a", section: null, section_order: 2 },
+      { ...basePage, docusaurus_id: "doc-b", section: null, section_order: 1 },
+    ];
+
+    const sidebar = generateSidebarJson(pages);
+    expect(sidebar).toEqual(["doc-b", "doc-a"]);
   });
 });
