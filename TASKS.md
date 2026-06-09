@@ -1,127 +1,110 @@
-# Next Steps
+# Known Issues
 
-All 13 tasks complete. 145 tests pass, typecheck clean.
-
----
-
-## 1. Wire the full Markdown converter into the Worker queue consumer ✅
-
-Done: extracted `convertPageData()` as pure function, worker queue consumer calls it, writes canonical Markdown, metadata, upserts D1, records emitted_artifacts, regenerates sidebars.
-
-**Files:** `src/worker/index.ts`, `src/lib/sync.ts`.
+Issues discovered during end-to-end testing. Fix in priority order.
 
 ---
 
-## 2. Implement `rag:chunks` CLI command ✅
+## 1. `sync:full` broken — Notion query endpoint returns 400
 
-Done: reads manifest, parses frontmatter from .md files via gray-matter, calls `generateChunks()`/`generateChunksManifest()`, writes `rag/chunks/{chunk_id}.json` + `rag/chunks-manifest.json`.
+**Symptom:** `pnpm pipeline sync:full` fails with `Notion API error 400: Invalid request URL`.
 
-**Files:** `src/cli/index.ts`.
+**Root cause:** `NotionClient.queryDataSource()` calls `/search/data-sources/query` which returns 400 with API version `2026-03-11`. The CLAUDE.md gotcha states `/v1/search` is the working query endpoint.
 
----
+**Fix:**
+- Update `src/lib/notion-client.ts` `queryDataSource()` to use `POST /v1/search` instead of `/search/data-sources/query`
+- Change request body from `{ data_source_id, page_size, sorts, filter }` to the `/v1/search` format: `{ query: "", filter: { property: "object", value: "page" }, sort: { direction: "descending", timestamp: "last_edited_time" }, page_size }`
+- Also update `src/worker/index.ts` `queryChangedPages()` which calls the same broken endpoint with direct `fetch()`
+- Verify `sync:full --limit 5` works after fix
 
-## 3. Implement `diff` CLI command ✅
-
-Done: fetches live Notion page via `syncPage()`, compares title/content_hash/status/last_edited against stored metadata.json, prints human-readable diff.
-
-**Files:** `src/cli/index.ts`.
-
----
-
-## 4. Image asset rehosting ✅
-
-Done: `src/lib/assets.ts` with `extractAssetUrls()`, `rehostAsset()`, `sha256Hex()` (Web Crypto API), `assetR2Key()`. `convertPageData()` scans markdown, downloads Notion images, replaces URLs with stable R2 paths. Content hash computed BEFORE URL replacement. Failures handled gracefully (original URL kept).
-
-**Files:** `src/lib/assets.ts`, `src/lib/assets.test.ts`, `src/lib/sync.ts`, `src/persistence/r2.ts`.
+**Files:** `src/lib/notion-client.ts`, `src/worker/index.ts`
 
 ---
 
-## 5. D1 migration automation ✅
+## 2. Content hash non-deterministic on repeated syncs
 
-Done: `migrations/0001_initial.sql` exists. `db:migrate` CLI command runs `wrangler d1 execute --local` (or `--remote` for production).
+**Symptom:** Running `sync:page` twice on the same page produces different `content_hash` values, breaking the skip-unchanged logic.
 
-**Files:** `migrations/0001_initial.sql`, `src/cli/index.ts`.
+**Root cause:** Investigation needed — possible causes:
+- Notion API returns slightly different data each time (timestamps, cursor positions)
+- `rawPage` or `rawBlocks` serialization includes unstable fields
+- The `convertPageData` function became async (asset rehosting) and content_hash should be computed BEFORE asset URLs are replaced (code does this, but verify)
+- `JSON.stringify` with `sortedKeys` may not handle all Notion API response shapes correctly
 
----
+**Fix:**
+- Write a test: sync same page twice, assert hashes equal
+- Check if `notion_last_edited_time` or other API-level fields change between calls
+- Consider computing `content_hash` from the Markdown body only (already done — verify it's consistent)
+- Add debug logging to trace hash differences
 
-## 6. `docs:pull` locale-aware output ✅
-
-Done: en → `{outDir}/docs/{section}/{slug}.md`, non-en → `{outDir}/i18n/{locale}/docusaurus-plugin-content-docs/current/{section}/{slug}.md`. No `..` parent traversal.
-
-**Files:** `src/cli/index.ts`.
-
----
-
-## 7. Sidebar JSON generation and storage ✅
-
-Done: `generateSidebarJson()` produces Docusaurus-format arrays (`{type:"category",label,items}` + plain strings). Worker `regenerateSidebar()` writes proper `SidebarItem[]` to R2. Manifest schema updated.
-
-**Files:** `src/lib/manifest.ts`, `src/schemas/manifest.ts`, `src/worker/index.ts`.
+**Files:** `src/lib/sync.ts`, `src/lib/hash.ts`, new test in `src/lib/lib.test.ts`
 
 ---
 
-## 8. Multilingual page fixture + test ✅
+## 3. Worker doesn't re-upload downloaded assets to R2
 
-Done: `test/fixtures/notion/multilingual-page.json` with Spanish headings + Portuguese list items. Golden test passes.
+**Symptom:** `convertPageData()` downloads Notion images and replaces URLs in Markdown with `assets/{sha256}.{ext}` paths, but the actual binary data is never stored in R2.
 
-**Files:** `test/fixtures/notion/multilingual-page.json`, `test/fixtures/expected/multilingual-page.md`.
+**Root cause:** `convertPageData` runs the download + URL replacement, but the Queue consumer doesn't call `env.CONTENT_BUCKET.put()` for each downloaded asset. The asset data is held in memory and discarded.
 
----
+**Fix:**
+- `convertPageData` should return the downloaded asset data alongside the metadata
+- Queue consumer should iterate `metadata.assets` and upload each to R2 at `assets/{sha256}.{ext}`
+- Asset upload failures should be non-fatal (log warning, keep original URL)
 
-## 9. Rate-limit retry behavior tests ✅
-
-Done: `src/lib/notion-client.test.ts` with 11 tests covering 429 (Retry-After header, default 1s fallback, multiple retries), 529 (exponential backoff), non-retryable errors (400/401/404), max retries exhaustion, network error recovery.
-
-**Files:** `src/lib/notion-client.test.ts`.
-
----
-
-## 10. Integration tests for Worker routes ✅
-
-Done: `src/worker/index.test.ts` with 10 tests: health routes, webhook verification challenge, webhook auth rejection, admin auth (403), admin sync/page (enqueue), admin manifest/regenerate. Mock D1/R2/Queue bindings.
-
-**Files:** `src/worker/index.test.ts`.
+**Files:** `src/lib/sync.ts`, `src/worker/index.ts`
 
 ---
 
-## 11. `sync:full` pagination + watermark ✅
+## 4. Worker blocks fetch is not recursive
 
-Done: `sync:full` tracks `maxLastEditedTime` across all synced pages, writes `sync_state.json` with watermark. Summary includes watermark value. No state written if zero pages synced.
+**Symptom:** Queue consumer fetches top-level blocks only (`/blocks/{pageId}/children`). Nested blocks (toggle content, bullet children, etc.) are not fetched.
 
-**Files:** `src/cli/index.ts`.
+**Root cause:** The Worker uses direct `fetch()` calls and doesn't recurse into `has_children` blocks. The CLI uses `NotionClient.getPageBlocks()` which does recursive fetching.
+
+**Fix:**
+- Either import and use `NotionClient` in the Worker (it's runtime-agnostic — uses `fetch`), or implement recursive block fetching in the queue consumer
+- Call `client.getPageBlocks(pageId)` instead of the direct `fetch()` call
+- Update the blocks response handling to use the already-recursive result
+
+**Files:** `src/worker/index.ts`
 
 ---
 
-## 12. Content hash skip logic ✅
+## 5. No integration test for full queue consumer flow
 
-Done: Worker checks D1 for existing `content_hash` + `status`. If both match → skip writes, mark sync_job 'skipped', update watermark, continue. CLI checks `{pageId}.metadata.json` for matching `content_hash`; `--force` bypasses skip.
+**Symptom:** `src/worker/index.test.ts` tests HTTP routes but not the queue consumer processing logic (`queueHandler`).
 
-**Files:** `src/worker/index.ts`, `src/cli/index.ts`, `src/lib/sync.ts`.
+**Root cause:** The queue consumer wasn't extracted as an importable function (it was a named export, now it's part of the default export). It can still be tested by importing the handler function.
+
+**Fix:**
+- Export `queueHandler` as a named export for testing (keep it in the default export too)
+- Write tests: mock Notion API responses, verify R2 writes, D1 upserts, hash skip, error recording
+- Use the existing mock builders from the test file
+
+**Files:** `src/worker/index.ts`, `src/worker/index.test.ts`
 
 ---
 
-## 13. Spec fixture gap: `tables.json` with rich text in cells ✅
+## 6. Rich text annotations: strikethrough, underline, color not supported
 
-Done: Added two table rows with bold, italic, code, and mixed-annotation cells to `tables.json`. Expected output updated in `tables.md`.
+**Symptom:** The Notion converter handles bold, italic, code but doesn't convert strikethrough, underline, or colored text.
 
-**Files:** `test/fixtures/notion/tables.json`, `test/fixtures/expected/tables.md`.
+**Fix:**
+- Add `~~strikethrough~~` support in `richTextToMarkdown()` (`src/lib/notion-converter.ts`)
+- Add `<u>underline</u>` support (or ignore — Markdown doesn't have native underline)
+- Add golden fixture test cases in `test/fixtures/notion/rich-text.json`
+
+**Files:** `src/lib/notion-converter.ts`, `test/fixtures/`
 
 ---
 
 ## Summary
 
-| # | Task | Priority | Status |
-|---|------|----------|--------|
-| 1 | Worker queue consumer → full Markdown pipeline | High | ✅ |
-| 2 | `rag:chunks` CLI command | High | ✅ |
-| 12 | Content hash skip logic | High | ✅ |
-| 6 | `docs:pull` locale-aware output | Medium | ✅ |
-| 4 | Image asset rehosting | Medium | ✅ |
-| 7 | Sidebar JSON generation | Medium | ✅ |
-| 5 | D1 migration automation | Medium | ✅ |
-| 9 | Rate-limit retry tests | Low | ✅ |
-| 10 | Worker integration tests | Low | ✅ |
-| 11 | Sync pagination + watermark | Low | ✅ |
-| 3 | `diff` CLI command | Low | ✅ |
-| 8 | Multilingual fixture | Low | ✅ |
-| 13 | Rich text in table cells fixture | Low | ✅ |
+| # | Issue | Impact |
+|---|-------|--------|
+| 1 | `sync:full` query endpoint 400 | **Blocks full sync** |
+| 2 | Non-deterministic content hash | Breaks skip-unchanged |
+| 3 | Assets not uploaded to R2 | Expiring image URLs |
+| 4 | No recursive block fetch in Worker | Missing nested content |
+| 5 | No queue consumer integration test | Test gap |
+| 6 | Missing rich text annotations | Minor MD incompleteness |
