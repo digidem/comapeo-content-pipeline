@@ -55,14 +55,14 @@ export function buildFrontmatter(
 /**
  * Strip undefined values from an object (for clean YAML serialization).
  */
-function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
+function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(obj)) {
     if (v !== undefined) {
       out[k] = v;
     }
   }
-  return out as T;
+  return out;
 }
 
 /**
@@ -72,7 +72,7 @@ export function serializeDoc(
   frontmatter: DocFrontmatter,
   body: string,
 ): string {
-  return matter.stringify(body, stripUndefined(frontmatter));
+  return matter.stringify(body, stripUndefined(frontmatter as unknown as Record<string, unknown>));
 }
 
 /**

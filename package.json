@@ -16,17 +16,18 @@
   },
   "dependencies": {
     "@notionhq/client": "^5.12.0",
-    "hono": "^4.10.4",
-    "zod": "^3.24.0",
+    "github-slugger": "^2.0.0",
     "gray-matter": "^4.0.3",
-    "github-slugger": "^2.0.0"
+    "hono": "^4.10.4",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260609.1",
     "@types/node": "^25.4.0",
+    "@vitest/coverage-v8": "^4.0.18",
+    "eslint": "^10.0.3",
     "typescript": "~5.9.3",
     "vitest": "^4.0.18",
-    "@vitest/coverage-v8": "^4.0.18",
-    "wrangler": "^4.72.0",
-    "eslint": "^10.0.3"
+    "wrangler": "^4.72.0"
   }
 }

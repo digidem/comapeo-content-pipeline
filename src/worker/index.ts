@@ -14,7 +14,74 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { verifyWebhookSignature, verifyBearerAuth, parseWebhookEvent } from "../lib/webhook.js";
 
-// Types for Cloudflare bindings
+// Minimal Cloudflare Workers type declarations (avoid @cloudflare/workers-types conflicts with @types/node)
+declare global {
+  interface D1Result<T = unknown> {
+    results: T[];
+    success: boolean;
+  }
+  interface D1PreparedStatement {
+    bind(...values: unknown[]): D1PreparedStatement;
+    first<T = unknown>(colName?: string): Promise<T | null>;
+    all<T = unknown>(): Promise<D1Result<T>>;
+    run(): Promise<D1Result>;
+    raw<T = unknown>(): Promise<T[]>;
+  }
+  class D1Database {
+    prepare(query: string): D1PreparedStatement;
+    batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
+    exec(query: string): Promise<D1Result>;
+  }
+
+  interface R2Object {
+    key: string;
+    size: number;
+  }
+  interface R2ObjectBody extends R2Object {
+    body: ReadableStream;
+    arrayBuffer(): Promise<ArrayBuffer>;
+    text(): Promise<string>;
+  }
+  interface R2Bucket {
+    head(key: string): Promise<R2Object | null>;
+    get(key: string): Promise<R2ObjectBody | null>;
+    put(key: string, value: string | ArrayBuffer | ReadableStream, options?: { httpMetadata?: { contentType?: string } }): Promise<R2Object>;
+    delete(key: string): Promise<void>;
+    list(options?: { prefix?: string }): Promise<{ objects: R2Object[] }>;
+  }
+
+  interface QueueSendOptions {
+    delaySeconds?: number;
+  }
+  interface Queue<T = unknown> {
+    send(message: T, options?: QueueSendOptions): Promise<void>;
+    sendBatch(messages: Array<{ body: T; options?: QueueSendOptions }>): Promise<void>;
+  }
+
+  interface Message<T = unknown> {
+    body: T;
+    id: string;
+    timestamp: Date;
+    attempts: number;
+  }
+  interface MessageBatch<T = unknown> {
+    messages: Message<T>[];
+    queue: string;
+    ackAll(): void;
+    retryAll(options?: { delaySeconds?: number }): void;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-empty-interface
+  interface ScheduledEvent {
+    cron: string;
+    scheduledTime: number;
+  }
+  interface ExecutionContext {
+    waitUntil(promise: Promise<unknown>): void;
+    passThroughOnException(): void;
+  }
+}
+
 interface Env {
   NOTION_TOKEN: string;
   NOTION_DATABASE_ID: string;

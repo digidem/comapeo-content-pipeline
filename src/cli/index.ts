@@ -59,7 +59,8 @@ async function main() {
 // ── Command implementations ──
 
 async function cmdSyncPage(args: Record<string, string>) {
-  const pageId = args._?.[0] || args.page;
+  const positional = JSON.parse(args._ || "[]") as string[];
+  const pageId = positional[0] || args.page;
   if (!pageId) {
     console.error("Usage: pnpm pipeline sync:page <page_id>");
     process.exit(1);
@@ -298,7 +299,8 @@ function createClient(): NotionClient {
 }
 
 function parseArgs(raw: string[]): Record<string, string> {
-  const result: Record<string, string> = { _: [] as string[] };
+  const result: Record<string, string> = {};
+  const positional: string[] = [];
   for (let i = 0; i < raw.length; i++) {
     if (raw[i].startsWith("--")) {
       const key = raw[i].slice(2);
@@ -310,9 +312,10 @@ function parseArgs(raw: string[]): Record<string, string> {
         result[key] = "true";
       }
     } else {
-      (result._ as string[]).push(raw[i]);
+      positional.push(raw[i]);
     }
   }
+  result._ = JSON.stringify(positional);
   return result;
 }
 
