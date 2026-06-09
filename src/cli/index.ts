@@ -14,9 +14,11 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import matter from "gray-matter";
 import { NotionClient } from "../lib/notion-client.js";
 import { syncPage } from "../lib/sync.js";
 import { generateManifest } from "../lib/manifest.js";
+import { generateChunks, generateChunksManifest } from "../rag/chunker.js";
 
 const command = process.argv[2];
 const args = parseArgs(process.argv.slice(3));
@@ -47,7 +49,7 @@ async function main() {
       await cmdDiff(args);
       break;
     case "rag:chunks":
-      console.log("RAG chunk generation — not yet implemented");
+      await cmdRagChunks(args);
       break;
     default:
       console.error(`Unknown command: ${command}`);
@@ -273,6 +275,82 @@ async function cmdValidate(args: Record<string, string>) {
     }
     process.exit(1);
   }
+}
+
+async function cmdRagChunks(args: Record<string, string>) {
+  const input = args.input || join(process.cwd(), "output/manifest.json");
+  const outDir = args.out || join(process.cwd(), "output");
+
+  // Resolve manifest path — accept file or directory containing manifest.json
+  let manifestPath = input;
+  if (!manifestPath.endsWith(".json") && existsSync(join(manifestPath, "manifest.json"))) {
+    manifestPath = join(manifestPath, "manifest.json");
+  }
+
+  if (!existsSync(manifestPath)) {
+    console.error(`Manifest not found: ${manifestPath}`);
+    console.error("Run sync:full or manifest:generate first, or specify --input");
+    process.exit(1);
+  }
+
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const inputDir = args["input-dir"] || join(manifestPath, "..");
+  const activeDocs = (manifest.docs || []).filter(
+    (doc: { status: string }) => doc.status === "active",
+  );
+
+  if (activeDocs.length === 0) {
+    console.log("No active docs in manifest. Nothing to chunk.");
+    return;
+  }
+
+  const chunksDir = join(outDir, "rag", "chunks");
+  mkdirSync(chunksDir, { recursive: true });
+
+  const allChunks = [];
+  let pagesProcessed = 0;
+
+  for (const doc of activeDocs) {
+    // Try page_id.md then slug.md as source file
+    const srcFile = [join(inputDir, `${doc.page_id}.md`), join(inputDir, `${doc.slug}.md`)].find(
+      (p) => existsSync(p),
+    );
+
+    if (!srcFile) {
+      console.warn(`  Skipping ${doc.page_id}: no source .md file found`);
+      continue;
+    }
+
+    const raw = readFileSync(srcFile, "utf8");
+    const { data: fmData, content: body } = matter(raw);
+
+    const chunks = generateChunks({
+      pageId: doc.page_id,
+      title: fmData.title || doc.title,
+      locale: fmData.locale || doc.locale,
+      slug: fmData.slug || doc.slug,
+      sourceUrl: doc.source_url,
+      docusaurusPath: doc.docusaurus_path,
+      contentHash: fmData.content_hash || doc.content_hash,
+      markdownBody: body,
+    });
+
+    for (const chunk of chunks) {
+      writeFileSync(join(chunksDir, `${chunk.chunk_id}.json`), JSON.stringify(chunk, null, 2));
+    }
+
+    allChunks.push(...chunks);
+    pagesProcessed++;
+  }
+
+  // Write chunks manifest
+  const chunksManifest = generateChunksManifest(allChunks);
+  writeFileSync(join(outDir, "rag", "chunks-manifest.json"), JSON.stringify(chunksManifest, null, 2));
+
+  console.log(`RAG chunks generated:`);
+  console.log(`  Pages processed: ${pagesProcessed}/${activeDocs.length}`);
+  console.log(`  Total chunks:    ${allChunks.length}`);
+  console.log(`  Output:          ${chunksDir}`);
 }
 
 async function cmdDiff(args: Record<string, string>) {

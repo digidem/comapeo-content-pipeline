@@ -13,6 +13,9 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { verifyWebhookSignature, verifyBearerAuth, parseWebhookEvent } from "../lib/webhook.js";
+import { convertPageData } from "../lib/sync.js";
+import type { NotionBlock } from "../lib/notion-converter.js";
+import { R2_PATHS } from "../persistence/r2.js";
 
 // Minimal Cloudflare Workers type declarations (avoid @cloudflare/workers-types conflicts with @types/node)
 declare global {
@@ -321,17 +324,71 @@ export const queue = async (batch: MessageBatch<SyncJobMessage>, env: Env): Prom
       }
 
       const page = await pageResp.json() as Record<string, unknown>;
-      const blocks = await blocksResp.json() as Record<string, unknown>;
+      const blocksResponse = await blocksResp.json() as Record<string, unknown>;
 
-      // Store raw data in R2
-      await env.CONTENT_BUCKET.put(
-        `pages/${pageId}/raw-page.json`,
-        JSON.stringify(page),
-      );
-      await env.CONTENT_BUCKET.put(
-        `pages/${pageId}/raw-blocks.json`,
-        JSON.stringify(blocks),
-      );
+      // Coerce Notion list response into NotionBlockList shape
+      const blockResults = (blocksResponse.results ?? []) as NotionBlock[];
+      const rawBlocks = {
+        object: "list" as const,
+        results: blockResults,
+        children: {},
+      };
+
+      // Run conversion pipeline
+      const converted = convertPageData({ pageId, rawPage: page, rawBlocks });
+      const { metadata, canoncialMd, hash } = converted;
+
+      const metadataKey = R2_PATHS.metadata(pageId);
+      const docKey = R2_PATHS.doc(metadata.locale, metadata.section, metadata.slug);
+
+      // Write all artifacts to R2 in parallel
+      await Promise.all([
+        env.CONTENT_BUCKET.put(metadataKey, JSON.stringify(metadata, null, 2), { httpMetadata: { contentType: "application/json" } }),
+        env.CONTENT_BUCKET.put(docKey, canoncialMd, { httpMetadata: { contentType: "text/markdown" } }),
+        env.CONTENT_BUCKET.put(R2_PATHS.rawPage(pageId), JSON.stringify(page, null, 2), { httpMetadata: { contentType: "application/json" } }),
+        env.CONTENT_BUCKET.put(R2_PATHS.rawBlocks(pageId), JSON.stringify(rawBlocks, null, 2), { httpMetadata: { contentType: "application/json" } }),
+      ]);
+
+      // Upsert source_pages row
+      await env.DB.prepare(`
+        INSERT OR REPLACE INTO source_pages
+          (page_id, title, source_url, notion_last_edited_time, content_hash, raw_hash,
+           status, locale, section, section_order, slug, docusaurus_path,
+           r2_metadata_key, r2_doc_key, last_synced_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `).bind(
+        metadata.page_id,
+        metadata.title,
+        metadata.source_url,
+        metadata.notion_last_edited_time,
+        metadata.content_hash,
+        metadata.raw_hash,
+        metadata.status,
+        metadata.locale,
+        metadata.section,
+        metadata.section_order,
+        metadata.slug,
+        metadata.docusaurus_id,
+        metadataKey,
+        docKey,
+      ).run();
+
+      // Record emitted artifacts
+      const artifactRows: Array<[string, string, string, string | null, number]> = [
+        [metadataKey, "metadata", pageId, metadata.content_hash, JSON.stringify(metadata).length],
+        [docKey, "doc", pageId, hash, canoncialMd.length],
+        [R2_PATHS.rawPage(pageId), "raw_page", pageId, null, JSON.stringify(page).length],
+        [R2_PATHS.rawBlocks(pageId), "raw_blocks", pageId, null, JSON.stringify(rawBlocks).length],
+      ];
+
+      for (const [key, type, pid, contentHash, sizeBytes] of artifactRows) {
+        await env.DB.prepare(
+          "INSERT OR REPLACE INTO emitted_artifacts (key, artifact_type, page_id, content_hash, size_bytes) VALUES (?, ?, ?, ?, ?)",
+        ).bind(key, type, pid, contentHash, sizeBytes).run();
+      }
+
+      // Regenerate sidebar for this locale
+      await regenerateSidebar(env, metadata.locale, metadata);
 
       // Mark job complete
       await env.DB.prepare(
@@ -375,6 +432,60 @@ export const scheduled = async (
 };
 
 // ── Helpers ──
+
+interface SidebarEntry {
+  doc_id: string;
+  slug: string;
+  section: string | null;
+  section_order: number | null;
+  title: string;
+}
+
+interface Sidebar {
+  locale: string;
+  entries: SidebarEntry[];
+}
+
+/**
+ * Read existing sidebar from R2, add/update the synced page entry, write back.
+ */
+async function regenerateSidebar(
+  env: Env,
+  locale: string,
+  metadata: { docusaurus_id: string; slug: string; section: string | null; section_order: number | null; title: string },
+): Promise<void> {
+  const sidebarKey = R2_PATHS.sidebar(locale);
+
+  let sidebar: Sidebar;
+  const existing = await env.CONTENT_BUCKET.get(sidebarKey);
+  if (existing) {
+    sidebar = JSON.parse(await existing.text()) as Sidebar;
+  } else {
+    sidebar = { locale, entries: [] };
+  }
+
+  const entry: SidebarEntry = {
+    doc_id: metadata.docusaurus_id,
+    slug: metadata.slug,
+    section: metadata.section,
+    section_order: metadata.section_order,
+    title: metadata.title,
+  };
+
+  // Replace existing entry for this doc or append
+  const idx = sidebar.entries.findIndex((e) => e.doc_id === entry.doc_id);
+  if (idx >= 0) {
+    sidebar.entries[idx] = entry;
+  } else {
+    sidebar.entries.push(entry);
+  }
+
+  await env.CONTENT_BUCKET.put(
+    sidebarKey,
+    JSON.stringify(sidebar, null, 2),
+    { httpMetadata: { contentType: "application/json" } },
+  );
+}
 
 async function getLastSyncWatermark(db: D1Database): Promise<string | null> {
   try {
