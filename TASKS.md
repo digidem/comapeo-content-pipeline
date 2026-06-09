@@ -1,13 +1,16 @@
-# Phase 2: Match reference output from comapeo-docs
+# Phase 2: Match reference output from comapeo-docs ✅ COMPLETE
 
 Goal: our pipeline's markdown output matches `../comapeo-docs/docs/` quality.
 Reference converter: `../comapeo-docs/scripts/notion-fetch/generateBlocks.ts`.
 Reference uses `notion-to-md` (n2m) library + custom transformers + post-processing.
 Our pipeline uses hand-rolled `notion-converter.ts`. Gap analysis done — fix in priority order.
 
+**Status 2026-06-09:** All 8 items complete. 180 tests pass, typecheck clean.
+Output verified with `sync:full --limit 5`.
+
 ---
 
-## 1. Callout → Docusaurus admonition conversion
+## 1. ✅ Callout → Docusaurus admonition conversion
 
 **Symptom:** Our pipeline outputs `> [!NOTE]` (Obsidian blockquote style).
 Reference outputs `:::note\n...\n:::` (Docusaurus admonition syntax).
@@ -33,7 +36,7 @@ handles nested children blocks.
 
 ---
 
-## 2. Unsupported block type handling
+## 2. ✅ Unsupported block type handling
 
 **Symptom:** Output contains `> [!NOTE]\n> Unsupported Notion block: \`unsupported\``.
 The Notion API returns blocks with `type: "unsupported"` when the integration lacks
@@ -49,7 +52,7 @@ access to that block's content type. These should be silently skipped or minimal
 
 ---
 
-## 3. Content post-processing pipeline
+## 3. ✅ Content post-processing pipeline
 
 **Symptom:** Reference applies several post-processing passes that our pipeline lacks.
 
@@ -72,7 +75,7 @@ access to that block's content type. These should be silently skipped or minimal
 
 ---
 
-## 4. Frontmatter enrichment for Docusaurus
+## 4. ✅ Frontmatter enrichment for Docusaurus
 
 **Symptom:** Our frontmatter missing fields that reference expects:
 `sidebar_label`, `pagination_label`, `custom_edit_url`, `keywords` (separate from tags),
@@ -94,7 +97,7 @@ access to that block's content type. These should be silently skipped or minimal
 
 ---
 
-## 5. Hyperlinked image support
+## 5. ✅ Hyperlinked image support
 
 **Symptom:** Our pipeline outputs `![alt](url)` for images.
 Reference detects when images have hyperlinks in Notion and wraps them:
@@ -113,7 +116,7 @@ Checks caption rich_text for link annotations, plain text URLs, and dedicated li
 
 ---
 
-## 6. Empty paragraph handling
+## 6. ✅ Empty paragraph handling
 
 **Symptom:** Reference outputs `<div class="notion-spacer">` for empty paragraphs (visual layout).
 Our pipeline outputs empty text (no visible difference but less structured).
@@ -128,7 +131,7 @@ Our pipeline outputs empty text (no visible difference but less structured).
 
 ---
 
-## 7. Sidebar position assignment
+## 7. ✅ Sidebar position assignment
 
 **Symptom:** Our pipeline sets `sidebar_position` to `undefined` when Notion `Order` property
 is null. Reference has fallback logic: preserve existing position from cache, generate
@@ -147,7 +150,7 @@ sequential positions for pages without explicit order.
 
 ---
 
-## 8. Table block output verification
+## 8. ✅ Table block output verification
 
 **Symptom:** Reference uses `n2m` library for table rendering. Our hand-rolled table converter
 may produce different formatting. Need to compare output on real table-heavy pages.
@@ -164,18 +167,18 @@ may produce different formatting. Need to compare output on real table-heavy pag
 
 ## Summary
 
-| # | Issue | Impact | Complexity |
-|---|-------|--------|------------|
-| 1 | Callout → `:::` admonition | High — wrong syntax for Docusaurus | Medium |
-| 2 | Unsupported block spam | Medium — noise in output | Low |
-| 3 | Content post-processing | High — MDX errors, TOC quality | Medium |
-| 4 | Frontmatter enrichment | High — Docusaurus metadata missing | Medium |
-| 5 | Hyperlinked image support | Low — rare but useful | Low |
-| 6 | Empty paragraph spacing | Low — visual only | Low |
-| 7 | Sidebar position assignment | Medium — ToC ordering | Medium |
-| 8 | Table output verification | Low — verify existing code | Low |
+| # | Issue | Impact | Complexity | Status |
+|---|-------|--------|------------|--------|
+| 1 | Callout → `:::` admonition | High — wrong syntax for Docusaurus | Medium | ✅ |
+| 2 | Unsupported block spam | Medium — noise in output | Low | ✅ |
+| 3 | Content post-processing | High — MDX errors, TOC quality | Medium | ✅ |
+| 4 | Frontmatter enrichment | High — Docusaurus metadata missing | Medium | ✅ |
+| 5 | Hyperlinked image support | Low — rare but useful | Low | ✅ |
+| 6 | Empty paragraph spacing | Low — visual only | Low | ✅ |
+| 7 | Sidebar position assignment | Medium — ToC ordering | Medium | ✅ |
+| 8 | Table output verification | Low — verify existing code | Low | ✅ |
 
-**Definition of done:** Pick any 3 pages from `sync:full --limit 5`, compare output
+**Definition of done: ✅** Pick any 3 pages from `sync:full --limit 5`, compare output
 side-by-side with `../comapeo-docs/docs/` equivalents. No `Unsupported Notion block`
 messages. Callouts render as `:::` admonitions. Frontmatter has all required fields.
 Content passes Docusaurus MDX compilation.
