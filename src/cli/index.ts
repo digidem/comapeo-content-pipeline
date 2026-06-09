@@ -122,6 +122,7 @@ async function cmdSyncFull(args: Record<string, string>) {
   const usedSlugs = new Set<string>();
   const allMetadata = [];
   let count = 0;
+  let maxLastEditedTime = "";
 
   // Paginate through all pages
   let cursor: string | undefined;
@@ -151,6 +152,11 @@ async function cmdSyncFull(args: Record<string, string>) {
           result.canoncialMd,
         );
         allMetadata.push(result.metadata);
+
+        // Track latest edited time for watermark
+        if (result.metadata.notion_last_edited_time > maxLastEditedTime) {
+          maxLastEditedTime = result.metadata.notion_last_edited_time;
+        }
       } catch (err) {
         console.error(`  Failed to sync page ${page.id}:`, err);
       }
@@ -158,6 +164,18 @@ async function cmdSyncFull(args: Record<string, string>) {
 
     cursor = resp.next_cursor || undefined;
   } while (cursor);
+
+  // Write sync state watermark (only if pages were synced)
+  if (allMetadata.length > 0 && maxLastEditedTime) {
+    const syncState = {
+      last_sync_watermark: maxLastEditedTime,
+      updated_at: new Date().toISOString(),
+    };
+    writeFileSync(
+      join(outDir, "sync_state.json"),
+      JSON.stringify(syncState, null, 2),
+    );
+  }
 
   // Write manifest
   const dbId = process.env.NOTION_DATABASE_ID || "";
@@ -174,6 +192,9 @@ async function cmdSyncFull(args: Record<string, string>) {
   );
 
   console.log(`\nDone. ${allMetadata.length} pages synced.`);
+  if (maxLastEditedTime) {
+    console.log(`Watermark: ${maxLastEditedTime}`);
+  }
 }
 
 async function cmdManifestGenerate(args: Record<string, string>) {
