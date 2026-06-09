@@ -10,7 +10,8 @@ import { contentHash, hashJSON } from "./hash.js";
 import { mapStatus } from "./status.js";
 import { generateSlug, slugToDocusaurusId } from "./slug.js";
 import { buildFrontmatter, serializeDoc } from "./frontmatter.js";
-import type { PageMetadata } from "../schemas/metadata.js";
+import type { PageMetadata, PageAsset } from "../schemas/metadata.js";
+import { extractAssetUrls, rehostAsset, sha256Hex, assetR2Key } from "./assets.js";
 
 export interface SyncPageInput {
   pageId: string;
@@ -50,14 +51,19 @@ export interface ConvertOverrides {
  * Pure conversion: raw Notion page + blocks → metadata, markdown, hashes.
  *
  * Runtime-agnostic (no Node APIs). Used by both CLI (via syncPage) and Worker.
+ *
+ * Asset rehosting: Notion image URLs are temporary (~1 hour). This function
+ * downloads Notion-hosted images, hashes them, and replaces URLs in the
+ * canonical markdown with stable R2 paths. The content_hash is computed
+ * BEFORE URL replacement so it's stable across re-syncs.
  */
-export function convertPageData(input: {
+export async function convertPageData(input: {
   pageId: string;
   rawPage: Record<string, unknown>;
   rawBlocks: NotionBlockList;
   usedSlugs?: Set<string>;
   overrides?: ConvertOverrides;
-}): SyncPageOutput {
+}): Promise<SyncPageOutput> {
   const { pageId, rawPage, rawBlocks, usedSlugs, overrides } = input;
 
   const rawHash = hashJSON({ page: rawPage, blocks: rawBlocks });
@@ -82,10 +88,37 @@ export function convertPageData(input: {
   const docusaurusId = slugToDocusaurusId(slug, resolvedSection);
 
   // Build markdown body (without frontmatter)
-  const markdownBody = convertBlocks(rawBlocks);
+  let markdownBody = convertBlocks(rawBlocks);
 
-  // Compute content hash
+  // Compute content hash BEFORE asset rehosting (stable across re-syncs)
   const hash = contentHash(markdownBody);
+
+  // ── Asset rehosting ──
+  // Download Notion-hosted images, replace URLs with stable R2 paths.
+  const assets: PageAsset[] = [];
+  const extracted = extractAssetUrls(markdownBody);
+  const notionAssets = extracted.filter((a) => a.isNotion);
+
+  for (const { url } of notionAssets) {
+    try {
+      const { data, contentType, ext } = await rehostAsset(url);
+      const sha256 = await sha256Hex(data);
+      const r2Key = assetR2Key(sha256, ext);
+
+      assets.push({
+        original_url: url,
+        r2_key: r2Key,
+        sha256,
+        mime_type: contentType,
+      });
+
+      // Replace URL in markdown body
+      markdownBody = markdownBody.replaceAll(url, r2Key);
+    } catch (err) {
+      console.warn(`Failed to download asset: ${url}`, err);
+      // Keep original URL — non-fatal
+    }
+  }
 
   // Build metadata
   const metadata: PageMetadata = {
@@ -102,10 +135,10 @@ export function convertPageData(input: {
     docusaurus_id: docusaurusId,
     status,
     properties: props,
-    assets: [],
+    assets,
   };
 
-  // Build frontmatter + serialize
+  // Build frontmatter + serialize with url-replaced markdown
   const fm = buildFrontmatter(metadata);
   const canoncialMd = serializeDoc(fm, markdownBody);
 
@@ -135,7 +168,7 @@ export async function syncPage(input: SyncPageInput): Promise<SyncPageOutput> {
     children: children as Record<string, import("./notion-converter.js").NotionBlock[]>,
   };
 
-  return convertPageData({
+  return await convertPageData({
     pageId,
     rawPage: page as unknown as Record<string, unknown>,
     rawBlocks,

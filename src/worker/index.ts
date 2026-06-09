@@ -336,7 +336,7 @@ export const queue = async (batch: MessageBatch<SyncJobMessage>, env: Env): Prom
       };
 
       // Run conversion pipeline
-      const converted = convertPageData({ pageId, rawPage: page, rawBlocks });
+      const converted = await convertPageData({ pageId, rawPage: page, rawBlocks });
       const { metadata, canoncialMd, hash } = converted;
 
       // Skip logic: compare content_hash + status with stored row (spec §8.2)

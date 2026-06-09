@@ -80,6 +80,7 @@ export const R2_PATHS = {
   sidebar: (locale: string) => `sidebars/${locale}.json`,
   ragChunk: (chunkId: string) => `rag/chunks/${chunkId}.json`,
   ragChunksManifest: "rag/chunks-manifest.json",
+  asset: (sha256: string, ext: string) => `assets/${sha256}${ext}`,
 } as const;
 
 /**
