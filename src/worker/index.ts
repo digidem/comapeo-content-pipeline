@@ -1,0 +1,351 @@
+/**
+ * Cloudflare Worker entry point — Hono router.
+ *
+ * Routes per spec §12:
+ *   GET  /health
+ *   GET  /health/deep
+ *   POST /webhooks/notion
+ *   POST /admin/sync/page
+ *   POST /admin/sync/changed
+ *   POST /admin/manifest/regenerate
+ */
+
+import { Hono } from "hono";
+import type { Context } from "hono";
+import { verifyWebhookSignature, verifyBearerAuth, parseWebhookEvent } from "../lib/webhook.js";
+
+// Types for Cloudflare bindings
+interface Env {
+  NOTION_TOKEN: string;
+  NOTION_DATABASE_ID: string;
+  NOTION_DATA_SOURCE_ID: string;
+  NOTION_WEBHOOK_VERIFICATION_TOKEN: string;
+  ADMIN_TOKEN: string;
+  SYNC_QUEUE: Queue<SyncJobMessage>;
+  DB: D1Database;
+  CONTENT_BUCKET: R2Bucket;
+}
+
+interface SyncJobMessage {
+  type: "sync_page";
+  pageId: string;
+  sourceId: string;
+}
+
+const app = new Hono<{ Bindings: Env }>();
+
+// ── Health ──
+
+app.get("/health", (c: Context) => {
+  return c.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+app.get("/health/deep", async (c: Context) => {
+  const env = c.env as Env;
+  const checks: Record<string, string> = {};
+
+  // Check Notion token
+  checks.notion_token = env.NOTION_TOKEN ? "configured" : "missing";
+
+  // Check D1
+  try {
+    await env.DB.prepare("SELECT 1").run();
+    checks.d1 = "ok";
+  } catch {
+    checks.d1 = "error";
+  }
+
+  // Check R2
+  try {
+    await env.CONTENT_BUCKET.head("manifests/latest.json");
+    checks.r2 = "ok";
+  } catch {
+    checks.r2 = "unavailable";
+  }
+
+  return c.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    checks,
+  });
+});
+
+// ── Webhook ──
+
+app.post("/webhooks/notion", async (c: Context) => {
+  const env = c.env as Env;
+  const signature = c.req.header("x-notion-verification-signature") || "";
+  const rawBody = await c.req.raw.clone().arrayBuffer();
+
+  // Verify signature
+  if (!verifyWebhookSignature(new Uint8Array(rawBody), signature, env.NOTION_WEBHOOK_VERIFICATION_TOKEN)) {
+    return c.json({ error: "invalid signature" }, 401);
+  }
+
+  const body = await c.req.json<Record<string, unknown>>();
+  const event = parseWebhookEvent(body);
+
+  if (!event) {
+    return c.json({ error: "unrecognized event" }, 400);
+  }
+
+  // Enqueue affected pages
+  const pageIds: string[] = [];
+  if (event.pageId) pageIds.push(event.pageId);
+
+  for (const pageId of pageIds) {
+    await env.SYNC_QUEUE.send({
+      type: "sync_page",
+      pageId,
+      sourceId: env.NOTION_DATA_SOURCE_ID || env.NOTION_DATABASE_ID,
+    });
+  }
+
+  return c.json({
+    accepted: true,
+    event_type: event.type,
+    enqueued: pageIds.length,
+  });
+});
+
+// ── Admin: sync single page ──
+
+app.post("/admin/sync/page", async (c: Context) => {
+  const env = c.env as Env;
+  if (!verifyBearerAuth(c.req.header("Authorization") || "", env.ADMIN_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 403);
+  }
+
+  const body = await c.req.json<{ page_id: string }>();
+  if (!body.page_id) {
+    return c.json({ error: "page_id required" }, 400);
+  }
+
+  await env.SYNC_QUEUE.send({
+    type: "sync_page",
+    pageId: body.page_id,
+    sourceId: env.NOTION_DATA_SOURCE_ID || env.NOTION_DATABASE_ID,
+  });
+
+  return c.json({ enqueued: true, page_id: body.page_id });
+});
+
+// ── Admin: sync changed pages ──
+
+app.post("/admin/sync/changed", async (c: Context) => {
+  const env = c.env as Env;
+  if (!verifyBearerAuth(c.req.header("Authorization") || "", env.ADMIN_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 403);
+  }
+
+  // Query recently changed pages from Notion
+  const since = await getLastSyncWatermark(env.DB);
+  const pages = await queryChangedPages(env, since);
+  let enqueued = 0;
+
+  for (const pageId of pages) {
+    await env.SYNC_QUEUE.send({
+      type: "sync_page",
+      pageId,
+      sourceId: env.NOTION_DATA_SOURCE_ID || env.NOTION_DATABASE_ID,
+    });
+    enqueued++;
+  }
+
+  return c.json({ enqueued, since });
+});
+
+// ── Admin: regenerate manifest ──
+
+app.post("/admin/manifest/regenerate", async (c: Context) => {
+  const env = c.env as Env;
+  if (!verifyBearerAuth(c.req.header("Authorization") || "", env.ADMIN_TOKEN)) {
+    return c.json({ error: "unauthorized" }, 403);
+  }
+
+  // Read all pages from D1, rebuild manifest
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM source_pages WHERE status = 'active'",
+  ).all<{
+    page_id: string; title: string; locale: string; section: string | null;
+    section_order: number | null; slug: string; docusaurus_path: string;
+    content_hash: string; notion_last_edited_time: string; status: string;
+  }>();
+
+  const manifest = {
+    schema_version: "1.0",
+    generated_at: new Date().toISOString(),
+    source: {
+      type: "notion",
+      database_id: env.NOTION_DATABASE_ID,
+      data_source_id: env.NOTION_DATA_SOURCE_ID,
+    },
+    docs: results.map((row) => ({
+      page_id: row.page_id,
+      title: row.title,
+      locale: row.locale,
+      section: row.section,
+      section_order: row.section_order,
+      slug: row.slug,
+      docusaurus_id: row.docusaurus_path || row.slug,
+      docusaurus_path: `/${row.slug}`,
+      r2_doc_key: `docs/${row.locale}/docs/${row.section ? row.section + "/" : ""}${row.slug}.md`,
+      r2_metadata_key: `pages/${row.page_id}/metadata.json`,
+      source_url: `https://notion.so/${row.page_id.replace(/-/g, "")}`,
+      notion_last_edited_time: row.notion_last_edited_time,
+      content_hash: row.content_hash,
+      status: row.status as "active" | "draft" | "deprecated" | "archived",
+    })),
+    sidebars: {},
+  };
+
+  await env.CONTENT_BUCKET.put(
+    "manifests/latest.json",
+    JSON.stringify(manifest, null, 2),
+    { httpMetadata: { contentType: "application/json" } },
+  );
+
+  return c.json({ regenerated: true, docs_count: results.length });
+});
+
+// ── Queue consumer ──
+
+export const queue = async (batch: MessageBatch<SyncJobMessage>, env: Env): Promise<void> => {
+  for (const msg of batch.messages) {
+    const { pageId } = msg.body;
+
+    try {
+      // Mark job as started
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO sync_jobs (id, source_type, source_id, job_type, status, started_at) VALUES (?, 'notion', ?, 'sync_page', 'running', datetime('now'))",
+      ).bind(msg.id, pageId).run();
+
+      // Fetch page from Notion API
+      const pageResp = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+        headers: {
+          Authorization: `Bearer ${env.NOTION_TOKEN}`,
+          "Notion-Version": "2025-09-03",
+        },
+      });
+
+      if (!pageResp.ok) {
+        throw new Error(`Notion API error: ${pageResp.status}`);
+      }
+
+      // Fetch blocks
+      const blocksResp = await fetch(
+        `https://api.notion.com/v1/blocks/${pageId}/children?page_size=100`,
+        {
+          headers: {
+            Authorization: `Bearer ${env.NOTION_TOKEN}`,
+            "Notion-Version": "2025-09-03",
+          },
+        },
+      );
+
+      if (!blocksResp.ok) {
+        throw new Error(`Notion blocks API error: ${blocksResp.status}`);
+      }
+
+      const page = await pageResp.json() as Record<string, unknown>;
+      const blocks = await blocksResp.json() as Record<string, unknown>;
+
+      // Store raw data in R2
+      await env.CONTENT_BUCKET.put(
+        `pages/${pageId}/raw-page.json`,
+        JSON.stringify(page),
+      );
+      await env.CONTENT_BUCKET.put(
+        `pages/${pageId}/raw-blocks.json`,
+        JSON.stringify(blocks),
+      );
+
+      // Mark job complete
+      await env.DB.prepare(
+        "UPDATE sync_jobs SET status = 'completed', finished_at = datetime('now') WHERE id = ?",
+      ).bind(msg.id).run();
+
+      // Update watermark
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('last_sync_watermark', ?, datetime('now'))",
+      ).bind(new Date().toISOString()).run();
+
+    } catch (err) {
+      console.error(`Failed to sync page ${pageId}:`, err);
+      await env.DB.prepare(
+        "UPDATE sync_jobs SET status = 'failed', error = ?, finished_at = datetime('now') WHERE id = ?",
+      ).bind(String(err), msg.id).run();
+    }
+  }
+};
+
+// ── Cron trigger ──
+
+export const scheduled = async (
+  _event: ScheduledEvent,
+  env: Env,
+  _ctx: ExecutionContext,
+): Promise<void> => {
+  const maxPages = 50; // from MAX_PAGES_PER_CRON
+  const since = await getLastSyncWatermark(env.DB);
+  const pages = await queryChangedPages(env, since, maxPages);
+
+  for (const pageId of pages) {
+    await env.SYNC_QUEUE.send({
+      type: "sync_page",
+      pageId,
+      sourceId: env.NOTION_DATA_SOURCE_ID || env.NOTION_DATABASE_ID,
+    });
+  }
+
+  console.log(`Cron: enqueued ${pages.length} changed pages since ${since}`);
+};
+
+// ── Helpers ──
+
+async function getLastSyncWatermark(db: D1Database): Promise<string | null> {
+  try {
+    const row = await db.prepare(
+      "SELECT value FROM sync_state WHERE key = 'last_sync_watermark'",
+    ).first<{ value: string }>();
+    return row?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function queryChangedPages(
+  env: Env,
+  since: string | null,
+  limit = 50,
+): Promise<string[]> {
+  const body: Record<string, unknown> = {
+    data_source_id: env.NOTION_DATA_SOURCE_ID || env.NOTION_DATABASE_ID,
+    page_size: limit,
+    sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+  };
+
+  if (since) {
+    body.filter = {
+      timestamp: "last_edited_time",
+      last_edited_time: { after: since },
+    };
+  }
+
+  const resp = await fetch("https://api.notion.com/v1/search/data-sources/query", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.NOTION_TOKEN}`,
+      "Notion-Version": "2025-09-03",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!resp.ok) return [];
+
+  const data = (await resp.json()) as { results: Array<{ id: string }> };
+  return data.results?.map((r) => r.id) ?? [];
+}
+
+export default app;
