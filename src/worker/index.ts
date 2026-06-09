@@ -297,7 +297,7 @@ export const queue = async (batch: MessageBatch<SyncJobMessage>, env: Env): Prom
       const pageResp = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
         headers: {
           Authorization: `Bearer ${env.NOTION_TOKEN}`,
-          "Notion-Version": "2025-09-03",
+          "Notion-Version": "2026-03-11",
         },
       });
 
@@ -311,7 +311,7 @@ export const queue = async (batch: MessageBatch<SyncJobMessage>, env: Env): Prom
         {
           headers: {
             Authorization: `Bearer ${env.NOTION_TOKEN}`,
-            "Notion-Version": "2025-09-03",
+            "Notion-Version": "2026-03-11",
           },
         },
       );
@@ -409,7 +409,7 @@ async function queryChangedPages(
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.NOTION_TOKEN}`,
-      "Notion-Version": "2025-09-03",
+      "Notion-Version": "2026-03-11",
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),

@@ -3,7 +3,7 @@
  *
  * Configurable via environment variables:
  *   NOTION_TOKEN          — API token
- *   NOTION_VERSION        — API version (default: 2025-09-03)
+ *   NOTION_VERSION        — API version (default: 2026-03-11)
  *   NOTION_DATABASE_ID    — source database ID
  *   NOTION_DATA_SOURCE_ID — data source ID for v5 API
  *   MAX_NOTION_RPS        — requests per second (default: 3)
@@ -68,7 +68,7 @@ export class NotionClient {
     this.token = config.token;
     this.databaseId = config.databaseId;
     this.dataSourceId = config.dataSourceId;
-    this.version = config.version || "2025-09-03";
+    this.version = config.version || "2026-03-11";
     this.maxRps = config.maxRps ?? 3;
   }
 
