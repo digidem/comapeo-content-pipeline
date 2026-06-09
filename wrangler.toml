@@ -19,11 +19,10 @@ database_id = "36ce5add-3ac5-4d7e-a2d0-f8a0b66ef2db"
 binding = "SYNC_QUEUE"
 queue = "comapeo-content-sync"
 
-# Queue consumer disabled until handler is fixed (needs ctx param + correct Cloudflare format)
-# [[queues.consumers]]
-# queue = "comapeo-content-sync"
-# max_batch_size = 1
-# max_batch_timeout = 1
+[[queues.consumers]]
+queue = "comapeo-content-sync"
+max_batch_size = 1
+max_batch_timeout = 1
 
 [triggers]
 crons = ["*/5 * * * *"]
