@@ -122,6 +122,14 @@ const SUPPORTED_BLOCKS = new Set([
   "bookmark",
   "link_preview",
   "child_page",
+  "unsupported",
+  "child_database",
+  "link_to_page",
+  "synced_block",
+  "ai_block",
+  "column_list",
+  "column",
+  "table_of_contents",
 ]);
 
 export function isSupportedBlock(type: string): boolean {
@@ -440,6 +448,17 @@ function convertSingleBlock(
     case "child_page":
       return convertChildPage(block);
 
+    // Silently skip blocks the integration can't access or that we don't render
+    case "unsupported":
+    case "child_database":
+    case "link_to_page":
+    case "synced_block":
+    case "ai_block":
+    case "column_list":
+    case "column":
+    case "table_of_contents":
+      return "";
+
     default:
       return convertUnsupportedBlock(block);
   }
@@ -464,6 +483,7 @@ export function convertBlocks(blockList: NotionBlockList): string {
     }
   }
 
+  if (lines.length === 0) return "";
   return lines.join("\n\n") + "\n";
 }
 
