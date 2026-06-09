@@ -23,6 +23,10 @@ const isEmojiImgTag = (snippet: string): boolean =>
  *
  * Notion exports often include an H1 that matches the page title.
  * This prevents duplicate titles in Docusaurus (which uses frontmatter title).
+ *
+ * Strips an optional chain of "insubstantial" prefixes before the H1:
+ *   whitespace → (divider → whitespace)* → (spacer → whitespace)* → H1
+ * If the H1 matches the page title, the entire chain + H1 is removed.
  */
 export function removeDuplicateTitle(
   content: string,
@@ -30,19 +34,80 @@ export function removeDuplicateTitle(
 ): string {
   if (!content || !pageTitle) return content;
 
-  const firstH1Regex = /^\s*# (.+?)(?:\n|$)/;
-  const match = content.match(firstH1Regex);
-  if (!match) return content;
+  // Normalize: track how much leading content to eat
+  let pos = 0;
+  const len = content.length;
 
-  const firstH1Text = match[1].trim();
+  // Eat whitespace
+  while (pos < len && (content[pos] === " " || content[pos] === "\t" || content[pos] === "\n" || content[pos] === "\r")) {
+    pos++;
+  }
+
+  // Eat optional --- divider (repeated)
+  while (pos < len && content.slice(pos).startsWith("---")) {
+    const nl = content.indexOf("\n", pos);
+    pos = nl === -1 ? len : nl + 1;
+    // Eat whitespace after divider
+    while (pos < len && (content[pos] === " " || content[pos] === "\t" || content[pos] === "\n" || content[pos] === "\r")) {
+      pos++;
+    }
+  }
+
+  // Eat optional notion-spacer div (repeated)
+  const spacerTag = '<div class="notion-spacer" aria-hidden="true" role="presentation"></div>';
+  while (pos < len && content.slice(pos).startsWith(spacerTag)) {
+    pos += spacerTag.length;
+    // Eat whitespace after spacer
+    while (pos < len && (content[pos] === " " || content[pos] === "\t" || content[pos] === "\n" || content[pos] === "\r")) {
+      pos++;
+    }
+    // Eat optional --- divider after spacer
+    while (pos < len && content.slice(pos).startsWith("---")) {
+      const nl = content.indexOf("\n", pos);
+      pos = nl === -1 ? len : nl + 1;
+      while (pos < len && (content[pos] === " " || content[pos] === "\t" || content[pos] === "\n" || content[pos] === "\r")) {
+        pos++;
+      }
+    }
+  }
+
+  // Eat optional leading images (hero/banner images — decorative, not content)
+  // These are images with no accompanying text before the H1 title.
+  while (pos < len && content.slice(pos).startsWith("![")) {
+    const nl = content.indexOf("\n", pos);
+    pos = nl === -1 ? len : nl + 1;
+    // Eat whitespace after image
+    while (pos < len && (content[pos] === " " || content[pos] === "\t" || content[pos] === "\n" || content[pos] === "\r")) {
+      pos++;
+    }
+    // Eat optional spacers/dividers between multiple images
+    while (pos < len && content.slice(pos).startsWith(spacerTag)) {
+      pos += spacerTag.length;
+      while (pos < len && (content[pos] === " " || content[pos] === "\t" || content[pos] === "\n" || content[pos] === "\r")) {
+        pos++;
+      }
+    }
+  }
+
+  // Check if now at an H1
+  if (pos >= len || content[pos] !== "#" || content[pos + 1] !== " ") {
+    return content; // Not an H1 — content is substantial, preserve everything
+  }
+
+  const nlAfter = content.indexOf("\n", pos);
+  const h1Line = nlAfter === -1 ? content.slice(pos) : content.slice(pos, nlAfter);
+  const h1Text = h1Line.slice(2).trim();
+
   if (
-    firstH1Text === pageTitle ||
-    pageTitle.includes(firstH1Text) ||
-    firstH1Text.includes(pageTitle)
+    h1Text === pageTitle ||
+    pageTitle.includes(h1Text) ||
+    h1Text.includes(pageTitle)
   ) {
-    let processed = content.replace(match[0], "");
-    processed = processed.replace(/^\s+/, "");
-    return processed;
+    // Keep everything before the H1 (whitespace, spacers, images) but remove the H1 itself
+    const before = content.slice(0, pos);
+    let after = nlAfter === -1 ? "" : content.slice(nlAfter);
+    after = after.replace(/^\n+/, "");
+    return before + after;
   }
 
   return content;

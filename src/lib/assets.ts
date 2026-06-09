@@ -6,6 +6,7 @@
 
 export interface ExtractedAsset {
 	url: string;
+	/** True if this asset needs rehosting (Notion CDN URL or data: URI) */
 	isNotion: boolean;
 }
 
@@ -36,7 +37,9 @@ export function extractAssetUrls(markdown: string): ExtractedAsset[] {
 
 	while ((match = pattern.exec(markdown)) !== null) {
 		const url = match[2];
-		results.push({ url, isNotion: isNotionUrl(url) });
+		// Rehost Notion CDN URLs AND data: URIs (which bloat markdown)
+		const needsRehosting = isNotionUrl(url) || url.startsWith("data:");
+		results.push({ url, isNotion: needsRehosting });
 	}
 
 	return results;
@@ -48,6 +51,32 @@ export function extractAssetUrls(markdown: string): ExtractedAsset[] {
 export async function rehostAsset(
 	url: string,
 ): Promise<{ data: Uint8Array; contentType: string; ext: string }> {
+	// Handle data: URIs — decode directly without HTTP fetch
+	if (url.startsWith("data:")) {
+		const commaIdx = url.indexOf(",");
+		if (commaIdx === -1) throw new Error(`Invalid data URI: no comma found`);
+		const header = url.slice(5, commaIdx); // strip "data:"
+		const base64 = header.endsWith(";base64");
+		const mimeMatch = header.match(/^([^;]+)/);
+		const contentType = mimeMatch ? mimeMatch[1] : "image/png";
+		const payload = url.slice(commaIdx + 1);
+
+		let data: Uint8Array;
+		if (base64) {
+			// Decode base64 in a runtime-agnostic way
+			const binaryStr = atob(payload);
+			data = new Uint8Array(binaryStr.length);
+			for (let i = 0; i < binaryStr.length; i++) {
+				data[i] = binaryStr.charCodeAt(i);
+			}
+		} else {
+			data = new TextEncoder().encode(decodeURIComponent(payload));
+		}
+
+		const ext = MIME_TO_EXT[contentType] ?? ".png";
+		return { data, contentType, ext };
+	}
+
 	const response = await fetch(url);
 
 	if (!response.ok) {
