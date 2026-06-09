@@ -37,34 +37,43 @@ export interface SyncPageOutput {
   changed: boolean;
 }
 
+/** Overrides for page properties — take precedence over values extracted from rawPage. */
+export interface ConvertOverrides {
+  section?: string | null;
+  sectionOrder?: number | null;
+  elementType?: string | null;
+  draftingStatus?: string | null;
+  locale?: string;
+}
+
 /**
- * Sync a single page: fetch from Notion, convert to Markdown, compute metadata.
+ * Pure conversion: raw Notion page + blocks → metadata, markdown, hashes.
+ *
+ * Runtime-agnostic (no Node APIs). Used by both CLI (via syncPage) and Worker.
  */
-export async function syncPage(input: SyncPageInput): Promise<SyncPageOutput> {
-  const { pageId, client, usedSlugs, section, sectionOrder, elementType, draftingStatus } = input;
+export function convertPageData(input: {
+  pageId: string;
+  rawPage: Record<string, unknown>;
+  rawBlocks: NotionBlockList;
+  usedSlugs?: Set<string>;
+  overrides?: ConvertOverrides;
+}): SyncPageOutput {
+  const { pageId, rawPage, rawBlocks, usedSlugs, overrides } = input;
 
-  // Fetch page metadata and blocks
-  const page = await client.getPage(pageId);
-  const { results: blocks, children } = await client.getPageBlocks(pageId);
-
-  const blockList: NotionBlockList = {
-    object: "list",
-    results: blocks as import("./notion-converter.js").NotionBlock[],
-    children: children as Record<string, import("./notion-converter.js").NotionBlock[]>,
-  };
-
-  // Convert to markdown
-  const rawPage = page as unknown;
-  const rawBlocks = blockList;
   const rawHash = hashJSON({ page: rawPage, blocks: rawBlocks });
 
-  // Extract properties
-  const title = extractTitle(page);
-  const locale = input.locale || extractLocale(page) || "en";
-  const resolvedSection = section ?? extractSection(page);
-  const resolvedSectionOrder = sectionOrder ?? extractSectionOrder(page);
-  const resolvedElementType = elementType ?? extractProperty(page, "Element Type");
-  const resolvedDraftingStatus = draftingStatus ?? extractProperty(page, "Drafting Status");
+  // Coerce to shape expected by extract helpers (they only read .id, .properties, .last_edited_time)
+  const props = (rawPage.properties ?? {}) as Record<string, unknown>;
+  const lastEditedTime = String(rawPage.last_edited_time ?? "");
+  const pageLike = { id: pageId, properties: props, last_edited_time: lastEditedTime };
+
+  // Extract properties — overrides take precedence
+  const title = extractTitle(pageLike);
+  const locale = overrides?.locale || extractLocale(pageLike) || "en";
+  const resolvedSection = overrides?.section ?? extractSection(pageLike);
+  const resolvedSectionOrder = overrides?.sectionOrder ?? extractSectionOrder(pageLike);
+  const resolvedElementType = overrides?.elementType ?? extractProperty(pageLike, "Element Type");
+  const resolvedDraftingStatus = overrides?.draftingStatus ?? extractProperty(pageLike, "Drafting Status");
   const status = mapStatus(resolvedDraftingStatus);
 
   // Generate slug
@@ -73,7 +82,7 @@ export async function syncPage(input: SyncPageInput): Promise<SyncPageOutput> {
   const docusaurusId = slugToDocusaurusId(slug, resolvedSection);
 
   // Build markdown body (without frontmatter)
-  const markdownBody = convertBlocks(blockList);
+  const markdownBody = convertBlocks(rawBlocks);
 
   // Compute content hash
   const hash = contentHash(markdownBody);
@@ -83,7 +92,7 @@ export async function syncPage(input: SyncPageInput): Promise<SyncPageOutput> {
     page_id: pageId,
     title,
     source_url: `https://notion.so/${pageId.replace(/-/g, "")}`,
-    notion_last_edited_time: page.last_edited_time,
+    notion_last_edited_time: lastEditedTime,
     content_hash: hash,
     raw_hash: rawHash,
     locale,
@@ -92,7 +101,7 @@ export async function syncPage(input: SyncPageInput): Promise<SyncPageOutput> {
     slug,
     docusaurus_id: docusaurusId,
     status,
-    properties: page.properties,
+    properties: props,
     assets: [],
   };
 
@@ -108,6 +117,31 @@ export async function syncPage(input: SyncPageInput): Promise<SyncPageOutput> {
     hash,
     changed: true, // Caller determines this by comparing with stored hash
   };
+}
+
+/**
+ * Sync a single page: fetch from Notion, then delegate to convertPageData.
+ */
+export async function syncPage(input: SyncPageInput): Promise<SyncPageOutput> {
+  const { pageId, client, usedSlugs, section, sectionOrder, elementType, draftingStatus, locale } = input;
+
+  // Fetch page metadata and blocks
+  const page = await client.getPage(pageId);
+  const { results: blocks, children } = await client.getPageBlocks(pageId);
+
+  const rawBlocks: NotionBlockList = {
+    object: "list",
+    results: blocks as import("./notion-converter.js").NotionBlock[],
+    children: children as Record<string, import("./notion-converter.js").NotionBlock[]>,
+  };
+
+  return convertPageData({
+    pageId,
+    rawPage: page as unknown as Record<string, unknown>,
+    rawBlocks,
+    usedSlugs,
+    overrides: { section, sectionOrder, elementType, draftingStatus, locale },
+  });
 }
 
 // ── Property extraction helpers ──
