@@ -15,10 +15,10 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import matter from "gray-matter";
 import { NotionClient } from "../lib/notion-client.js";
 import { syncPage } from "../lib/sync.js";
 import { generateManifest } from "../lib/manifest.js";
+import { parseDoc } from "../lib/frontmatter.js";
 import { generateChunks, generateChunksManifest } from "../rag/chunker.js";
 
 const command = process.argv[2];
@@ -391,7 +391,7 @@ async function cmdRagChunks(args: Record<string, string>) {
     }
 
     const raw = readFileSync(srcFile, "utf8");
-    const { data: fmData, content: body } = matter(raw);
+    const { frontmatter: fmData, body } = parseDoc(raw);
 
     const chunks = generateChunks({
       pageId: doc.page_id,
@@ -579,14 +579,30 @@ async function buildUpdatedFrontmatter(
   if (!existsSync(mdPath)) return null;
 
   const content = readFileSync(mdPath, "utf8");
-  const parsed = matter(content);
 
-  // Update sidebar_position in frontmatter
-  if (meta.section_order != null) {
-    parsed.data.sidebar_position = meta.section_order;
-  }
+  // Parse frontmatter manually to avoid YAML parser failures on body content
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)/);
+  if (!fmMatch) return null;
 
-  return matter.stringify(parsed.content, parsed.data);
+  const fmLines = fmMatch[1].split("\n");
+  const body = fmMatch[2];
+
+  // Update sidebar_position line
+  let updated = false;
+  const newLines = fmLines.map((line) => {
+    if (/^sidebar_position:/.test(line)) {
+      updated = true;
+      return `sidebar_position: ${meta.section_order}`;
+    }
+    return line;
+  });
+
+  // If sidebar_position wasn't in frontmatter, add it before closing ---
+  const newFm = updated
+    ? newLines.join("\n")
+    : [...fmLines, `sidebar_position: ${meta.section_order}`].join("\n");
+
+  return `---\n${newFm}\n---\n${body}`;
 }
 
 function createClient(): NotionClient {
