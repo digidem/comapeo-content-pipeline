@@ -1,0 +1,126 @@
+{
+  "object": "list",
+  "results": [
+    {
+      "object": "block",
+      "id": "c1",
+      "type": "callout",
+      "has_children": false,
+      "callout": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": { "content": "This is an informational note." },
+            "plain_text": "This is an informational note.",
+            "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" }
+          }
+        ],
+        "color": "gray_background"
+      }
+    },
+    {
+      "object": "block",
+      "id": "c2",
+      "type": "callout",
+      "has_children": false,
+      "callout": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": { "content": "**Important** This is a warning message." },
+            "plain_text": "**Important** This is a warning message.",
+            "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" }
+          }
+        ],
+        "color": "yellow_background"
+      }
+    },
+    {
+      "object": "block",
+      "id": "c3",
+      "type": "callout",
+      "has_children": false,
+      "callout": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": { "content": "Stop! This action cannot be undone." },
+            "plain_text": "Stop! This action cannot be undone.",
+            "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" }
+          }
+        ],
+        "color": "red_background"
+      }
+    },
+    {
+      "object": "block",
+      "id": "c4",
+      "type": "callout",
+      "has_children": false,
+      "callout": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": { "content": "Pro tip: This is a helpful suggestion." },
+            "plain_text": "Pro tip: This is a helpful suggestion.",
+            "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" }
+          }
+        ],
+        "color": "green_background"
+      }
+    },
+    {
+      "object": "block",
+      "id": "c5",
+      "type": "callout",
+      "has_children": false,
+      "callout": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": { "content": "Here is some general information." },
+            "plain_text": "Here is some general information.",
+            "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" }
+          }
+        ],
+        "color": "blue_background"
+      }
+    },
+    {
+      "object": "block",
+      "id": "c6",
+      "type": "callout",
+      "has_children": false,
+      "callout": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": { "content": "⚠️ Warning: Configuration required before use." },
+            "plain_text": "⚠️ Warning: Configuration required before use.",
+            "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" }
+          }
+        ],
+        "icon": { "type": "emoji", "emoji": "⚠️" },
+        "color": "orange_background"
+      }
+    },
+    {
+      "object": "block",
+      "id": "c7",
+      "type": "callout",
+      "has_children": false,
+      "callout": {
+        "rich_text": [
+          {
+            "type": "text",
+            "text": { "content": "💡 **Did you know?** This feature supports multiple languages." },
+            "plain_text": "💡 **Did you know?** This feature supports multiple languages.",
+            "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" }
+          }
+        ],
+        "icon": { "type": "emoji", "emoji": "💡" },
+        "color": "default"
+      }
+    }
+  ]
+}

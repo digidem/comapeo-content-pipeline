@@ -290,13 +290,132 @@ function convertQuote(
 
 function convertCallout(
   block: NotionBlock,
-  _children: NotionBlock[],
+  children: NotionBlock[],
 ): string {
-  const text = richTextToMarkdown(getRichText(block));
-  // Emit as a blockquote with NOTE prefix
-  const lines = text.split("\n").map((l) => `> ${l}`);
-  return `> [!NOTE]\n${lines.join("\n")}`;
+  const richText = getRichText(block);
+  const calloutData = block.callout as {
+    rich_text?: NotionRichText[];
+    icon?: { type: string; emoji?: string } | null;
+    color?: string;
+  } | undefined;
+
+  const color = calloutData?.color ?? "default";
+  const admonitionType = CALLOUT_COLOR_MAP[color] ?? "note";
+
+  // Extract emoji icon
+  let icon: string | null = null;
+  if (calloutData?.icon?.type === "emoji" && calloutData.icon.emoji) {
+    icon = calloutData.icon.emoji;
+  }
+
+  // Convert rich text to markdown and split into lines, preserving leading whitespace
+  const text = richTextToMarkdown(richText);
+  let lines = text.split("\n").map((l) => l.replace(/\s+$/u, ""));
+
+  // Strip emoji icon from first line if present
+  if (icon && lines.length > 0) {
+    const firstLine = lines[0];
+    const leading = firstLine.match(/^\s*/)?.[0] ?? "";
+    const trimmed = firstLine.slice(leading.length);
+
+    if (trimmed.startsWith(icon)) {
+      let remainder = trimmed.slice(icon.length);
+      // Strip whitespace/separators after icon
+      const sepMatch = remainder.match(/^[\s   :;!?¡¿\-–—–—−‑‒：﹕꞉；，、。．·•・.]+/u);
+      if (sepMatch) {
+        remainder = remainder.slice(sepMatch[0].length);
+      }
+      if (remainder) {
+        lines[0] = leading + remainder;
+      } else {
+        lines = lines.slice(1);
+      }
+    }
+  }
+
+  // Extract title from first line
+  let derivedTitle: string | undefined;
+  let contentLines = lines;
+
+  if (lines.length > 0) {
+    const firstLine = lines[0].trimStart();
+    const leading = lines[0].match(/^\s*/)?.[0] ?? "";
+
+    // Try bold title: **Title** separator? remainder
+    const boldMatch = firstLine.match(/^\*\*(.+?)\*\*(?:\s*[:;!?\-–—–—−‑‒：﹕꞉]+)?\s*(.*)$/u);
+    if (boldMatch && boldMatch[2]) {
+      const rawTitle = boldMatch[1].trim();
+      // Strip trailing punctuation
+      const cleanTitle = rawTitle.replace(/[:.!?;：﹕꞉。！？；]+$/u, "");
+      derivedTitle = icon ? `${icon} ${cleanTitle}` : cleanTitle;
+      contentLines = boldMatch[2] ? [`${leading}${boldMatch[2]}`, ...lines.slice(1)] : lines.slice(1);
+    } else if (boldMatch && lines.length > 1) {
+      // Bold title is the whole first line, content on next lines
+      const rawTitle = boldMatch[1].trim();
+      const cleanTitle = rawTitle.replace(/[:.!?;：﹕꞉。！？；]+$/u, "");
+      derivedTitle = icon ? `${icon} ${cleanTitle}` : cleanTitle;
+      contentLines = lines.slice(1);
+    }
+
+    // Try plain "Title: content" pattern if no bold title found
+    if (!derivedTitle) {
+      const plainMatch = firstLine.match(/^([\p{L}][^:：﹕꞉\n]{0,49}?)\s*[:：﹕꞉]\s*(.*)$/u);
+      if (plainMatch && plainMatch[2]) {
+        const titleCandidate = plainMatch[1].trim();
+        const remainder = plainMatch[2].trimStart();
+        if (titleCandidate && remainder) {
+          derivedTitle = icon ? `${icon} ${titleCandidate}` : titleCandidate;
+          contentLines = [`${leading}${remainder}`, ...lines.slice(1)];
+        }
+      }
+    }
+
+    // If icon present but no textual title extracted, use icon alone
+    if (icon && !derivedTitle) {
+      derivedTitle = icon;
+    }
+  }
+
+  // Convert children to markdown
+  let childrenOutput = "";
+  if (children.length > 0) {
+    childrenOutput = children
+      .map((child) => convertSingleBlock(child, 0))
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  const joinedContent = contentLines.join("\n").replace(/^[\s\t]*\n+/u, "").replace(/\n+[\s\t]*$/u, "");
+
+  // Build admonition
+  const result: string[] = [];
+  result.push(`:::${admonitionType}${derivedTitle ? " " + derivedTitle : ""}`);
+
+  if (joinedContent) {
+    result.push(joinedContent);
+  }
+
+  if (childrenOutput) {
+    result.push(childrenOutput);
+  }
+
+  result.push(":::");
+  return result.join("\n");
 }
+
+// Callout color → Docusaurus admonition type mapping
+const CALLOUT_COLOR_MAP: Record<string, string> = {
+  blue_background: "info",
+  yellow_background: "warning",
+  red_background: "danger",
+  green_background: "tip",
+  gray_background: "note",
+  orange_background: "caution",
+  purple_background: "note",
+  pink_background: "note",
+  brown_background: "note",
+  default: "note",
+};
 
 function convertCode(block: NotionBlock): string {
   const richText = getRichText(block);
