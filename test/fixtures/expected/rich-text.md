@@ -9,3 +9,7 @@ Visit [our website](https://comapeo.org) for more.
 <u>Underlined text</u>
 
 <span style="color:red">Red colored text</span>
+
+<div class="notion-spacer" aria-hidden="true" role="presentation"></div>
+
+After spacer text

@@ -198,8 +198,13 @@ function getCaption(block: NotionBlock): NotionRichText[] {
 // ── Block converters ──
 
 function convertParagraph(block: NotionBlock, _children: NotionBlock[]): string {
-  const text = richTextToMarkdown(getRichText(block));
-  return text || "";
+  const richText = getRichText(block);
+  // Empty paragraphs (visual spacers in Notion) → notion-spacer div
+  if (!richText || richText.length === 0) {
+    return '<div class="notion-spacer" aria-hidden="true" role="presentation"></div>';
+  }
+  const text = richTextToMarkdown(richText);
+  return text || '<div class="notion-spacer" aria-hidden="true" role="presentation"></div>';
 }
 
 function convertHeading(
@@ -425,18 +430,44 @@ function convertCode(block: NotionBlock): string {
 }
 
 function convertImage(block: NotionBlock): string {
-  const caption = richTextToMarkdown(getCaption(block));
-  const alt = caption || "image";
+  const captionRichText = getCaption(block);
   const content = block.image as ImageContent;
 
-  let url = "";
+  let imgUrl = "";
   if (content.type === "external" && content.external?.url) {
-    url = content.external.url;
+    imgUrl = content.external.url;
   } else if (content.type === "file" && content.file?.url) {
-    url = content.file.url;
+    imgUrl = content.file.url;
   }
 
-  return `![${alt}](${url})`;
+  // Check caption for hyperlink — if found, wrap image in [![alt](img)](link)
+  const linkUrl = extractCaptionLink(captionRichText);
+  if (linkUrl) {
+    // Use plain text for alt (no link formatting) when image itself is linked
+    const plainAlt = captionRichText.map((rt) => rt.plain_text || "").join("") || "image";
+    return `[![${plainAlt}](${imgUrl})](${linkUrl})`;
+  }
+
+  // Normal image — use full markdown caption as alt text
+  const alt = richTextToMarkdown(captionRichText) || "image";
+  return `![${alt}](${imgUrl})`;
+}
+
+/** Extract the first hyperlink URL from caption rich text, if any. */
+function extractCaptionLink(caption: NotionRichText[]): string | null {
+  if (!caption || caption.length === 0) return null;
+
+  for (const rt of caption) {
+    // Check dedicated link property on text items
+    if (rt.text?.link?.url) {
+      return rt.text.link.url;
+    }
+    // Check href property
+    if (rt.href) {
+      return rt.href;
+    }
+  }
+  return null;
 }
 
 function convertVideoOrFile(block: NotionBlock): string {
