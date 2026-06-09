@@ -287,7 +287,7 @@ app.post("/admin/manifest/regenerate", async (c: Context) => {
 
 // ── Queue consumer ──
 
-export const queue = async (batch: MessageBatch<SyncJobMessage>, env: Env): Promise<void> => {
+export const queue = async (batch: MessageBatch<SyncJobMessage>, env: Env, _ctx: ExecutionContext): Promise<void> => {
   for (const msg of batch.messages) {
     const { pageId } = msg.body;
 
