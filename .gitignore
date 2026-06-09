@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.cache/
+.wrangler/
+.env
+*.log
+test-results/
+coverage/

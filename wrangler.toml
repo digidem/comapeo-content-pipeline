@@ -1,0 +1,32 @@
+name = "comapeo-content-pipeline"
+main = "src/worker/index.ts"
+compatibility_date = "2025-06-09"
+
+[observability]
+enabled = true
+
+[[r2_buckets]]
+binding = "CONTENT_BUCKET"
+bucket_name = "comapeo-content"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "comapeo-content-pipeline"
+database_id = ""
+
+[[queues.producers]]
+binding = "SYNC_QUEUE"
+queue = "comapeo-content-sync"
+
+[[queues.consumers]]
+queue = "comapeo-content-sync"
+max_batch_size = 1
+max_batch_timeout = 1
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+DEFAULT_LOCALES = "en,pt,es"
+MAX_PAGES_PER_CRON = "50"
+MAX_NOTION_RPS = "3"
