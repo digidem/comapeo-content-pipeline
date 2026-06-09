@@ -187,6 +187,18 @@ async function cmdSyncFull(args: Record<string, string>) {
     cursor = resp.next_cursor || undefined;
   } while (cursor);
 
+  // ── Sidebar position fallback ──
+  // Pages without explicit Order get sequential positions after max in their section.
+  assignFallbackPositions(allMetadata);
+
+  // Re-write .md files with updated frontmatter (sidebar_position may have changed)
+  for (const meta of allMetadata) {
+    const fm = await buildUpdatedFrontmatter(meta, outDir);
+    if (fm) {
+      writeFileSync(join(outDir, `${meta.page_id}.md`), fm);
+    }
+  }
+
   // Write sync state watermark (only if pages were synced)
   if (allMetadata.length > 0 && maxLastEditedTime) {
     const syncState = {
@@ -519,6 +531,63 @@ async function cmdDbMigrate(args: Record<string, string>) {
 }
 
 // ── Helpers ──
+
+/**
+ * Assign sequential sidebar positions to pages without explicit Order.
+ *
+ * Groups pages by section, finds max explicit position per section,
+ * then assigns sequential positions (max+1, max+2, ...) to remaining pages.
+ */
+function assignFallbackPositions(metadata: Array<{ section: string | null; section_order: number | null }>) {
+  // Group by section (use "" key for null section)
+  const sections = new Map<string, Array<typeof metadata[0]>>();
+  for (const m of metadata) {
+    const key = m.section ?? "";
+    const list = sections.get(key) || [];
+    list.push(m);
+    sections.set(key, list);
+  }
+
+  for (const [, pages] of sections) {
+    // Find max explicit position
+    let maxPos = 0;
+    const unpositioned: typeof metadata = [];
+    for (const p of pages) {
+      if (p.section_order != null && p.section_order > maxPos) {
+        maxPos = p.section_order;
+      } else if (p.section_order == null) {
+        unpositioned.push(p);
+      }
+    }
+
+    // Assign sequential positions
+    for (const p of unpositioned) {
+      p.section_order = ++maxPos;
+    }
+  }
+}
+
+/**
+ * Re-build a markdown file with updated frontmatter.
+ * Returns null if the file doesn't exist.
+ */
+async function buildUpdatedFrontmatter(
+  meta: { page_id: string; section_order: number | null; title: string },
+  outDir: string,
+): Promise<string | null> {
+  const mdPath = join(outDir, `${meta.page_id}.md`);
+  if (!existsSync(mdPath)) return null;
+
+  const content = readFileSync(mdPath, "utf8");
+  const parsed = matter(content);
+
+  // Update sidebar_position in frontmatter
+  if (meta.section_order != null) {
+    parsed.data.sidebar_position = meta.section_order;
+  }
+
+  return matter.stringify(parsed.content, parsed.data);
+}
 
 function createClient(): NotionClient {
   const token = process.env.NOTION_TOKEN || process.env.NOTION_API_KEY || "";
