@@ -6,6 +6,7 @@ import { NotionClient } from "./notion-client.js";
 import type { NotionPage, NotionBlock } from "./notion-client.js";
 import { convertBlocks } from "./notion-converter.js";
 import type { NotionBlockList } from "./notion-converter.js";
+import { postProcessMarkdown } from "./post-process.js";
 import { contentHash, hashJSON } from "./hash.js";
 import { mapStatus } from "./status.js";
 import { generateSlug, slugToDocusaurusId } from "./slug.js";
@@ -97,6 +98,9 @@ export async function convertPageData(input: {
 
   // Build markdown body (without frontmatter)
   let markdownBody = convertBlocks(rawBlocks);
+
+  // Post-process for Docusaurus compatibility (strip dup H1, fix headings, sanitize)
+  markdownBody = postProcessMarkdown(markdownBody, title);
 
   // Compute content hash BEFORE asset rehosting (stable across re-syncs)
   const hash = contentHash(markdownBody);

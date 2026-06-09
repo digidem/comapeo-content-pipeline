@@ -14,6 +14,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { convertBlocks } from "../lib/notion-converter.js";
 import { contentHash } from "../lib/hash.js";
+import { postProcessMarkdown } from "../lib/post-process.js";
 import type { NotionBlockList } from "../lib/notion-converter.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -394,7 +395,8 @@ describe("queue consumer", () => {
     const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));
 
     // Compute expected hash from the fixture — same as convertPageData would compute
-    const markdownBody = convertBlocks(fixtureBlocks as NotionBlockList);
+    const rawMarkdown = convertBlocks(fixtureBlocks as NotionBlockList);
+    const markdownBody = postProcessMarkdown(rawMarkdown, "Welcome");
     const expectedHash = contentHash(markdownBody);
 
     const pageResponse = {
