@@ -91,6 +91,12 @@ export async function convertPageData(input: {
   const resolvedDraftingStatus = overrides?.draftingStatus ?? extractProperty(pageLike, "Drafting Status");
   const status = mapStatus(resolvedDraftingStatus);
 
+  // Extract SEO and Docusaurus metadata properties
+  const keywords = extractMultiSelect(pageLike, "Keywords");
+  const tags = extractMultiSelect(pageLike, "Tags");
+  const icon = extractIcon(rawPage);
+  const publishedDate = extractDate(pageLike, "Date Published");
+
   // Generate slug
   const slugSet = usedSlugs ?? new Set<string>();
   const slug = generateSlug(title, pageId, slugSet);
@@ -151,6 +157,12 @@ export async function convertPageData(input: {
     status,
     properties: props,
     assets,
+    keywords: keywords.length > 0 ? keywords : undefined,
+    tags: tags.length > 0 ? tags : undefined,
+    icon: icon ?? undefined,
+    published_date: publishedDate ?? undefined,
+    element_type: resolvedElementType ?? undefined,
+    drafting_status: resolvedDraftingStatus ?? undefined,
   };
 
   // Build frontmatter + serialize with url-replaced markdown
@@ -274,6 +286,41 @@ function extractSectionOrder(page: NotionPage): number | null {
   if (val !== null) {
     const num = parseInt(val, 10);
     return isNaN(num) ? null : num;
+  }
+  return null;
+}
+
+/** Extract multi_select property values (e.g., Keywords, Tags). */
+function extractMultiSelect(page: NotionPage, name: string): string[] {
+  const prop = page.properties?.[name];
+  if (!prop || typeof prop !== "object") return [];
+  const p = prop as Record<string, unknown>;
+
+  if (p.multi_select && Array.isArray(p.multi_select)) {
+    return (p.multi_select as Array<{ name?: string }>)
+      .map((s) => s.name ?? "")
+      .filter(Boolean);
+  }
+  return [];
+}
+
+/** Extract date property from Notion. */
+function extractDate(page: NotionPage, name: string): string | null {
+  const prop = page.properties?.[name];
+  if (!prop || typeof prop !== "object") return null;
+  const p = prop as Record<string, unknown>;
+
+  if (p.date && typeof p.date === "object") {
+    return (p.date as { start?: string }).start ?? null;
+  }
+  return null;
+}
+
+/** Extract icon from Notion page (emoji only). */
+function extractIcon(rawPage: Record<string, unknown>): string | null {
+  const icon = rawPage.icon as { type?: string; emoji?: string } | null | undefined;
+  if (icon?.type === "emoji" && icon.emoji) {
+    return icon.emoji;
   }
   return null;
 }

@@ -23,6 +23,18 @@ export const PageMetadataSchema = z.object({
   status: z.enum(["active", "draft", "deprecated", "archived"]),
   properties: z.record(z.string(), z.unknown()),
   assets: z.array(PageAssetSchema),
+  /** SEO keywords from Notion Keywords multi_select */
+  keywords: z.array(z.string()).optional(),
+  /** Content tags from Notion Tags multi_select */
+  tags: z.array(z.string()).optional(),
+  /** Page icon (emoji) from Notion Icon property */
+  icon: z.string().nullable().optional(),
+  /** Published date from Notion Date Published property */
+  published_date: z.string().nullable().optional(),
+  /** Element type from Notion */
+  element_type: z.string().nullable().optional(),
+  /** Drafting status from Notion */
+  drafting_status: z.string().nullable().optional(),
 });
 
 export type PageMetadata = z.infer<typeof PageMetadataSchema>;

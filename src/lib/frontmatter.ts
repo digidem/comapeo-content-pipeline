@@ -3,12 +3,17 @@ import type { PageMetadata } from "../schemas/metadata.js";
 
 /**
  * Docusaurus-compatible frontmatter that goes on every generated doc.
+ *
+ * Reference: ../comapeo-docs/scripts/notion-fetch/frontmatterBuilder.ts
  */
 export interface DocFrontmatter {
   id: string;
   title: string;
   slug: string;
+  sidebar_label?: string;
   sidebar_position?: number;
+  pagination_label?: string;
+  custom_edit_url?: string;
   source: "notion";
   notion_page_id: string;
   notion_last_edited_time: string;
@@ -16,6 +21,46 @@ export interface DocFrontmatter {
   status: string;
   locale: string;
   section?: string;
+  keywords?: string[];
+  tags?: string[];
+  last_update?: {
+    date: string;
+    author: string;
+  };
+}
+
+/**
+ * Format a date string to en-US locale (MM/DD/YYYY).
+ */
+function formatDate(dateStr: string): string {
+  try {
+    // dateStr is ISO format e.g., "2026-05-25" or "2026-05-25T15:49:00.000Z"
+    const [year, month, day] = dateStr.split(/[-T]/).map(Number);
+    const date = new Date(year, (month || 1) - 1, day || 1);
+    if (!isNaN(date.getTime())) {
+      return date.toLocaleDateString("en-US");
+    }
+  } catch {
+    // fall through
+  }
+  return new Date().toLocaleDateString("en-US");
+}
+
+/**
+ * Build the custom_edit_url for Docusaurus "Edit this page" link.
+ */
+function buildEditUrl(locale: string, section: string | null | undefined, slug: string): string {
+  const parts = [locale, "docs"];
+  if (section) {
+    // Sections are like "10 - Tutorials" → "10-tutorials"
+    const sectionSlug = section
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
+    parts.push(sectionSlug);
+  }
+  parts.push(`${slug}.md`);
+  return `https://github.com/digidem/comapeo-docs/edit/main/docs/${parts.join("/")}`;
 }
 
 /**
@@ -33,15 +78,25 @@ export function buildFrontmatter(
     | "notion_last_edited_time"
     | "section"
     | "section_order"
+    | "keywords"
+    | "tags"
+    | "icon"
+    | "published_date"
   >,
 ): DocFrontmatter {
-  return {
+  const docusaurusSlug = `/${metadata.slug}`;
+  const editUrl = buildEditUrl(metadata.locale, metadata.section, metadata.slug);
+
+  const fm: DocFrontmatter = {
     id: metadata.section
       ? `${metadata.section}/${metadata.slug}`
       : metadata.slug,
     title: metadata.title,
-    slug: `/${metadata.slug}`,
+    slug: docusaurusSlug,
+    sidebar_label: metadata.title,
     sidebar_position: metadata.section_order ?? undefined,
+    pagination_label: metadata.title,
+    custom_edit_url: editUrl,
     source: "notion",
     notion_page_id: metadata.page_id,
     notion_last_edited_time: metadata.notion_last_edited_time,
@@ -49,7 +104,15 @@ export function buildFrontmatter(
     status: metadata.status,
     locale: metadata.locale,
     section: metadata.section ?? undefined,
+    keywords: metadata.keywords,
+    tags: metadata.tags,
+    last_update: {
+      date: formatDate(metadata.published_date || metadata.notion_last_edited_time),
+      author: "Awana Digital",
+    },
   };
+
+  return fm;
 }
 
 /**
@@ -72,7 +135,9 @@ export function serializeDoc(
   frontmatter: DocFrontmatter,
   body: string,
 ): string {
-  return matter.stringify(body, stripUndefined(frontmatter as unknown as Record<string, unknown>));
+  // gray-matter might not handle nested last_update well, so we handle it manually
+  const data = stripUndefined(frontmatter as unknown as Record<string, unknown>);
+  return matter.stringify(body, data);
 }
 
 /**
