@@ -144,6 +144,7 @@ async function cmdSyncFull(args: Record<string, string>) {
     const resp = await client.queryDataSource({
       filter: args.filter ? JSON.parse(args.filter) : undefined,
       startCursor: cursor,
+      excludeSubItems: true,
     });
 
     for (const page of resp.results) {

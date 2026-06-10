@@ -163,6 +163,8 @@ export class NotionClient {
     filter?: Record<string, unknown>;
     startCursor?: string;
     pageSize?: number;
+    /** When true, only fetch top-level pages (exclude sub-items linked via "Sub-item" relation). */
+    excludeSubItems?: boolean;
   }): Promise<NotionPageResponse> {
     // Use /v1/search — the working query endpoint
     const body: Record<string, unknown> = {
@@ -182,6 +184,31 @@ export class NotionClient {
     // If a filter with `last_edited_time` is provided, add it (used by Worker cron)
     if (params.filter) {
       body.filter = params.filter;
+    }
+
+    // When excludeSubItems is true, add a compound filter that keeps the
+    // existing filter (if any) AND requires the "Sub-item" relation to be empty,
+    // so only top-level pages are returned.
+    if (params.excludeSubItems) {
+      const subItemFilter = {
+        property: "Sub-item",
+        relation: { is_empty: true },
+      };
+
+      if (params.filter) {
+        // Merge with existing filter using AND compound
+        body.filter = {
+          and: [params.filter, subItemFilter],
+        };
+      } else {
+        // Merge with default object filter using AND compound
+        body.filter = {
+          and: [
+            { property: "object", value: "page" },
+            subItemFilter,
+          ],
+        };
+      }
     }
 
     const resp = await this.request<NotionPageResponse>(
