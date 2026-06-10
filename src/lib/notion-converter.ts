@@ -458,13 +458,19 @@ function extractCaptionLink(caption: NotionRichText[]): string | null {
   if (!caption || caption.length === 0) return null;
 
   for (const rt of caption) {
-    // Check dedicated link property on text items
+    // 1. Check dedicated link property on text items
     if (rt.text?.link?.url) {
       return rt.text.link.url;
     }
-    // Check href property
+    // 2. Check href property
     if (rt.href) {
       return rt.href;
+    }
+    // 3. Check plain-text for URLs (old pipeline regex fallback)
+    const plainText = rt.plain_text || "";
+    const urlMatch = plainText.match(/https?:\/\/[^\s<>"]+/);
+    if (urlMatch) {
+      return urlMatch[0];
     }
   }
   return null;
