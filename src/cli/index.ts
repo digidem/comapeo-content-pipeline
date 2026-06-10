@@ -298,13 +298,16 @@ async function cmdDocsPull(args: Record<string, string>) {
     // non-en: {outDir}/i18n/{locale}/docusaurus-plugin-content-docs/current/{section}/{slug}.md
     const sectionRaw = doc.section || undefined;
     const sectionDir = sectionRaw ? toSectionDir(sectionRaw) : undefined;
+    // Normalize automated locales: "es - automated" → "es", "pt - automated" → "pt"
+    const normalizedLocale =
+      doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
     const finalPath =
-      doc.locale === "en"
+      normalizedLocale === "en"
         ? join(outDir, "docs", ...(sectionDir ? [sectionDir] : []), `${doc.slug}.md`)
         : join(
             outDir,
             "i18n",
-            doc.locale,
+            normalizedLocale,
             "docusaurus-plugin-content-docs",
             "current",
             ...(sectionDir ? [sectionDir] : []),
@@ -317,7 +320,7 @@ async function cmdDocsPull(args: Record<string, string>) {
 
     // Track minimum section_order per section for _category_.json position
     if (sectionRaw && doc.section_order != null) {
-      const locale = doc.locale || "en";
+      const locale = normalizedLocale;
       if (!sectionPositions.has(locale)) {
         sectionPositions.set(locale, new Map());
       }
