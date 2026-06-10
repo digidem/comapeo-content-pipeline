@@ -283,26 +283,55 @@ export function sanitizeMarkdownContent(content: string): string {
 }
 
 /**
+ * Sanitize markdown image syntax.
+ *
+ * Fixes common image issues from Notion exports:
+ * - Removes images with empty URLs: `![alt]()`
+ * - Removes images with invalid placeholders: `![alt](undefined)`, `![alt](null)`
+ * - Strips whitespace from image URLs: `![alt]( url with spaces )`
+ */
+export function sanitizeMarkdownImages(content: string): string {
+	if (!content) return content;
+
+	// Remove images with empty or invalid URLs, then strip whitespace from remaining URLs
+	let result = content
+		.replace(/!\[([^\]]*)\]\((undefined|null)\)/gi, "")
+		.replace(/!\[([^\]]*)\]\(\s*\)/g, "")
+		.replace(
+			/!\[([^\]]*)\]\(([^)]+)\)/g,
+			(_match, alt, url) => `![${alt}](${url.replace(/\s+/g, "")})`,
+		);
+
+	// Clean up blank lines left by removed images
+	result = result.replace(/\n{3,}/g, "\n\n");
+
+	return result;
+}
+
+/**
  * Apply all post-processing transforms to markdown content.
  *
  * Called by sync.ts after convertBlocks() and before contentHash().
  */
 export function postProcessMarkdown(
-  content: string,
-  pageTitle: string,
+	content: string,
+	pageTitle: string,
 ): string {
-  if (!content) return "";
+	if (!content) return "";
 
-  let processed = content;
+	let processed = content;
 
-  // Phase 1: Ensure blank lines after standalone bold headings
-  processed = ensureBlankLineAfterStandaloneBold(processed);
+	// Phase 1: Ensure blank lines after standalone bold headings
+	processed = ensureBlankLineAfterStandaloneBold(processed);
 
-  // Phase 2: Sanitize for MDX compatibility (heading hierarchy, curly braces, malformed HTML)
-  processed = sanitizeMarkdownContent(processed);
+	// Phase 2: Sanitize for MDX compatibility (heading hierarchy, curly braces, malformed HTML)
+	processed = sanitizeMarkdownContent(processed);
 
-  // Phase 3: Remove duplicate H1 matching the page title (after sanitize so heading hierarchy is already fixed)
-  processed = removeDuplicateTitle(processed, pageTitle);
+	// Phase 3: Sanitize markdown images (remove empty/invalid URLs, strip whitespace)
+	processed = sanitizeMarkdownImages(processed);
 
-  return processed;
+	// Phase 4: Remove duplicate H1 matching the page title (after sanitize so heading hierarchy is already fixed)
+	processed = removeDuplicateTitle(processed, pageTitle);
+
+	return processed;
 }

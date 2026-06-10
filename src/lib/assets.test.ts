@@ -209,9 +209,9 @@ describe("rehostAsset", () => {
 		vi.stubGlobal("fetch", mockFetch);
 		const result = await rehostAsset("https://example.com/img.png");
 
-		expect(result.ext).toBe(".png");
-		expect(result.contentType).toBe("image/png");
-		expect(result.data).toEqual(pngData);
+		expect(result!.ext).toBe(".png");
+		expect(result!.contentType).toBe("image/png");
+		expect(result!.data).toEqual(pngData);
 	});
 
 	it("maps jpeg to .jpg", async () => {
@@ -224,7 +224,7 @@ describe("rehostAsset", () => {
 
 		vi.stubGlobal("fetch", mockFetch);
 		const result = await rehostAsset("https://example.com/img.jpg");
-		expect(result.ext).toBe(".jpg");
+		expect(result!.ext).toBe(".jpg");
 	});
 
 	it("maps webp to .webp", async () => {
@@ -237,7 +237,7 @@ describe("rehostAsset", () => {
 
 		vi.stubGlobal("fetch", mockFetch);
 		const result = await rehostAsset("https://example.com/img.webp");
-		expect(result.ext).toBe(".webp");
+		expect(result!.ext).toBe(".webp");
 	});
 
 	it("defaults to .png for unknown content type", async () => {
@@ -250,7 +250,7 @@ describe("rehostAsset", () => {
 
 		vi.stubGlobal("fetch", mockFetch);
 		const result = await rehostAsset("https://example.com/img.bin");
-		expect(result.ext).toBe(".png");
+		expect(result!.ext).toBe(".png");
 	});
 
 	it("strips charset from content-type", async () => {
@@ -263,7 +263,7 @@ describe("rehostAsset", () => {
 
 		vi.stubGlobal("fetch", mockFetch);
 		const result = await rehostAsset("https://example.com/img.png");
-		expect(result.contentType).toBe("image/png");
+		expect(result!.contentType).toBe("image/png");
 	});
 
 	it("throws on non-2xx response", async () => {
@@ -278,6 +278,69 @@ describe("rehostAsset", () => {
 		await expect(rehostAsset("https://example.com/img.png")).rejects.toThrow(
 			"Failed to download asset: 403 Forbidden",
 		);
+	});
+
+	it("returns null after retries exhausted on network error", async () => {
+		mockFetch.mockClear();
+		mockFetch.mockRejectedValue(new TypeError("fetch failed"));
+
+		vi.stubGlobal("fetch", mockFetch);
+		vi.useFakeTimers();
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const promise = rehostAsset("https://example.com/img.png");
+
+		// Advance through all retry delays
+		await vi.advanceTimersByTimeAsync(10000);
+
+		const result = await promise;
+		expect(result).toBeNull();
+		expect(mockFetch).toHaveBeenCalledTimes(4); // 1 initial + 3 retries
+		vi.useRealTimers();
+	});
+
+	it("retries on network error and succeeds on second attempt", async () => {
+		const pngData = new Uint8Array([137, 80, 78, 71]);
+		mockFetch.mockClear();
+		mockFetch
+			.mockRejectedValueOnce(new TypeError("fetch failed"))
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				headers: new Headers({ "content-type": "image/png" }),
+				arrayBuffer: () => Promise.resolve(pngData.buffer),
+			});
+
+		vi.stubGlobal("fetch", mockFetch);
+		vi.useFakeTimers();
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const promise = rehostAsset("https://example.com/img.png");
+
+		await vi.advanceTimersByTimeAsync(2000);
+
+		const result = await promise;
+		expect(result).not.toBeNull();
+		expect(result!.data).toEqual(pngData);
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+		vi.useRealTimers();
+	});
+
+	it("does not retry HTTP 4xx errors", async () => {
+		mockFetch.mockClear();
+		mockFetch.mockResolvedValueOnce({
+			ok: false,
+			status: 404,
+			statusText: "Not Found",
+			headers: new Headers(),
+		});
+
+		vi.stubGlobal("fetch", mockFetch);
+
+		await expect(rehostAsset("https://example.com/img.png")).rejects.toThrow(
+			"Failed to download asset: 404 Not Found",
+		);
+		expect(mockFetch).toHaveBeenCalledTimes(1);
 	});
 });
 

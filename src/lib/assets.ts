@@ -69,11 +69,20 @@ export function extractAssetUrls(markdown: string): ExtractedAsset[] {
 }
 
 /**
+ * Sleep for `ms` milliseconds (runtime-agnostic).
+ */
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
  * Download an asset and return its binary data, content type, and extension.
+ *
+ * Retries up to 3 times with exponential backoff (1 s, 2 s, 4 s) on network
+ * errors. HTTP 4xx responses are NOT retried. Returns `null` if all retries
+ * are exhausted.
  */
 export async function rehostAsset(
 	url: string,
-): Promise<{ data: Uint8Array; contentType: string; ext: string }> {
+): Promise<{ data: Uint8Array; contentType: string; ext: string } | null> {
 	// Handle data: URIs — decode directly without HTTP fetch
 	if (url.startsWith("data:")) {
 		const commaIdx = url.indexOf(",");
@@ -100,18 +109,55 @@ export async function rehostAsset(
 		return { data, contentType, ext };
 	}
 
-	const response = await fetch(url);
+	const MAX_RETRIES = 3;
 
-	if (!response.ok) {
-		throw new Error(`Failed to download asset: ${response.status} ${response.statusText}`);
+	for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+		try {
+			const response = await fetch(url);
+
+			if (!response.ok) {
+				// HTTP 4xx — do not retry
+				throw new Error(
+					`Failed to download asset: ${response.status} ${response.statusText}`,
+				);
+			}
+
+			const buffer = await response.arrayBuffer();
+			const data = new Uint8Array(buffer);
+			const contentType =
+				response.headers.get("content-type")?.split(";")[0]?.trim() ??
+				"image/png";
+			const ext = MIME_TO_EXT[contentType] ?? ".png";
+
+			return { data, contentType, ext };
+		} catch (err) {
+			const isNetworkError = err instanceof TypeError;
+			const isHttpError =
+				err instanceof Error &&
+				err.message.startsWith("Failed to download asset:");
+
+			// Don't retry HTTP 4xx errors or the last attempt
+			if (isHttpError || !isNetworkError || attempt === MAX_RETRIES) {
+				if (attempt === MAX_RETRIES) {
+					console.warn(
+						`Failed to download asset after ${MAX_RETRIES} retries: ${url}`,
+						err,
+					);
+					return null;
+				}
+				throw err;
+			}
+
+			const delayMs = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+			console.warn(
+				`Retry ${attempt + 1}/${MAX_RETRIES} for asset ${url} in ${delayMs}ms`,
+				err,
+			);
+			await sleep(delayMs);
+		}
 	}
 
-	const buffer = await response.arrayBuffer();
-	const data = new Uint8Array(buffer);
-	const contentType = response.headers.get("content-type")?.split(";")[0]?.trim() ?? "image/png";
-	const ext = MIME_TO_EXT[contentType] ?? ".png";
-
-	return { data, contentType, ext };
+	return null;
 }
 
 /**

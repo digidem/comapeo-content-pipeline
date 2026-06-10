@@ -120,7 +120,12 @@ export async function convertPageData(input: {
 
   for (const { url } of notionAssets) {
     try {
-      const { data, contentType, ext } = await rehostAsset(url);
+      const result = await rehostAsset(url);
+      if (!result) {
+        console.warn(`Failed to download asset (retries exhausted): ${url}`);
+        continue;
+      }
+      const { data, contentType, ext } = result;
       const sha256 = await sha256Hex(data);
       const r2Key = assetR2Key(sha256, ext);
 

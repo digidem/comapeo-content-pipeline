@@ -3,6 +3,7 @@ import {
   removeDuplicateTitle,
   ensureBlankLineAfterStandaloneBold,
   sanitizeMarkdownContent,
+  sanitizeMarkdownImages,
   postProcessMarkdown,
 } from "./post-process.js";
 
@@ -127,6 +128,60 @@ describe("sanitizeMarkdownContent", () => {
   });
 });
 
+describe("sanitizeMarkdownImages", () => {
+  it("removes images with empty URLs", () => {
+    const content = "Before\n![alt]()\nAfter";
+    const result = sanitizeMarkdownImages(content);
+    expect(result).toBe("Before\n\nAfter");
+  });
+
+  it("removes images with undefined placeholder", () => {
+    const content = "![photo](undefined)";
+    const result = sanitizeMarkdownImages(content);
+    expect(result).toBe("");
+  });
+
+  it("removes images with null placeholder", () => {
+    const content = "![photo](null)";
+    const result = sanitizeMarkdownImages(content);
+    expect(result).toBe("");
+  });
+
+  it("removes images with NULL placeholder (case-insensitive)", () => {
+    const content = "![photo](NULL)";
+    const result = sanitizeMarkdownImages(content);
+    expect(result).toBe("");
+  });
+
+  it("strips whitespace from image URLs", () => {
+    const content = "![alt]( https://example.com/img.png )";
+    const result = sanitizeMarkdownImages(content);
+    expect(result).toBe("![alt](https://example.com/img.png)");
+  });
+
+  it("strips internal whitespace from image URLs", () => {
+    const content = "![alt]( https://example.com/img .png )";
+    const result = sanitizeMarkdownImages(content);
+    expect(result).toBe("![alt](https://example.com/img.png)");
+  });
+
+  it("leaves valid images untouched", () => {
+    const content = "![alt](https://example.com/img.png)";
+    const result = sanitizeMarkdownImages(content);
+    expect(result).toBe(content);
+  });
+
+  it("handles empty input", () => {
+    expect(sanitizeMarkdownImages("")).toBe("");
+  });
+
+  it("handles multiple image issues in one pass", () => {
+    const content = "![bad]()\n![undef](undefined)\n![good](https://example.com/a.png)\n![space]( https://b.com/img.png )";
+    const result = sanitizeMarkdownImages(content);
+    expect(result).toBe("\n\n![good](https://example.com/a.png)\n![space](https://b.com/img.png)");
+  });
+});
+
 describe("postProcessMarkdown", () => {
   it("applies all transforms: duplicate title removal", () => {
     const content = "# Welcome\n\nSome content.";
@@ -146,6 +201,13 @@ describe("postProcessMarkdown", () => {
     // First H1 removed (matches title), second H1 demoted to H2
     expect(result).toContain("## Another");
     expect(result).not.toContain("# Title");
+  });
+
+  it("applies image sanitization in pipeline", () => {
+    const content = "# Title\n\n![bad]()\n![good](https://example.com/img.png)";
+    const result = postProcessMarkdown(content, "Title");
+    expect(result).not.toContain("![bad]()");
+    expect(result).toContain("![good](https://example.com/img.png)");
   });
 
   it("handles empty content", () => {
