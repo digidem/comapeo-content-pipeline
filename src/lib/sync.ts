@@ -94,6 +94,9 @@ export async function convertPageData(input: {
   // Extract SEO and Docusaurus metadata properties
   const keywords = extractMultiSelect(pageLike, "Keywords");
   const tags = extractMultiSelect(pageLike, "Tags");
+  // Apply defaults matching old pipeline behavior
+  const resolvedKeywords = keywords.length > 0 ? keywords : ["docs", "comapeo"];
+  const resolvedTags = tags.length > 0 ? tags : ["comapeo"];
   const icon = extractIcon(rawPage);
   const publishedDate = extractDate(pageLike, "Date Published");
 
@@ -162,8 +165,8 @@ export async function convertPageData(input: {
     status,
     properties: props,
     assets,
-    keywords: keywords.length > 0 ? keywords : undefined,
-    tags: tags.length > 0 ? tags : undefined,
+    keywords: resolvedKeywords,
+    tags: resolvedTags,
     icon: icon ?? undefined,
     published_date: publishedDate ?? undefined,
     element_type: resolvedElementType ?? undefined,
