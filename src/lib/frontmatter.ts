@@ -88,9 +88,10 @@ export function buildFrontmatter(
   const editUrl = buildEditUrl(metadata.locale, metadata.section, metadata.slug);
 
   const fm: DocFrontmatter = {
-    id: metadata.section
-      ? `${metadata.section}/${metadata.slug}`
-      : metadata.slug,
+    // Use only the slug as base ID — Docusaurus prefixes the source dir
+    // (section) automatically, forming "section/slug" as the full doc ID.
+    // Including a "/" in the explicit id field is rejected by Docusaurus v3.
+    id: metadata.slug,
     title: metadata.title,
     slug: docusaurusSlug,
     sidebar_label: metadata.title,

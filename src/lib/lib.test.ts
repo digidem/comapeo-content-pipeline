@@ -212,13 +212,15 @@ describe("buildFrontmatter", () => {
     expect(fm.sidebar_position).toBe(10);
   });
 
-  it("uses section/slug for id when section present", () => {
+  it("uses slug as id (Docusaurus prefixes section dir automatically)", () => {
     const fm = buildFrontmatter({
       ...baseMeta,
       section: "basics",
       section_order: 5,
     });
-    expect(fm.id).toBe("basics/getting-started");
+    // Docusaurus v3 rejects "/" in explicit id. The section is auto-prefixed
+    // from the file's source directory, so the full ID becomes "basics/getting-started".
+    expect(fm.id).toBe("getting-started");
     expect(fm.section).toBe("basics");
   });
 });
