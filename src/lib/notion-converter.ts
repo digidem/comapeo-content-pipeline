@@ -457,8 +457,8 @@ function convertImage(block: NotionBlock): string {
     return `[![${plainAlt}](${imgUrl})](${linkUrl})`;
   }
 
-  // Normal image — use full markdown caption as alt text
-  const alt = richTextToMarkdown(captionRichText) || "image";
+  // Normal image — use plain text for alt (formatting doesn't render in HTML alt attributes)
+  const alt = captionRichText.map((rt) => rt.plain_text || "").join("") || "image";
   return `![${alt}](${imgUrl})`;
 }
 
