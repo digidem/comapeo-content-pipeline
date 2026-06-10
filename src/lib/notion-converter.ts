@@ -292,10 +292,13 @@ function convertQuote(
   let output = `> ${text}`;
 
   if (children.length > 0) {
-    output += "\n> ";
     for (const child of children) {
       const childText = convertSingleBlock(child, 0, childrenMap);
-      output += "\n> " + childText;
+      const prefixedLines = childText
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n");
+      output += "\n" + prefixedLines;
     }
   }
   return output;
