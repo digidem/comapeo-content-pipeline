@@ -221,6 +221,7 @@ function convertBulletedList(
   block: NotionBlock,
   children: NotionBlock[],
   nestLevel: number,
+  childrenMap: Record<string, NotionBlock[]>,
 ): string {
   const indent = "  ".repeat(nestLevel);
   const text = richTextToMarkdown(getRichText(block));
@@ -228,7 +229,7 @@ function convertBulletedList(
 
   if (children.length > 0) {
     for (const child of children) {
-      output += "\n" + convertSingleBlock(child, nestLevel + 1);
+      output += "\n" + convertSingleBlock(child, nestLevel + 1, childrenMap);
     }
   }
   return output;
@@ -238,6 +239,7 @@ function convertNumberedList(
   block: NotionBlock,
   children: NotionBlock[],
   nestLevel: number,
+  childrenMap: Record<string, NotionBlock[]>,
 ): string {
   const indent = "  ".repeat(nestLevel);
   const text = richTextToMarkdown(getRichText(block));
@@ -245,7 +247,7 @@ function convertNumberedList(
 
   if (children.length > 0) {
     for (const child of children) {
-      output += "\n" + convertSingleBlock(child, nestLevel + 1);
+      output += "\n" + convertSingleBlock(child, nestLevel + 1, childrenMap);
     }
   }
   return output;
@@ -261,6 +263,7 @@ function convertToDo(block: NotionBlock): string {
 function convertToggle(
   block: NotionBlock,
   children: NotionBlock[],
+  childrenMap: Record<string, NotionBlock[]>,
 ): string {
   const text = richTextToMarkdown(getRichText(block));
   let output = `<details>\n<summary>${text}</summary>\n`;
@@ -268,7 +271,7 @@ function convertToggle(
   if (children.length > 0) {
     output += "\n";
     for (const child of children) {
-      output += convertSingleBlock(child, 0) + "\n";
+      output += convertSingleBlock(child, 0, childrenMap) + "\n";
     }
   }
 
@@ -279,6 +282,7 @@ function convertToggle(
 function convertQuote(
   block: NotionBlock,
   children: NotionBlock[],
+  childrenMap: Record<string, NotionBlock[]>,
 ): string {
   const text = richTextToMarkdown(getRichText(block));
   let output = `> ${text}`;
@@ -286,7 +290,7 @@ function convertQuote(
   if (children.length > 0) {
     output += "\n> ";
     for (const child of children) {
-      const childText = convertSingleBlock(child, 0);
+      const childText = convertSingleBlock(child, 0, childrenMap);
       output += "\n> " + childText;
     }
   }
@@ -296,6 +300,7 @@ function convertQuote(
 function convertCallout(
   block: NotionBlock,
   children: NotionBlock[],
+  childrenMap: Record<string, NotionBlock[]>,
 ): string {
   const richText = getRichText(block);
   const calloutData = block.callout as {
@@ -385,7 +390,7 @@ function convertCallout(
   let childrenOutput = "";
   if (children.length > 0) {
     childrenOutput = children
-      .map((child) => convertSingleBlock(child, 0))
+      .map((child) => convertSingleBlock(child, 0, childrenMap))
       .filter(Boolean)
       .join("\n\n");
   }
@@ -497,6 +502,7 @@ function convertVideoOrFile(block: NotionBlock): string {
 function convertTable(
   block: NotionBlock,
   children: NotionBlock[],
+  _childrenMap: Record<string, NotionBlock[]>,
 ): string {
   if (children.length === 0) return "";
 
@@ -547,9 +553,10 @@ function convertUnsupportedBlock(block: NotionBlock): string {
 
 function convertSingleBlock(
   block: NotionBlock,
-  nestLevel: number = 0,
+  nestLevel: number,
+  childrenMap: Record<string, NotionBlock[]>,
 ): string {
-  const children = getChildren(block.id);
+  const children = childrenMap[block.id] ?? [];
 
   switch (block.type) {
     case "paragraph":
@@ -563,20 +570,20 @@ function convertSingleBlock(
       return convertHeading(block, 3, children);
 
     case "bulleted_list_item":
-      return convertBulletedList(block, children, nestLevel);
+      return convertBulletedList(block, children, nestLevel, childrenMap);
     case "numbered_list_item":
-      return convertNumberedList(block, children, nestLevel);
+      return convertNumberedList(block, children, nestLevel, childrenMap);
     case "to_do":
       return convertToDo(block);
 
     case "toggle":
-      return convertToggle(block, children);
+      return convertToggle(block, children, childrenMap);
 
     case "quote":
-      return convertQuote(block, children);
+      return convertQuote(block, children, childrenMap);
 
     case "callout":
-      return convertCallout(block, children);
+      return convertCallout(block, children, childrenMap);
 
     case "code":
       return convertCode(block);
@@ -588,7 +595,7 @@ function convertSingleBlock(
       return convertVideoOrFile(block);
 
     case "table":
-      return convertTable(block, children);
+      return convertTable(block, children, childrenMap);
 
     case "table_row":
       // Handled inside convertTable; standalone rows shouldn't exist
@@ -612,13 +619,13 @@ function convertSingleBlock(
     case "ai_block":
     case "column_list": {
       // Flatten column layout: iterate column children, then each column's children
-      const columnBlocks = getChildren(block.id);
+      const columnBlocks = childrenMap[block.id] ?? [];
       const columnOutputs: string[] = [];
       for (const col of columnBlocks) {
-        const colChildren = getChildren(col.id);
+        const colChildren = childrenMap[col.id] ?? [];
         if (colChildren.length > 0) {
           for (const child of colChildren) {
-            const output = convertSingleBlock(child, 0);
+            const output = convertSingleBlock(child, 0, childrenMap);
             if (output) {
               columnOutputs.push(output);
             }
@@ -631,8 +638,8 @@ function convertSingleBlock(
     case "column":
       // Individual column blocks are handled inside column_list above.
       // If encountered standalone (shouldn't happen), convert their children.
-      return getChildren(block.id)
-        .map((child) => convertSingleBlock(child, 0))
+      return (childrenMap[block.id] ?? [])
+        .map((child) => convertSingleBlock(child, 0, childrenMap))
         .filter(Boolean)
         .join("\n\n");
 
@@ -652,12 +659,12 @@ function convertSingleBlock(
 export function convertBlocks(blockList: NotionBlockList): string {
   if (!blockList?.results || blockList.results.length === 0) return "";
 
-  const mergedBlocks = mergeChildren(blockList);
+  const childrenMap = blockList.children ?? {};
 
   const lines: string[] = [];
 
-  for (const block of mergedBlocks) {
-    const output = convertSingleBlock(block, 0);
+  for (const block of blockList.results) {
+    const output = convertSingleBlock(block, 0, childrenMap);
     if (output) {
       lines.push(output);
     }
@@ -667,24 +674,7 @@ export function convertBlocks(blockList: NotionBlockList): string {
   return lines.join("\n\n") + "\n";
 }
 
-/**
- * Merge children map into the block tree so each block has its children
- * accessible directly (for use inside convertSingleBlock).
- *
- * We store children on demand via a closure — the getChildren helper above
- * reads from a module-level map. Here we set it up so convertSingleBlock
- * can find children for any block ID.
- */
-let _globalChildrenMap: Record<string, NotionBlock[]> = {};
 
-function getChildren(blockId: string): NotionBlock[] {
-  return _globalChildrenMap[blockId] ?? [];
-}
-
-function mergeChildren(blockList: NotionBlockList): NotionBlock[] {
-  _globalChildrenMap = blockList.children ?? {};
-  return blockList.results;
-}
 
 /**
  * Get the plain text representation of all rich text in a block.
