@@ -29,17 +29,40 @@ const MIME_TO_EXT: Record<string, string> = {
 
 /**
  * Extract all image URLs from markdown, tagging each as Notion-hosted or not.
+ *
+ * Handles three patterns:
+ * 1. Hyperlinked images: `[![alt](img-url)](link-url)` — extracts `img-url`
+ * 2. Plain markdown images: `![alt](url)`
+ * 3. HTML img tags: `<img src="url">` and `<img src='url'>`
  */
 export function extractAssetUrls(markdown: string): ExtractedAsset[] {
 	const results: ExtractedAsset[] = [];
-	const pattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
-	let match: RegExpExecArray | null;
+	const seen = new Set<string>();
 
-	while ((match = pattern.exec(markdown)) !== null) {
-		const url = match[2];
-		// Rehost Notion CDN URLs AND data: URIs (which bloat markdown)
+	const addUrl = (url: string) => {
+		if (seen.has(url)) return;
+		seen.add(url);
 		const needsRehosting = isNotionUrl(url) || url.startsWith("data:");
 		results.push({ url, isNotion: needsRehosting });
+	};
+
+	// 1. Hyperlinked images: [![alt](img-url)](link-url)
+	const hyperlinkedPattern = /\[!\[[^\]]*\]\(([^)]+)\)\]\([^)]+\)/g;
+	let match: RegExpExecArray | null;
+	while ((match = hyperlinkedPattern.exec(markdown)) !== null) {
+		addUrl(match[1]);
+	}
+
+	// 2. Plain markdown images: ![alt](url)
+	const mdPattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
+	while ((match = mdPattern.exec(markdown)) !== null) {
+		addUrl(match[2]);
+	}
+
+	// 3. HTML img tags: <img src="url"> or <img src='url'>
+	const htmlPattern = /<img\s[^>]*src=(["'])([^"']+)\1[^>]*>/gi;
+	while ((match = htmlPattern.exec(markdown)) !== null) {
+		addUrl(match[2]);
 	}
 
 	return results;

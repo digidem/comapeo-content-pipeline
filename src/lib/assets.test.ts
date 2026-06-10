@@ -73,6 +73,96 @@ describe("extractAssetUrls", () => {
 		expect(results[0].isNotion).toBe(false);
 		expect(results[1].isNotion).toBe(true);
 	});
+
+	// ── HTML img tags (Issue 4.6) ──
+
+	it("extracts URL from HTML img tag with double quotes", () => {
+		const md = '<img src="https://example.com/img.png" alt="photo">';
+		const results = extractAssetUrls(md);
+		expect(results).toHaveLength(1);
+		expect(results[0].url).toBe("https://example.com/img.png");
+	});
+
+	it("extracts URL from HTML img tag with single quotes", () => {
+		const md = "<img src='https://example.com/img.png' alt='photo'>";
+		const results = extractAssetUrls(md);
+		expect(results).toHaveLength(1);
+		expect(results[0].url).toBe("https://example.com/img.png");
+	});
+
+	it("extracts URL from HTML img tag with additional attributes", () => {
+		const md =
+			'<img class="hero" src="https://example.com/hero.png" width="800" height="600" />';
+		const results = extractAssetUrls(md);
+		expect(results).toHaveLength(1);
+		expect(results[0].url).toBe("https://example.com/hero.png");
+	});
+
+	it("extracts URL from self-closing HTML img tag", () => {
+		const md = '<img src="https://example.com/icon.svg"/>';
+		const results = extractAssetUrls(md);
+		expect(results).toHaveLength(1);
+		expect(results[0].url).toBe("https://example.com/icon.svg");
+	});
+
+	it("identifies Notion URLs in HTML img tags", () => {
+		const md =
+			'<img src="https://secure.notion-static.com/abc.png" alt="notion-img">';
+		const results = extractAssetUrls(md);
+		expect(results).toHaveLength(1);
+		expect(results[0].isNotion).toBe(true);
+	});
+
+	// ── Hyperlinked images (Issue 4.7) ──
+
+	it("extracts inner image URL from hyperlinked image", () => {
+		const md = "[![alt](https://example.com/img.png)](https://example.com/link)";
+		const results = extractAssetUrls(md);
+		expect(results).toHaveLength(1);
+		expect(results[0].url).toBe("https://example.com/img.png");
+	});
+
+	it("extracts inner image URL from hyperlinked Notion image", () => {
+		const md =
+			"[![screenshot](https://secure.notion-static.com/abc.png)](https://example.com/page)";
+		const results = extractAssetUrls(md);
+		expect(results).toHaveLength(1);
+		expect(results[0].url).toBe("https://secure.notion-static.com/abc.png");
+		expect(results[0].isNotion).toBe(true);
+	});
+
+	it("does not extract the link URL from hyperlinked image", () => {
+		const md = "[![alt](https://example.com/img.png)](https://example.com/page)";
+		const results = extractAssetUrls(md);
+		expect(results).toHaveLength(1);
+		expect(results[0].url).toBe("https://example.com/img.png");
+	});
+
+	// ── Deduplication ──
+
+	it("deduplicates URLs extracted from multiple patterns", () => {
+		const md =
+			'![alt](https://example.com/img.png)\n\n<img src="https://example.com/img.png">';
+		const results = extractAssetUrls(md);
+		expect(results).toHaveLength(1);
+		expect(results[0].url).toBe("https://example.com/img.png");
+	});
+
+	it("handles all three patterns in the same markdown", () => {
+		const md = [
+			"![md](https://a.com/a.png)",
+			"[![linked](https://b.com/b.png)](https://example.com)",
+			'<img src="https://c.com/c.png">',
+		].join("\n\n");
+		const results = extractAssetUrls(md);
+		expect(results).toHaveLength(3);
+		// Hyperlinked images are extracted first, then plain markdown, then HTML
+		expect(results.map((r) => r.url)).toEqual([
+			"https://b.com/b.png",
+			"https://a.com/a.png",
+			"https://c.com/c.png",
+		]);
+	});
 });
 
 // ── sha256Hex ──
