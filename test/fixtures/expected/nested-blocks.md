@@ -1,5 +1,4 @@
 > Important note
-> 
 > Quote child content.
 
 - First item
