@@ -12,7 +12,7 @@
  *   pnpm pipeline diff --page <page_id>
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, unlinkSync, rmdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { NotionClient } from "../lib/notion-client.js";
@@ -397,6 +397,56 @@ async function cmdDocsPull(args: Record<string, string>) {
         console.log(`  Copied ${assetsCopied} assets to ${seenDirs.size} section dirs`);
       }
     }
+  }
+
+  // Remove orphaned files (pages deleted from Notion but still on disk)
+  if (args["clean-orphans"] === "true") {
+    const expectedPaths = new Set<string>();
+    for (const doc of manifest.docs) {
+      if (args.all !== "true" && doc.status !== "active") continue;
+      const et = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
+      if (/^(toggle|title)$/i.test(et)) continue;
+      const sRaw = doc.section || undefined;
+      const sDir = sRaw ? toSectionDir(sRaw) : undefined;
+      const nLoc = doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
+      const expectedPath = nLoc === "en"
+        ? join(outDir, "docs", ...(sDir ? [sDir] : []), `${doc.slug}.md`)
+        : join(outDir, "i18n", nLoc, "docusaurus-plugin-content-docs", "current", ...(sDir ? [sDir] : []), `${doc.slug}.md`);
+      expectedPaths.add(expectedPath);
+    }
+    let removed = 0;
+    const removeOrphans = (dir: string) => {
+      if (!existsSync(dir)) return;
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const fullPath = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          removeOrphans(fullPath);
+          // Remove empty directories (except assets/)
+          if (entry.name !== "assets") {
+            try {
+              const remaining = readdirSync(fullPath);
+              if (remaining.length === 0 || (remaining.length === 1 && remaining[0] === "assets")) {
+                if (remaining[0] === "assets") {
+                  const assetFiles = readdirSync(join(fullPath, "assets"));
+                  for (const af of assetFiles) unlinkSync(join(fullPath, "assets", af));
+                  rmdirSync(join(fullPath, "assets"));
+                }
+                rmdirSync(fullPath);
+              }
+            } catch { /* ignore */ }
+          }
+        } else if (entry.name.endsWith(".md") && !expectedPaths.has(fullPath)) {
+          unlinkSync(fullPath);
+          removed++;
+        }
+      }
+    };
+    removeOrphans(join(outDir, "docs"));
+    for (const loc of ["es", "pt"]) {
+      const i18nDir = join(outDir, "i18n", loc, "docusaurus-plugin-content-docs", "current");
+      if (existsSync(i18nDir)) removeOrphans(i18nDir);
+    }
+    if (removed > 0) console.log(`  Removed ${removed} orphaned files`);
   }
 
   if (skippedNonPage > 0) {
@@ -789,6 +839,7 @@ Options:
   --input <file>          Input manifest or metadata file
   --limit <n>             Max pages for sync:full
   --all                   Include all statuses (docs:pull, default: active only)
+  --clean-orphans         Remove .md files not in manifest (docs:pull)
 `);
 }
 
