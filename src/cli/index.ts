@@ -271,10 +271,19 @@ async function cmdDocsPull(args: Record<string, string>) {
   mkdirSync(outDir, { recursive: true });
 
   let count = 0;
+  let skippedNonPage = 0;
   // Track sections per locale for _category_.json generation
   const sectionPositions = new Map<string, Map<string, number>>(); // locale → section → min position
   for (const doc of manifest.docs) {
     if (args.all !== "true" && doc.status !== "active") continue;
+
+    // Skip structural pages (Toggles, Titles) — only publish content Pages
+    const elementType = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
+    const isContentPage = /^page$/i.test(elementType) || elementType === "";
+    if (!isContentPage) {
+      skippedNonPage++;
+      continue;
+    }
 
     const srcFile = join(inputDir, `${doc.page_id}.md`);
     if (!existsSync(srcFile)) {
@@ -353,6 +362,9 @@ async function cmdDocsPull(args: Record<string, string>) {
     }
   }
 
+  if (skippedNonPage > 0) {
+    console.log(`  (skipped ${skippedNonPage} structural pages: Toggle/Title)`);
+  }
   console.log(`Pulled ${count} active docs to ${outDir}`);
 }
 
