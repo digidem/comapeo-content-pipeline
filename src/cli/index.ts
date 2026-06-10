@@ -271,12 +271,12 @@ async function cmdDocsPull(args: Record<string, string>) {
 
   mkdirSync(outDir, { recursive: true });
 
-  // Build translation lookup from Sub-item relations: translation page_id → English slug
-  const translationSlugMap = new Map<string, string>();
+  // Build translation lookup from Sub-item relations: translation page_id → { slug, section }
+  const translationMap = new Map<string, { slug: string; section: string | null }>();
   for (const doc of manifest.docs) {
     if (doc.locale === "en" && doc.sub_items && doc.sub_items.length > 0) {
       for (const subId of doc.sub_items) {
-        translationSlugMap.set(subId, doc.slug);
+        translationMap.set(subId, { slug: doc.slug, section: doc.section });
       }
     }
   }
@@ -296,8 +296,11 @@ async function cmdDocsPull(args: Record<string, string>) {
       continue;
     }
 
-    // Docusaurus i18n requires translations to share the English source's slug
-    const translationSlug = translationSlugMap.get(doc.page_id) ?? doc.slug;
+    // Docusaurus i18n requires translations to share the English source's slug AND path
+    const translation = translationMap.get(doc.page_id);
+    const translationSlug = translation?.slug ?? doc.slug;
+    // Use English section for translated page so paths match
+    const effectiveSection = translation?.section ?? doc.section;
 
     const srcFile = join(inputDir, `${doc.page_id}.md`);
     if (!existsSync(srcFile)) {
@@ -317,7 +320,7 @@ async function cmdDocsPull(args: Record<string, string>) {
     // Build Docusaurus-compatible output path
     // en:   {outDir}/docs/{section}/{slug}.md
     // non-en: {outDir}/i18n/{locale}/docusaurus-plugin-content-docs/current/{section}/{slug}.md
-    const sectionRaw = doc.section || undefined;
+    const sectionRaw = effectiveSection || undefined;
     const sectionDir = sectionRaw ? toSectionDir(sectionRaw) : undefined;
     // Normalize automated locales: "es - automated" → "es", "pt - automated" → "pt"
     const normalizedLocale =
@@ -340,6 +343,7 @@ async function cmdDocsPull(args: Record<string, string>) {
     count++;
 
     // Track minimum section_order per section for _category_.json position
+    // Use effective section (English section for translations) so categories match
     if (sectionRaw && doc.section_order != null) {
       const locale = normalizedLocale;
       if (!sectionPositions.has(locale)) {
@@ -427,10 +431,11 @@ async function cmdDocsPull(args: Record<string, string>) {
       if (args.all !== "true" && doc.status !== "active") continue;
       const et = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
       if (/^(toggle|title)$/i.test(et)) continue;
-      const sRaw = doc.section || undefined;
+      const orphanTranslation = translationMap.get(doc.page_id);
+      const sRaw = orphanTranslation?.section ?? (doc.section || undefined);
       const sDir = sRaw ? toSectionDir(sRaw) : undefined;
       const nLoc = doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
-      const orphanSlug = translationSlugMap.get(doc.page_id) ?? doc.slug;
+      const orphanSlug = orphanTranslation?.slug ?? doc.slug;
       const expectedPath = nLoc === "en"
         ? join(outDir, "docs", ...(sDir ? [sDir] : []), `${orphanSlug}.md`)
         : join(outDir, "i18n", nLoc, "docusaurus-plugin-content-docs", "current", ...(sDir ? [sDir] : []), `${orphanSlug}.md`);
