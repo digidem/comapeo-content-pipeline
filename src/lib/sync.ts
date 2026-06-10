@@ -94,6 +94,8 @@ export async function convertPageData(input: {
   // Extract SEO and Docusaurus metadata properties
   const keywords = extractMultiSelect(pageLike, "Keywords");
   const tags = extractMultiSelect(pageLike, "Tags");
+  // Extract sub-items (translations linked via Sub-item relation)
+  const subItems = extractRelation(pageLike, "Sub-item");
   // Apply defaults matching old pipeline behavior
   const resolvedKeywords = keywords.length > 0 ? keywords : ["docs", "comapeo"];
   const resolvedTags = tags.length > 0 ? tags : ["comapeo"];
@@ -171,6 +173,7 @@ export async function convertPageData(input: {
     published_date: publishedDate ?? undefined,
     element_type: resolvedElementType ?? undefined,
     drafting_status: resolvedDraftingStatus ?? undefined,
+    sub_items: subItems.length > 0 ? subItems : undefined,
   };
 
   // Build frontmatter + serialize with url-replaced markdown
@@ -307,6 +310,20 @@ function extractMultiSelect(page: NotionPage, name: string): string[] {
   if (p.multi_select && Array.isArray(p.multi_select)) {
     return (p.multi_select as Array<{ name?: string }>)
       .map((s) => s.name ?? "")
+      .filter(Boolean);
+  }
+  return [];
+}
+
+/** Extract relation property from Notion — returns array of page IDs. */
+function extractRelation(page: NotionPage, name: string): string[] {
+  const prop = page.properties?.[name];
+  if (!prop || typeof prop !== "object") return [];
+  const p = prop as Record<string, unknown>;
+
+  if (p.relation && Array.isArray(p.relation)) {
+    return (p.relation as Array<{ id?: string }>)
+      .map((r) => r.id ?? "")
       .filter(Boolean);
   }
   return [];

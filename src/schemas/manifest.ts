@@ -38,6 +38,8 @@ export const ManifestDocSchema = z.object({
   notion_last_edited_time: z.string(),
   content_hash: z.string(),
   status: z.enum(["active", "draft", "deprecated", "archived"]),
+  /** Page IDs of sub-items (translations) linked via Sub-item relation */
+  sub_items: z.array(z.string()).optional(),
 });
 
 export type ManifestDoc = z.infer<typeof ManifestDocSchema>;

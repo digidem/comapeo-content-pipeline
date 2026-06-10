@@ -36,6 +36,7 @@ export function generateManifest(input: ManifestInput): ContentManifest {
       notion_last_edited_time: meta.notion_last_edited_time,
       content_hash: meta.content_hash,
       status: meta.status,
+      sub_items: meta.sub_items,
     };
     return doc;
   });
