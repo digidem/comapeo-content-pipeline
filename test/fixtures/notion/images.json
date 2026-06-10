@@ -61,6 +61,61 @@
           }
         ]
       }
+    },
+    {
+      "object": "block",
+      "id": "img5",
+      "type": "image",
+      "has_children": false,
+      "image": {
+        "type": "external",
+        "external": { "url": "https://images.unsplash.com/block-link.jpg" },
+        "caption": [
+          {
+            "type": "text",
+            "text": { "content": "Block level link" },
+            "plain_text": "Block level link",
+            "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" }
+          }
+        ],
+        "link": { "url": "https://example.com/block-link" }
+      }
+    },
+    {
+      "object": "block",
+      "id": "img6",
+      "type": "image",
+      "has_children": false,
+      "image": {
+        "type": "external",
+        "external": { "url": "https://images.unsplash.com/content-link.jpg", "link": { "url": "https://example.com/content-link" } },
+        "caption": [
+          {
+            "type": "text",
+            "text": { "content": "Content level link" },
+            "plain_text": "Content level link",
+            "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" }
+          }
+        ]
+      }
+    },
+    {
+      "object": "block",
+      "id": "img7",
+      "type": "image",
+      "has_children": false,
+      "image": {
+        "type": "file",
+        "file": { "url": "https://notion.so/file-with-link.png", "expiry_time": "2026-06-10T00:00:00.000Z", "link": { "url": "https://example.com/file-link" } },
+        "caption": [
+          {
+            "type": "text",
+            "text": { "content": "File content link" },
+            "plain_text": "File content link",
+            "annotations": { "bold": false, "italic": false, "strikethrough": false, "underline": false, "code": false, "color": "default" }
+          }
+        ]
+      }
     }
   ]
 }

@@ -80,9 +80,10 @@ interface CodeContent {
 
 interface ImageContent {
   type: "external" | "file";
-  external?: { url: string };
-  file?: { url: string; expiry_time?: string };
+  external?: { url: string; link?: { url: string } };
+  file?: { url: string; expiry_time?: string; link?: { url: string } };
   caption: NotionRichText[];
+  link?: { url: string };
 }
 
 interface TableContent {
@@ -452,8 +453,21 @@ function convertImage(block: NotionBlock): string {
     imgUrl = content.file.url;
   }
 
-  // Check caption for hyperlink — if found, wrap image in [![alt](img)](link)
-  const linkUrl = extractCaptionLink(captionRichText);
+  // Check for link URL in priority order:
+  // 1. Block-level image link (block.image.link)
+  // 2. Content-level link (external.link or file.link)
+  // 3. Caption-based link (from rich text)
+  let linkUrl: string | null =
+    content.link?.url ??
+    content.external?.link?.url ??
+    content.file?.link?.url ??
+    null;
+
+  // Fall back to caption-based link extraction
+  if (!linkUrl) {
+    linkUrl = extractCaptionLink(captionRichText);
+  }
+
   if (linkUrl) {
     // Use plain text for alt (no link formatting) when image itself is linked
     const plainAlt = captionRichText.map((rt) => rt.plain_text || "").join("") || "image";
