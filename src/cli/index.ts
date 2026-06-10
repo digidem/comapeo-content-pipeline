@@ -320,8 +320,17 @@ async function cmdDocsPull(args: Record<string, string>) {
   }
 
   // Write _category_.json for each section (Docusaurus sidebar labels)
-  for (const [locale, sections] of sectionPositions) {
-    for (const [sectionName, position] of sections) {
+  // Sort sections by numeric prefix (10, 20, ...) then alphabetically
+  for (const [locale, sectionMap] of sectionPositions) {
+    const sortedEntries = Array.from(sectionMap.entries()).sort((a, b) => {
+      const aNum = getSectionNumberPrefix(a[0]);
+      const bNum = getSectionNumberPrefix(b[0]);
+      if (aNum !== bNum) return aNum - bNum;
+      return a[0].localeCompare(b[0]);
+    });
+    let position = 1;
+    for (const [sectionName] of sortedEntries) {
+      const label = stripSectionPrefix(sectionName);
       const categoryDir =
         locale === "en"
           ? join(outDir, "docs", sectionName)
@@ -331,8 +340,8 @@ async function cmdDocsPull(args: Record<string, string>) {
         mkdirSync(categoryDir, { recursive: true });
       }
       const categoryJson = {
-        label: sectionName,
-        position,
+        label,
+        position: position++,
         collapsible: true,
         collapsed: true,
         link: { type: "generated-index" as const },
@@ -569,6 +578,24 @@ async function cmdDbMigrate(args: Record<string, string>) {
 }
 
 // ── Helpers ──
+
+/**
+ * Strip number prefix from section name for display labels.
+ * "10-Preparing to use CoMapeo" → "Preparing to use CoMapeo"
+ * "90+ - Miscellaneous" → "Miscellaneous"
+ */
+function stripSectionPrefix(sectionName: string): string {
+  return sectionName.replace(/^\d+[+\-]\s*(?:-\s*)?/, "").trim();
+}
+
+/**
+ * Extract numeric prefix for section ordering.
+ * "10-Preparing" → 10, "90+ - Misc" → 90, "Overview" → Infinity
+ */
+function getSectionNumberPrefix(sectionName: string): number {
+  const match = sectionName.match(/^(\d+)/);
+  return match ? parseInt(match[1], 10) : Infinity;
+}
 
 /**
  * Assign sequential sidebar positions to pages without explicit Order.
