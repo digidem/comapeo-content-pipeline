@@ -12,6 +12,7 @@ export interface DocFrontmatter {
   slug: string;
   sidebar_label?: string;
   sidebar_position?: number;
+  sidebar_custom_props?: Record<string, unknown>;
   pagination_label?: string;
   custom_edit_url?: string;
   source: "notion";
@@ -111,6 +112,7 @@ export function buildFrontmatter(
       date: formatDate(metadata.published_date || metadata.notion_last_edited_time),
       author: "Awana Digital",
     },
+    sidebar_custom_props: metadata.icon ? { icon: metadata.icon } : undefined,
   };
 
   return fm;
