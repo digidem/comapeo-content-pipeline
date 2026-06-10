@@ -287,17 +287,18 @@ async function cmdDocsPull(args: Record<string, string>) {
     // Build Docusaurus-compatible output path
     // en:   {outDir}/docs/{section}/{slug}.md
     // non-en: {outDir}/i18n/{locale}/docusaurus-plugin-content-docs/current/{section}/{slug}.md
-    const section = doc.section || undefined;
+    const sectionRaw = doc.section || undefined;
+    const sectionDir = sectionRaw ? toSectionDir(sectionRaw) : undefined;
     const finalPath =
       doc.locale === "en"
-        ? join(outDir, "docs", ...(section ? [section] : []), `${doc.slug}.md`)
+        ? join(outDir, "docs", ...(sectionDir ? [sectionDir] : []), `${doc.slug}.md`)
         : join(
             outDir,
             "i18n",
             doc.locale,
             "docusaurus-plugin-content-docs",
             "current",
-            ...(section ? [section] : []),
+            ...(sectionDir ? [sectionDir] : []),
             `${doc.slug}.md`,
           );
 
@@ -306,15 +307,15 @@ async function cmdDocsPull(args: Record<string, string>) {
     count++;
 
     // Track minimum section_order per section for _category_.json position
-    if (section && doc.section_order != null) {
+    if (sectionRaw && doc.section_order != null) {
       const locale = doc.locale || "en";
       if (!sectionPositions.has(locale)) {
         sectionPositions.set(locale, new Map());
       }
       const localeMap = sectionPositions.get(locale)!;
-      const currentMin = localeMap.get(section);
+      const currentMin = localeMap.get(sectionRaw);
       if (currentMin === undefined || doc.section_order < currentMin) {
-        localeMap.set(section, doc.section_order);
+        localeMap.set(sectionRaw, doc.section_order);
       }
     }
   }
@@ -331,10 +332,11 @@ async function cmdDocsPull(args: Record<string, string>) {
     let position = 1;
     for (const [sectionName] of sortedEntries) {
       const label = stripSectionPrefix(sectionName);
+      const sectionDir = toSectionDir(sectionName);
       const categoryDir =
         locale === "en"
-          ? join(outDir, "docs", sectionName)
-          : join(outDir, "i18n", locale, "docusaurus-plugin-content-docs", "current", sectionName);
+          ? join(outDir, "docs", sectionDir)
+          : join(outDir, "i18n", locale, "docusaurus-plugin-content-docs", "current", sectionDir);
       const categoryPath = join(categoryDir, "_category_.json");
       if (!existsSync(categoryDir)) {
         mkdirSync(categoryDir, { recursive: true });
@@ -586,6 +588,18 @@ async function cmdDbMigrate(args: Record<string, string>) {
  */
 function stripSectionPrefix(sectionName: string): string {
   return sectionName.replace(/^\d+[+\-]\s*(?:-\s*)?/, "").trim();
+}
+
+/**
+ * Convert section name to URL/filesystem-safe directory name.
+ * "10-Preparing to use CoMapeo" → "preparing-to-use-comapeo"
+ */
+function toSectionDir(sectionName: string): string {
+  return stripSectionPrefix(sectionName)
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 /**
