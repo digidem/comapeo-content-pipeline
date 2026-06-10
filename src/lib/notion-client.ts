@@ -63,6 +63,7 @@ export class NotionClient {
   private maxRps: number;
   private lastRequestTime: number = 0;
   private baseUrl = "https://api.notion.com/v1";
+  private inFlightRequests: Map<string, Promise<unknown>> = new Map();
 
   constructor(config: NotionConfig) {
     this.token = config.token;
@@ -70,6 +71,25 @@ export class NotionClient {
     this.dataSourceId = config.dataSourceId;
     this.version = config.version || "2026-03-11";
     this.maxRps = config.maxRps ?? 3;
+  }
+
+  // ── In-flight request deduplication ──
+
+  /**
+   * Deduplicate concurrent requests for the same key.
+   * If a request for `key` is already in flight, returns the same promise.
+   * Otherwise, creates a new promise via `factory`, stores it, and removes
+   * it from the map once it settles (success or failure).
+   */
+  private dedupeRequest<T>(key: string, factory: () => Promise<T>): Promise<T> {
+    const existing = this.inFlightRequests.get(key) as Promise<T> | undefined;
+    if (existing) return existing;
+
+    const promise = factory().finally(() => {
+      this.inFlightRequests.delete(key);
+    });
+    this.inFlightRequests.set(key, promise);
+    return promise;
   }
 
   // ── Rate limiting ──
@@ -94,6 +114,20 @@ export class NotionClient {
       apiVersion?: string;
     } = {},
     retries = 4,
+  ): Promise<T> {
+    // Deduplicate by path + method so concurrent callers share one request
+    const dedupeKey = `${options.method || "GET"} ${path}`;
+    return this.dedupeRequest(dedupeKey, () => this._requestInner<T>(path, options, retries));
+  }
+
+  private async _requestInner<T>(
+    path: string,
+    options: {
+      method?: string;
+      body?: unknown;
+      apiVersion?: string;
+    },
+    retries: number,
   ): Promise<T> {
     await this.throttle();
 
@@ -262,25 +296,27 @@ export class NotionClient {
     results: NotionBlock[];
     children: Record<string, NotionBlock[]>;
   }> {
-    const topLevel = await this.getAllBlockChildren(pageId);
-    const children: Record<string, NotionBlock[]> = {};
+    return this.dedupeRequest(`blocks:${pageId}`, async () => {
+      const topLevel = await this.getAllBlockChildren(pageId);
+      const children: Record<string, NotionBlock[]> = {};
 
-    const recurse = async (blocks: NotionBlock[], depth: number): Promise<void> => {
-      if (depth >= maxDepth) return;
-      for (const block of blocks) {
-        if (block.has_children) {
-          const nested = await this.getAllBlockChildren(block.id);
-          if (nested.length > 0) {
-            children[block.id] = nested;
-            await recurse(nested, depth + 1);
+      const recurse = async (blocks: NotionBlock[], depth: number): Promise<void> => {
+        if (depth >= maxDepth) return;
+        for (const block of blocks) {
+          if (block.has_children) {
+            const nested = await this.getAllBlockChildren(block.id);
+            if (nested.length > 0) {
+              children[block.id] = nested;
+              await recurse(nested, depth + 1);
+            }
           }
         }
-      }
-    };
+      };
 
-    await recurse(topLevel, 0);
+      await recurse(topLevel, 0);
 
-    return { results: topLevel, children };
+      return { results: topLevel, children };
+    });
   }
 
   private async getAllBlockChildren(blockId: string): Promise<NotionBlock[]> {
