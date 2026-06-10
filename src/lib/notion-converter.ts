@@ -604,8 +604,32 @@ function convertSingleBlock(
     case "link_to_page":
     case "synced_block":
     case "ai_block":
-    case "column_list":
+    case "column_list": {
+      // Flatten column layout: iterate column children, then each column's children
+      const columnBlocks = getChildren(block.id);
+      const columnOutputs: string[] = [];
+      for (const col of columnBlocks) {
+        const colChildren = getChildren(col.id);
+        if (colChildren.length > 0) {
+          for (const child of colChildren) {
+            const output = convertSingleBlock(child, 0);
+            if (output) {
+              columnOutputs.push(output);
+            }
+          }
+        }
+      }
+      return columnOutputs.join("\n\n");
+    }
+
     case "column":
+      // Individual column blocks are handled inside column_list above.
+      // If encountered standalone (shouldn't happen), convert their children.
+      return getChildren(block.id)
+        .map((child) => convertSingleBlock(child, 0))
+        .filter(Boolean)
+        .join("\n\n");
+
     case "table_of_contents":
       return "";
 

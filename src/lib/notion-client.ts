@@ -226,31 +226,32 @@ export class NotionClient {
 
   /**
    * Recursively fetch all blocks for a page, including nested children.
+   * Uses a configurable max depth (default 10) to prevent infinite recursion.
    */
-  async getPageBlocks(pageId: string): Promise<{
+  async getPageBlocks(
+    pageId: string,
+    maxDepth: number = 10,
+  ): Promise<{
     results: NotionBlock[];
     children: Record<string, NotionBlock[]>;
   }> {
     const topLevel = await this.getAllBlockChildren(pageId);
     const children: Record<string, NotionBlock[]> = {};
 
-    for (const block of topLevel) {
-      if (block.has_children) {
-        const nested = await this.getAllBlockChildren(block.id);
-        if (nested.length > 0) {
-          children[block.id] = nested;
-          // Recurse one more level for deeply nested blocks
-          for (const nestedBlock of nested) {
-            if (nestedBlock.has_children) {
-              const deep = await this.getAllBlockChildren(nestedBlock.id);
-              if (deep.length > 0) {
-                children[nestedBlock.id] = deep;
-              }
-            }
+    const recurse = async (blocks: NotionBlock[], depth: number): Promise<void> => {
+      if (depth >= maxDepth) return;
+      for (const block of blocks) {
+        if (block.has_children) {
+          const nested = await this.getAllBlockChildren(block.id);
+          if (nested.length > 0) {
+            children[block.id] = nested;
+            await recurse(nested, depth + 1);
           }
         }
       }
-    }
+    };
+
+    await recurse(topLevel, 0);
 
     return { results: topLevel, children };
   }
