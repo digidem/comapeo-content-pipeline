@@ -130,6 +130,10 @@ const SUPPORTED_BLOCKS = new Set([
   "column_list",
   "column",
   "table_of_contents",
+  "embed",
+  "pdf",
+  "equation",
+  "breadcrumb",
 ]);
 
 export function isSupportedBlock(type: string): boolean {
@@ -531,6 +535,26 @@ function convertDivider(): string {
   return "---";
 }
 
+function convertEmbed(block: NotionBlock): string {
+  const url = (block.embed as { url?: string })?.url ?? "";
+  return url ? `[Embedded content](${url})` : "";
+}
+
+function convertPdf(block: NotionBlock): string {
+  const content = block.pdf as
+    | { external?: { url: string }; file?: { url: string }; caption?: NotionRichText[] }
+    | undefined;
+  const url = content?.external?.url ?? content?.file?.url ?? "";
+  const caption = richTextToMarkdown(getCaption(block));
+  const label = caption || "PDF";
+  return url ? `[PDF: ${label}](${url})` : "";
+}
+
+function convertEquation(block: NotionBlock): string {
+  const expression = (block.equation as { expression?: string })?.expression ?? "";
+  return expression ? `$$${expression}$$` : "";
+}
+
 function convertBookmarkOrLinkPreview(block: NotionBlock): string {
   const url = (block[block.type] as { url?: string })?.url ?? "";
   const caption = richTextToMarkdown(getCaption(block));
@@ -642,6 +666,18 @@ function convertSingleBlock(
         .map((child) => convertSingleBlock(child, 0, childrenMap))
         .filter(Boolean)
         .join("\n\n");
+
+    case "embed":
+      return convertEmbed(block);
+
+    case "pdf":
+      return convertPdf(block);
+
+    case "equation":
+      return convertEquation(block);
+
+    case "breadcrumb":
+      return "";
 
     case "table_of_contents":
       return "";
