@@ -12,7 +12,7 @@
  *   pnpm pipeline diff --page <page_id>
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { NotionClient } from "../lib/notion-client.js";
@@ -359,6 +359,40 @@ async function cmdDocsPull(args: Record<string, string>) {
         customProps: { title: null as string | null },
       };
       writeFileSync(categoryPath, JSON.stringify(categoryJson, null, 2));
+    }
+  }
+
+  // Copy assets to each section directory (images referenced via relative paths)
+  const assetsDir = join(inputDir, "assets");
+  if (existsSync(assetsDir)) {
+    const assetFiles = readdirSync(assetsDir).filter((f) => statSync(join(assetsDir, f)).isFile());
+    if (assetFiles.length > 0) {
+      let assetsCopied = 0;
+      // Collect unique section dirs we wrote to
+      const seenDirs = new Set<string>();
+      for (const [locale, sectionMap] of sectionPositions) {
+        for (const [sectionName] of sectionMap) {
+          const sectionDir = toSectionDir(sectionName);
+          const targetDir =
+            locale === "en"
+              ? join(outDir, "docs", sectionDir, "assets")
+              : join(outDir, "i18n", locale, "docusaurus-plugin-content-docs", "current", sectionDir, "assets");
+          if (seenDirs.has(targetDir)) continue;
+          seenDirs.add(targetDir);
+          mkdirSync(targetDir, { recursive: true });
+          for (const f of assetFiles) {
+            const src = join(assetsDir, f);
+            const dst = join(targetDir, f);
+            if (!existsSync(dst)) {
+              writeFileSync(dst, readFileSync(src));
+              assetsCopied++;
+            }
+          }
+        }
+      }
+      if (assetsCopied > 0) {
+        console.log(`  Copied ${assetsCopied} assets to ${seenDirs.size} section dirs`);
+      }
     }
   }
 
