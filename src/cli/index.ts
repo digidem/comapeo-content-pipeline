@@ -271,8 +271,10 @@ async function cmdDocsPull(args: Record<string, string>) {
   mkdirSync(outDir, { recursive: true });
 
   let count = 0;
+  // Track sections per locale for _category_.json generation
+  const sectionPositions = new Map<string, Map<string, number>>(); // locale → section → min position
   for (const doc of manifest.docs) {
-    if (doc.status !== "active") continue;
+    if (args.all !== "true" && doc.status !== "active") continue;
 
     const srcFile = join(inputDir, `${doc.page_id}.md`);
     if (!existsSync(srcFile)) {
@@ -302,6 +304,42 @@ async function cmdDocsPull(args: Record<string, string>) {
     mkdirSync(join(finalPath, ".."), { recursive: true });
     writeFileSync(finalPath, content);
     count++;
+
+    // Track minimum section_order per section for _category_.json position
+    if (section && doc.section_order != null) {
+      const locale = doc.locale || "en";
+      if (!sectionPositions.has(locale)) {
+        sectionPositions.set(locale, new Map());
+      }
+      const localeMap = sectionPositions.get(locale)!;
+      const currentMin = localeMap.get(section);
+      if (currentMin === undefined || doc.section_order < currentMin) {
+        localeMap.set(section, doc.section_order);
+      }
+    }
+  }
+
+  // Write _category_.json for each section (Docusaurus sidebar labels)
+  for (const [locale, sections] of sectionPositions) {
+    for (const [sectionName, position] of sections) {
+      const categoryDir =
+        locale === "en"
+          ? join(outDir, "docs", sectionName)
+          : join(outDir, "i18n", locale, "docusaurus-plugin-content-docs", "current", sectionName);
+      const categoryPath = join(categoryDir, "_category_.json");
+      if (!existsSync(categoryDir)) {
+        mkdirSync(categoryDir, { recursive: true });
+      }
+      const categoryJson = {
+        label: sectionName,
+        position,
+        collapsible: true,
+        collapsed: true,
+        link: { type: "generated-index" as const },
+        customProps: { title: null as string | null },
+      };
+      writeFileSync(categoryPath, JSON.stringify(categoryJson, null, 2));
+    }
   }
 
   console.log(`Pulled ${count} active docs to ${outDir}`);
@@ -660,6 +698,7 @@ Options:
   --out <dir>             Output directory
   --input <file>          Input manifest or metadata file
   --limit <n>             Max pages for sync:full
+  --all                   Include all statuses (docs:pull, default: active only)
 `);
 }
 
