@@ -21,7 +21,7 @@
 | 1.1 | **No circuit breaker** — old code had sliding-window rate-limit tracker with auto-recovery | SHOULD CONSIDER | Simple RPS throttle + retry handles basic cases but lacks the circuit breaker pattern that prevents cascading failures under sustained rate limits |
 | 1.2 | **No request scheduler** — old code had a queue-based request scheduler | SHOULD CONSIDER | Multiple concurrent page syncs could still overwhelm the Notion API |
 | 1.3 | **Uses `/v1/search` instead of `dataSources.query`** | SHOULD CONSIDER | Client-side filtering by database_id; less efficient for large workspaces |
-| 1.4 | **No pagination anomaly detection** — old code detected duplicate IDs and stale cursors | SHOULD CONSIDER | Simpler pagination without these safety checks |
+| 1.4 | ~~**No pagination anomaly detection**~~ — old code detected duplicate IDs and stale cursors | ~~SHOULD CONSIDER~~ ✅ | Fixed: duplicate page ID detection + stale cursor detection in cmdSyncFull and getAllBlockChildren. |
 
 ---
 
@@ -33,8 +33,8 @@
 |---|---------|---------------|-------|
 | 2.1 | ~~**No emoji processing**~~ — old code had custom emoji downloading and caching | ~~SHOULD CONSIDER~~ ✅ | Fixed: custom emoji mentions in rich text now convert to `![name](url)` image references. Existing asset pipeline handles download/rehost. |
 | 2.2 | **Numbered list restart** — new code always starts with `1.` | MINOR | Markdown renderers handle sequential `1.` items correctly |
-| 2.3 | **No retry-based image processing** — old code had multi-pass retry for S3 URLs | SHOULD CONSIDER | Single-pass processing with no retry for failed image downloads |
-| 2.4 | **No centralized error classification** — old code classified errors into categories | SHOULD CONSIDER | Simpler try/catch with console.warn |
+| 2.3 | **No retry-based image processing** — old code had multi-pass retry for S3 URLs | SHOULD CONSIDER (PARTIAL) | rehostAsset already retries 3x with exponential backoff. Old pipeline had cross-run retry which isn't replicated. |
+| 2.4 | ~~**No centralized error classification**~~ — old code classified errors into categories | ~~SHOULD CONSIDER~~ ✅ | Fixed: `src/lib/errors.ts` with ErrorCategory enum, ClassifiedError, and classifyError(). Applied in notion-client request(). |
 | 2.5 | **No content scoring/analysis** — old code had comprehensive content analysis | MINOR | No equivalent analysis tool |
 
 ---
@@ -71,7 +71,7 @@
 
 | # | Finding | Classification | Notes |
 |---|---------|---------------|-------|
-| 5.1 | **No image failure logging** — old pipeline logged to JSON file | SHOULD CONSIDER | Only console.warns failures |
+| 5.1 | ~~**No image failure logging**~~ — old pipeline logged to JSON file | ~~SHOULD CONSIDER~~ ✅ | Fixed: failedAssets tracked in SyncPageOutput (3.4) + image-failures.json persistence in sync:full (5.1). |
 | 5.2 | **No retry metrics** — old pipeline tracked and saved retry metrics | MINOR | Nice-to-have for monitoring |
 
 ---
@@ -115,24 +115,23 @@
 
 | Category | SHOULD FIX | SHOULD CONSIDER | MINOR |
 |----------|-----------|-----------------|-------|
-| 1. Notion Client | 0 (was 0) | 4 | 0 |
-| 2. Converter | 0 (was 0) | 2 (was 3) | 2 |
-| 3. Assets | 0 (was 0) | 2 (was 5) | 0 |
-| 4. Sync | 0 (was 0) | 3 | 0 |
-| 5. Persistence | 0 (was 0) | 1 | 1 |
-| 6. CLI/Worker | 0 (was 0) | 1 | 1 |
-| 7. Utilities | 0 (was 0) | 0 (was 1) | 0 |
+| 1. Notion Client | 0 | 3 (was 4) | 0 |
+| 2. Converter | 0 | 1 (was 3) | 2 |
+| 3. Assets | 0 | 2 (was 5) | 0 |
+| 4. Sync | 0 | 3 | 0 |
+| 5. Persistence | 0 | 0 (was 1) | 1 |
+| 6. CLI/Worker | 0 | 1 | 1 |
+| 7. Utilities | 0 | 0 (was 1) | 0 |
 | 8. Sidebar & i18n | 0 (was 2) | 2 | 0 (was 1) |
-| **TOTAL** | **0 (was 2)** | **15 (was 20)** | **4 (was 5)** |
+| **TOTAL** | **0 (was 2)** | **12 (was 20)** | **4 (was 5)** |
 
-**Resolved this session (2026-06-10):**
-- SHOULD FIX: 8.1, 8.2 (section label translations)
-- SHOULD CONSIDER: 2.1 (emoji), 3.3 (concurrent downloads), 3.4 (failure logging), 3.5 (URL safety), 7.1 (property constants)
-- MINOR: 8.5 (slug dedup)
-- Documented: 8.3, 8.4 (investigation findings)
-- Deferred: 3.1 (sharp incompatible with Workers; Cloudflare Image Resizing covers this)
-
-**After previous sessions:** 8 SHOULD FIX + 8 improvements resolved (see below).
+**Resolved this session (2026-06-10, 10 commits):**
+- **SHOULD FIX:** 8.1, 8.2 — section label translations
+- **SHOULD CONSIDER:** 1.4 (pagination safety), 2.1 (emoji), 2.4 (error classification), 3.3 (concurrent downloads), 3.4 (failure tracking), 3.5 (URL safety), 5.1 (failure log), 7.1 (property constants)
+- **MINOR:** 8.5 — slug dedup
+- **Documented:** 8.3, 8.4
+- **Deferred:** 3.1 (sharp vs Workers)
+- **Partial:** 2.3 (single-run retries exist)
 
 ---
 
