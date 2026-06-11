@@ -513,8 +513,17 @@ async function cmdDocsPull(args: Record<string, string>) {
   // Sort sections by numeric prefix (10, 20, ...) then alphabetically
   for (const [locale, sectionMap] of sectionPositions) {
     const sortedEntries = Array.from(sectionMap.entries()).sort((a, b) => {
-      const aPos = sectionOrder.get(a[0]) ?? 999;
-      const bPos = sectionOrder.get(b[0]) ?? 999;
+      // Sections without a Toggle page default to 0 (sort before numbered sections).
+      // Number-prefixed sections (10, 20, ...) get their Toggle Order value.
+      const getOrder = (name: string) => {
+        if (name === "Uncategorized") return 999;
+        const fromToggle = sectionOrder.get(name);
+        if (fromToggle != null) return fromToggle;
+        // Non-numbered sections (like "Overview") go first
+        return /^\d/.test(name) ? 999 : 0;
+      };
+      const aPos = getOrder(a[0]);
+      const bPos = getOrder(b[0]);
       if (aPos !== bPos) return aPos - bPos;
       return a[0].localeCompare(b[0]);
     });
