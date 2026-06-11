@@ -538,8 +538,14 @@ async function cmdDocsPull(args: Record<string, string>) {
         position: position++,
         collapsible: true,
         collapsed: true,
-        link: { type: "generated-index" as const },
-        customProps: { title: null as string | null },
+        link: {
+          type: "generated-index" as const,
+          // Docusaurus uses link.title for the generated index page's <h1> and <title>.
+          // The label field only sets the sidebar entry. For translated locales,
+          // setting title ensures the category page shows the localized name.
+          title: label,
+        },
+        customProps: { title: label as string | null },
       };
       writeFileSync(categoryPath, JSON.stringify(categoryJson, null, 2));
     }
