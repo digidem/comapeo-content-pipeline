@@ -149,6 +149,17 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
 
   return richText
     .map((rt) => {
+      // Custom emoji mention → image reference (asset pipeline handles download)
+      if (rt.type === "mention") {
+        const mention = rt.mention as
+          | { type?: string; custom_emoji?: { url?: string; name?: string } }
+          | undefined;
+        if (mention?.type === "custom_emoji" && mention.custom_emoji?.url) {
+          const emojiName = mention.custom_emoji.name || "emoji";
+          return `![${emojiName}](${mention.custom_emoji.url})`;
+        }
+      }
+
       let text = rt.plain_text || "";
 
       if (rt.annotations.bold) {

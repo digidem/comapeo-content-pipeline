@@ -176,6 +176,89 @@ describe("richTextToMarkdown", () => {
   it("handles empty input", () => {
     expect(richTextToMarkdown([])).toBe("");
   });
+
+  it("converts custom emoji mention to image reference", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "mention",
+        mention: {
+          type: "custom_emoji",
+          custom_emoji: {
+            url: "https://s3.us-west-2.amazonaws.com/secure.notion-static.com/abc123.png",
+            name: "party-parrot",
+          },
+        },
+        plain_text: ":party-parrot:",
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: false, code: false, color: "default",
+        },
+      },
+    ]);
+    expect(text).toBe(
+      "![party-parrot](https://s3.us-west-2.amazonaws.com/secure.notion-static.com/abc123.png)",
+    );
+  });
+
+  it("custom emoji ignores bold/italic annotations", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "mention",
+        mention: {
+          type: "custom_emoji",
+          custom_emoji: {
+            url: "https://example.com/emoji.png",
+            name: "wave",
+          },
+        },
+        plain_text: ":wave:",
+        annotations: {
+          bold: true, italic: true, strikethrough: false,
+          underline: false, code: false, color: "default",
+        },
+      },
+    ]);
+    // No bold/italic wrapping — plain image reference
+    expect(text).toBe("![wave](https://example.com/emoji.png)");
+  });
+
+  it("custom emoji falls back to 'emoji' name when missing", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "mention",
+        mention: {
+          type: "custom_emoji",
+          custom_emoji: {
+            url: "https://example.com/emoji.png",
+          },
+        },
+        plain_text: ":unknown:",
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: false, code: false, color: "default",
+        },
+      },
+    ]);
+    expect(text).toBe("![emoji](https://example.com/emoji.png)");
+  });
+
+  it("non-custom-emoji mention falls through to plain text", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "mention",
+        mention: {
+          type: "user",
+          user: { name: "Alice" },
+        },
+        plain_text: "@Alice",
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: false, code: false, color: "default",
+        },
+      },
+    ]);
+    expect(text).toBe("@Alice");
+  });
 });
 
 describe("isSupportedBlock", () => {
