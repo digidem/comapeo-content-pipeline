@@ -78,7 +78,7 @@ export async function convertPageData(input: {
 }): Promise<SyncPageOutput> {
   const { pageId, rawPage, rawBlocks, usedSlugs, overrides } = input;
 
-  const rawHash = hashJSON({ page: rawPage, blocks: rawBlocks });
+  const rawHash = await hashJSON({ page: rawPage, blocks: rawBlocks });
 
   // Coerce to shape expected by extract helpers (they only read .id, .properties, .last_edited_time)
   const props = (rawPage.properties ?? {}) as Record<string, unknown>;
@@ -117,7 +117,7 @@ export async function convertPageData(input: {
   markdownBody = postProcessMarkdown(markdownBody, title);
 
   // Compute content hash BEFORE asset rehosting (stable across re-syncs)
-  const hash = contentHash(markdownBody);
+  const hash = await contentHash(markdownBody);
 
   // ── Asset rehosting ──
   // Download Notion-hosted images, replace URLs with stable R2 paths.

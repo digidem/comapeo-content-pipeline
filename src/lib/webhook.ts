@@ -6,34 +6,68 @@
  * Notion signs webhook payloads with HMAC-SHA256 using the
  * NOTION_WEBHOOK_VERIFICATION_TOKEN as the secret. The signature
  * is sent in the `x-notion-verification-signature` header.
+ *
+ * Uses the Web Crypto API (crypto.subtle) for Cloudflare Workers compat.
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+/**
+ * Convert a hex string to a Uint8Array.
+ */
+function hexToBytes(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0) throw new Error("Invalid hex string");
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  }
+  return bytes;
+}
+
+/**
+ * Constant-time comparison of two byte arrays.
+ */
+function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a[i] ^ b[i];
+  }
+  return diff === 0;
+}
 
 /**
  * Verify a Notion webhook signature.
  *
- * @param rawBody - Raw request body bytes (Buffer or Uint8Array)
+ * @param rawBody - Raw request body bytes
  * @param signature - Value of `x-notion-verification-signature` header
  * @param secret - NOTION_WEBHOOK_VERIFICATION_TOKEN
  * @returns true if signature is valid
  */
-export function verifyWebhookSignature(
+export async function verifyWebhookSignature(
   rawBody: Uint8Array,
   signature: string,
   secret: string,
-): boolean {
+): Promise<boolean> {
   if (!signature || !secret) return false;
 
-  const hmac = createHmac("sha256", secret);
-  hmac.update(rawBody);
-  const computed = hmac.digest("hex");
+  const encoder = new TextEncoder();
+  const keyData = encoder.encode(secret);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    keyData,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sigBuf = await crypto.subtle.sign("HMAC", key, rawBody as Uint8Array<ArrayBuffer>);
+  const computed = Array.from(new Uint8Array(sigBuf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 
-  // Use timing-safe comparison
+  // Use constant-time comparison
   try {
-    const computedBuf = Buffer.from(computed, "hex");
-    const sigBuf = Buffer.from(signature, "hex");
-    return computedBuf.length === sigBuf.length && timingSafeEqual(computedBuf, sigBuf);
+    const computedBytes = hexToBytes(computed);
+    const sigBytes = hexToBytes(signature);
+    return computedBytes.length === sigBytes.length && constantTimeEqual(computedBytes, sigBytes);
   } catch {
     // If hex decoding fails, do a simple string compare
     return computed === signature;
@@ -53,11 +87,12 @@ export function verifyBearerAuth(
   const parts = authorizationHeader.split(" ");
   if (parts.length !== 2 || parts[0] !== "Bearer") return false;
 
-  const part1 = Buffer.from(parts[1]);
-  const part2 = Buffer.from(expectedToken);
+  const encoder = new TextEncoder();
+  const part1 = encoder.encode(parts[1]);
+  const part2 = encoder.encode(expectedToken);
   if (part1.length !== part2.length) return false;
 
-  return timingSafeEqual(part1, part2);
+  return constantTimeEqual(part1, part2);
 }
 
 /**

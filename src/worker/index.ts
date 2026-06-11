@@ -16,6 +16,7 @@ import { verifyWebhookSignature, verifyBearerAuth, parseWebhookEvent } from "../
 import { convertPageData } from "../lib/sync.js";
 import type { NotionBlock } from "../lib/notion-converter.js";
 import { NotionClient } from "../lib/notion-client.js";
+import { classifyError, ErrorCategory } from "../lib/errors.js";
 import { R2_PATHS } from "../persistence/r2.js";
 import type { SidebarItem } from "../schemas/manifest.js";
 
@@ -158,7 +159,7 @@ app.post("/webhooks/notion", async (c: Context) => {
 
   // Runtime events: verify HMAC signature
   const signature = c.req.header("x-notion-verification-signature") || "";
-  if (!verifyWebhookSignature(new Uint8Array(rawBody), signature, env.NOTION_WEBHOOK_VERIFICATION_TOKEN)) {
+  if (!(await verifyWebhookSignature(new Uint8Array(rawBody), signature, env.NOTION_WEBHOOK_VERIFICATION_TOKEN))) {
     return c.json({ error: "invalid signature" }, 401);
   }
   const event = parseWebhookEvent(body);
@@ -407,6 +408,19 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
       await env.DB.prepare(
         "UPDATE sync_jobs SET status = 'failed', error = ?, finished_at = datetime('now') WHERE id = ?",
       ).bind(String(err), msg.id).run();
+
+      // Retry transient failures — don't lose the message
+      const classified = classifyError(err, `sync:${pageId}`);
+      if (
+        classified.category === ErrorCategory.NETWORK ||
+        classified.category === ErrorCategory.TIMEOUT ||
+        classified.category === ErrorCategory.RATE_LIMIT ||
+        classified.category === ErrorCategory.HTTP_SERVER
+      ) {
+        console.warn(`Retrying transient error for page ${pageId}: ${classified.category}`);
+        batch.retryAll({ delaySeconds: 60 });
+        return; // Don't ack — retryAll schedules redelivery
+      }
     }
   }
 }

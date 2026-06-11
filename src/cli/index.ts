@@ -687,7 +687,7 @@ async function cmdRagChunks(args: Record<string, string>) {
     const raw = readFileSync(srcFile, "utf8");
     const { frontmatter: fmData, body } = parseDoc(raw);
 
-    const chunks = generateChunks({
+    const chunks = await generateChunks({
       pageId: doc.page_id,
       title: fmData.title || doc.title,
       locale: fmData.locale || doc.locale,

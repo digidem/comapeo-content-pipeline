@@ -141,24 +141,24 @@ describe("mapStatus", () => {
 // ── hash ──
 
 describe("contentHash", () => {
-  it("produces deterministic prefixed hash", () => {
-    const h = contentHash("hello");
+  it("produces deterministic prefixed hash", async () => {
+    const h = await contentHash("hello");
     expect(h).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
-  it("same input → same hash", () => {
-    expect(contentHash("test")).toBe(contentHash("test"));
+  it("same input → same hash", async () => {
+    expect(await contentHash("test")).toBe(await contentHash("test"));
   });
 
-  it("different input → different hash", () => {
-    expect(contentHash("a")).not.toBe(contentHash("b"));
+  it("different input → different hash", async () => {
+    expect(await contentHash("a")).not.toBe(await contentHash("b"));
   });
 });
 
 describe("hashJSON", () => {
-  it("produces same hash for key-reordered objects", () => {
-    const a = hashJSON({ b: 2, a: 1 });
-    const b_ordered = hashJSON({ a: 1, b: 2 });
+  it("produces same hash for key-reordered objects", async () => {
+    const a = await hashJSON({ b: 2, a: 1 });
+    const b_ordered = await hashJSON({ a: 1, b: 2 });
     expect(a).toBe(b_ordered);
   });
 });

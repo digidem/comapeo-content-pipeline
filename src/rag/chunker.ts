@@ -34,7 +34,7 @@ function estimateTokens(text: string): number {
 /**
  * Generate chunks from a single page's Markdown body.
  */
-export function generateChunks(input: ChunkInput): RagChunk[] {
+export async function generateChunks(input: ChunkInput): Promise<RagChunk[]> {
   const { pageId, title, locale, slug, sourceUrl, docusaurusPath, contentHash, markdownBody } = input;
 
   const sections = splitIntoSections(markdownBody);
@@ -46,7 +46,7 @@ export function generateChunks(input: ChunkInput): RagChunk[] {
 
     // If section fits in one chunk, emit it directly
     if (sectionTokens <= 800) {
-      chunks.push(buildChunk({
+      chunks.push(await buildChunk({
         pageId, title, locale, slug, sourceUrl, docusaurusPath,
         contentHash, headingPath: section.headingPath,
         text: section.text.trim(),
@@ -58,7 +58,7 @@ export function generateChunks(input: ChunkInput): RagChunk[] {
     // Split large section into overlapping chunks
     const subChunks = splitText(section.text, 400, 800, 100);
     for (const sub of subChunks) {
-      chunks.push(buildChunk({
+      chunks.push(await buildChunk({
         pageId, title, locale, slug, sourceUrl, docusaurusPath,
         contentHash, headingPath: section.headingPath,
         text: sub.trim(),
@@ -224,7 +224,7 @@ function buildOverlap(paragraphs: string[], targetTokens: number): string {
 
 // ── Chunk builder ──
 
-function buildChunk(params: {
+async function buildChunk(params: {
   pageId: string;
   title: string;
   locale: string;
@@ -235,10 +235,10 @@ function buildChunk(params: {
   headingPath: string[];
   text: string;
   chunkIndex: number;
-}): RagChunk {
+}): Promise<RagChunk> {
   const { pageId, title, locale, slug, sourceUrl, docusaurusPath, contentHash, headingPath, text, chunkIndex } = params;
 
-  const chunkId = computeHash(
+  const chunkId = await computeHash(
     `${pageId}:${contentHash}:${headingPath.join("/")}:${chunkIndex}`,
   );
 

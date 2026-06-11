@@ -1,34 +1,47 @@
 import { describe, it, expect } from "vitest";
-import { createHmac } from "node:crypto";
 import {
   verifyWebhookSignature,
   verifyBearerAuth,
   parseWebhookEvent,
 } from "./webhook.js";
 
+/**
+ * Sign data with HMAC-SHA256 using the Web Crypto API (no node:crypto).
+ */
+async function sign(data: Uint8Array, key: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(key),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sigBuf = await crypto.subtle.sign("HMAC", cryptoKey, data as Uint8Array<ArrayBuffer>);
+  return Array.from(new Uint8Array(sigBuf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 describe("verifyWebhookSignature", () => {
   const secret = "test-secret";
-  const payload = Buffer.from(JSON.stringify({ type: "page.updated", data: { id: "abc" } }));
+  const payload = new TextEncoder().encode(JSON.stringify({ type: "page.updated", data: { id: "abc" } }));
 
-  function sign(data: Uint8Array, key: string): string {
-    return createHmac("sha256", key).update(data).digest("hex");
-  }
-
-  it("accepts valid signature", () => {
-    const sig = sign(payload, secret);
-    expect(verifyWebhookSignature(payload, sig, secret)).toBe(true);
+  it("accepts valid signature", async () => {
+    const sig = await sign(payload, secret);
+    expect(await verifyWebhookSignature(payload, sig, secret)).toBe(true);
   });
 
-  it("rejects invalid signature", () => {
-    expect(verifyWebhookSignature(payload, sign(payload, "wrong-secret"), secret)).toBe(false);
+  it("rejects invalid signature", async () => {
+    expect(await verifyWebhookSignature(payload, await sign(payload, "wrong-secret"), secret)).toBe(false);
   });
 
-  it("rejects empty signature", () => {
-    expect(verifyWebhookSignature(payload, "", secret)).toBe(false);
+  it("rejects empty signature", async () => {
+    expect(await verifyWebhookSignature(payload, "", secret)).toBe(false);
   });
 
-  it("rejects empty secret", () => {
-    expect(verifyWebhookSignature(payload, "abc", "")).toBe(false);
+  it("rejects empty secret", async () => {
+    expect(await verifyWebhookSignature(payload, "abc", "")).toBe(false);
   });
 });
 

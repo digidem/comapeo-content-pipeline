@@ -203,7 +203,7 @@ describe("Worker HTTP routes", () => {
       vi.spyOn(
         await import("../lib/webhook.js"),
         "verifyWebhookSignature",
-      ).mockReturnValue(true);
+      ).mockResolvedValue(true);
 
       const res = await request(app, "/webhooks/notion", {
         method: "POST",
@@ -397,7 +397,7 @@ describe("queue consumer", () => {
     // Compute expected hash from the fixture — same as convertPageData would compute
     const rawMarkdown = convertBlocks(fixtureBlocks as NotionBlockList);
     const markdownBody = postProcessMarkdown(rawMarkdown, "Welcome");
-    const expectedHash = contentHash(markdownBody);
+    const expectedHash = await contentHash(markdownBody);
 
     const pageResponse = {
       id: "test-page-id",

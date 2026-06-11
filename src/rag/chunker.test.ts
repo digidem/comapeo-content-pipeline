@@ -12,9 +12,9 @@ const baseInput = {
 };
 
 describe("generateChunks", () => {
-  it("generates a single chunk for short content", () => {
+  it("generates a single chunk for short content", async () => {
     const markdown = "## Introduction\n\nThis is a short introduction paragraph.";
-    const chunks = generateChunks({ ...baseInput, markdownBody: markdown });
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
 
     expect(chunks).toHaveLength(1);
     expect(chunks[0].title).toBe("Getting Started");
@@ -23,15 +23,15 @@ describe("generateChunks", () => {
     expect(chunks[0].page_id).toBe("abc123");
   });
 
-  it("generates deterministic chunk IDs", () => {
+  it("generates deterministic chunk IDs", async () => {
     const markdown = "## Hello\n\nWorld.";
-    const chunks1 = generateChunks({ ...baseInput, markdownBody: markdown });
-    const chunks2 = generateChunks({ ...baseInput, markdownBody: markdown });
+    const chunks1 = await generateChunks({ ...baseInput, markdownBody: markdown });
+    const chunks2 = await generateChunks({ ...baseInput, markdownBody: markdown });
 
     expect(chunks1[0].chunk_id).toBe(chunks2[0].chunk_id);
   });
 
-  it("handles multiple headings", () => {
+  it("handles multiple headings", async () => {
     const markdown = `
 ## First Section
 
@@ -46,7 +46,7 @@ Deeper content.
 More content.
 `.trim();
 
-    const chunks = generateChunks({ ...baseInput, markdownBody: markdown });
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
     expect(chunks.length).toBeGreaterThanOrEqual(1);
 
     // Check heading paths
@@ -54,7 +54,7 @@ More content.
     expect(paths.some((p) => p.includes("First Section"))).toBe(true);
   });
 
-  it("preserves code blocks without splitting", () => {
+  it("preserves code blocks without splitting", async () => {
     const markdown = `
 ## Code Example
 
@@ -69,25 +69,25 @@ console.log(x + y);
 After the code block.
 `.trim();
 
-    const chunks = generateChunks({ ...baseInput, markdownBody: markdown });
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
     const allText = chunks.map((c) => c.text).join("\n\n");
     expect(allText).toContain("```typescript");
     expect(allText).toContain("const x = 1;");
   });
 
-  it("handles empty markdown", () => {
-    const chunks = generateChunks({ ...baseInput, markdownBody: "" });
+  it("handles empty markdown", async () => {
+    const chunks = await generateChunks({ ...baseInput, markdownBody: "" });
     expect(chunks).toHaveLength(0);
   });
 
-  it("generates large content as multiple chunks", () => {
+  it("generates large content as multiple chunks", async () => {
     // Create enough text to force chunking
     const longText = Array(200)
       .fill("This is a paragraph with enough text to trigger chunking behavior. ".repeat(5))
       .join("\n\n");
 
     const markdown = `## Long Section\n\n${longText}`;
-    const chunks = generateChunks({ ...baseInput, markdownBody: markdown });
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
 
     expect(chunks.length).toBeGreaterThan(1);
     // All chunks should have the same heading path
@@ -98,8 +98,8 @@ After the code block.
 });
 
 describe("generateChunksManifest", () => {
-  it("generates a valid manifest", () => {
-    const chunks = generateChunks({
+  it("generates a valid manifest", async () => {
+    const chunks = await generateChunks({
       ...baseInput,
       markdownBody: "## Hello\n\nWorld.",
     });

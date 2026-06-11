@@ -1,12 +1,17 @@
-import { createHash } from "node:crypto";
-
 /**
  * Compute a deterministic SHA-256 hash of arbitrary input.
  * Returns a prefixed string: `sha256:<hexdigest>`.
+ *
+ * Uses Web Crypto API (crypto.subtle.digest) which works in both
+ * Node 19+ and Cloudflare Workers.
  */
-export function contentHash(input: string): string {
-  const hash = createHash("sha256").update(input, "utf8").digest("hex");
-  return `sha256:${hash}`;
+export async function contentHash(input: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(input);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `sha256:${hashHex}`;
 }
 
 /**
@@ -30,7 +35,7 @@ export function contentChanged(
 /**
  * Hash raw JSON (canonical serialization sort).
  */
-export function hashJSON(obj: unknown): string {
+export async function hashJSON(obj: unknown): Promise<string> {
   const canonical = JSON.stringify(obj, sortedKeys);
   return contentHash(canonical);
 }
