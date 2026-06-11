@@ -471,7 +471,8 @@ async function cmdDocsPull(args: Record<string, string>) {
     // Build Docusaurus-compatible output path
     // en:   {outDir}/docs/{section}/{slug}.md
     // non-en: {outDir}/i18n/{locale}/docusaurus-plugin-content-docs/current/{section}/{slug}.md
-    const sectionRaw = effectiveSection || undefined;
+    // Pages without a Content Section are placed in "Uncategorized" (appears last in sidebar)
+    const sectionRaw = effectiveSection || "Uncategorized";
     const sectionDir = sectionRaw ? toSectionDir(sectionRaw) : undefined;
     // Normalize automated locales: "es - automated" → "es", "pt - automated" → "pt"
     const normalizedLocale =
@@ -593,8 +594,8 @@ async function cmdDocsPull(args: Record<string, string>) {
       const et = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
       if (/^(toggle|title)$/i.test(et)) continue;
       const orphanTranslation = translationMap.get(doc.page_id);
-      const sRaw = orphanTranslation?.section ?? (doc.section || undefined);
-      const sDir = sRaw ? toSectionDir(sRaw) : undefined;
+      const sRaw = orphanTranslation?.section ?? (doc.section || "Uncategorized");
+      const sDir = toSectionDir(sRaw);
       const nLoc = doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
       const orphanSlug = orphanTranslation?.slug ?? doc.slug;
       const expectedPath = nLoc === "en"
@@ -875,6 +876,7 @@ async function cmdDbMigrate(args: Record<string, string>) {
  */
 const SECTION_TRANSLATIONS: Record<string, Record<string, string>> = {
   pt: {
+    "Uncategorized": "Sem Categoria",
     "Overview": "Visão Geral",
     "Preparing to use CoMapeo": "Preparando-se para usar o CoMapeo",
     "Gathering Observations & Tracks": "Coletando Observações e Trayectos",
@@ -886,6 +888,7 @@ const SECTION_TRANSLATIONS: Record<string, Record<string, string>> = {
     "Using Exchange Over the Internet": "Usando Exchange pela Internet",
   },
   es: {
+    "Uncategorized": "Sin Categoría",
     "Overview": "Vista General",
     "Preparing to use CoMapeo": "Preparándose para usar CoMapeo",
     "Gathering Observations & Tracks": "Registrando Observaciones y Trayectos",
