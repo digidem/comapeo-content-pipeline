@@ -10,6 +10,7 @@
  */
 
 import { NOTION_PROPERTIES } from "./notion-properties.js";
+import { classifyError, ClassifiedError, ErrorCategory } from "./errors.js";
 
 // Minimal Notion API types used internally
 export interface NotionPage {
@@ -169,21 +170,33 @@ export class NotionClient {
 
         // Non-retryable error
         const errorBody = await resp.text().catch(() => "");
-        throw new Error(
-          `Notion API error ${resp.status}: ${resp.statusText} — ${errorBody}`,
+        throw classifyError(
+          new Error(`Notion API error ${resp.status}: ${resp.statusText} — ${errorBody}`),
+          path,
         );
       } catch (err) {
-        if (attempt >= retries) throw err;
-        if (err instanceof Error && err.message.startsWith("Notion API error")) {
-          throw err; // Don't retry non-rate-limit errors
+        const classified = classifyError(err, `Notion ${path}`);
+        if (attempt >= retries) throw classified;
+
+        // Only retry network / timeout errors
+        if (
+          classified.category === ErrorCategory.NETWORK ||
+          classified.category === ErrorCategory.TIMEOUT
+        ) {
+          const waitMs = 1000 * Math.pow(2, attempt);
+          await sleep(waitMs);
+          continue;
         }
-        // Network error — retry
-        const waitMs = 1000 * Math.pow(2, attempt);
-        await sleep(waitMs);
+
+        // Non-retryable (HTTP client/server, validation, etc.)
+        throw classified;
       }
     }
 
-    throw new Error(`Max retries exceeded for ${path}`);
+    throw classifyError(
+      new Error(`Max retries exceeded for ${path}`),
+      `Notion ${path}`,
+    );
   }
 
   // ── API methods ──
