@@ -281,16 +281,29 @@ async function cmdDocsPull(args: Record<string, string>) {
     }
   }
 
-  // Build translated section labels from Toggle pages
-  // Toggle page titles in each locale provide the localized sidebar label
+  // Build translated section labels from Toggle pages.
+  // Toggle page titles provide localized sidebar labels.
+  // Section order comes from EN Toggle's section_order (Order property).
   const sectionLabels = new Map<string, Map<string, string>>(); // locale → section → label
+  const sectionOrder = new Map<string, number>(); // section → canonical position (from EN Toggle)
   for (const doc of manifest.docs) {
     const et = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
     if (!/^toggle$/i.test(et)) continue;
     const sec = doc.section || "__none__";
     const loc = doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
+    // Store label per locale (first Toggle wins — lowest section_order)
     if (!sectionLabels.has(loc)) sectionLabels.set(loc, new Map());
-    sectionLabels.get(loc)!.set(sec, doc.title);
+    if (!sectionLabels.get(loc)!.has(sec)) {
+      sectionLabels.get(loc)!.set(sec, doc.title);
+    }
+    // Use EN Toggle position as canonical order (lowest wins)
+    if (loc === "en") {
+      const pos = doc.section_order ?? 999;
+      const existing = sectionOrder.get(sec);
+      if (existing === undefined || pos < existing) {
+        sectionOrder.set(sec, pos);
+      }
+    }
   }
 
   let count = 0;
@@ -373,9 +386,9 @@ async function cmdDocsPull(args: Record<string, string>) {
   // Sort sections by numeric prefix (10, 20, ...) then alphabetically
   for (const [locale, sectionMap] of sectionPositions) {
     const sortedEntries = Array.from(sectionMap.entries()).sort((a, b) => {
-      const aNum = getSectionNumberPrefix(a[0]);
-      const bNum = getSectionNumberPrefix(b[0]);
-      if (aNum !== bNum) return aNum - bNum;
+      const aPos = sectionOrder.get(a[0]) ?? 999;
+      const bPos = sectionOrder.get(b[0]) ?? 999;
+      if (aPos !== bPos) return aPos - bPos;
       return a[0].localeCompare(b[0]);
     });
     let position = 1;
