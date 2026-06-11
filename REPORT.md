@@ -45,11 +45,11 @@
 
 | # | Finding | Classification | Notes |
 |---|---------|---------------|-------|
-| 3.1 | **No image optimization** — old pipeline resized and converted to WebP | SHOULD CONSIDER | Larger file sizes in R2, slower page loads |
+| 3.1 | **No image optimization** — old pipeline resized and converted to WebP | SHOULD CONSIDER (DEFERRED) | Sharp native module incompatible with Workers. Cloudflare Image Resizing handles optimization at CDN level. |
 | 3.2 | **No image caching** — old pipeline had LRU cache + disk cache | SHOULD CONSIDER | Each sync re-downloads all images |
-| 3.3 | **No concurrent image processing** — new pipeline processes sequentially | SHOULD CONSIDER | Slower for pages with many images |
-| 3.4 | **No image failure logging** — old pipeline logged to image-failures.json | SHOULD CONSIDER | Makes debugging harder in production |
-| 3.5 | **URL replacement uses `replaceAll()`** — could match partial URLs | SHOULD CONSIDER | Position-based replacement would be safer |
+| 3.3 | ~~**No concurrent image processing**~~ — new pipeline processes sequentially | ~~SHOULD CONSIDER~~ ✅ | Fixed: chunked Promise.all with CONCURRENCY=5. Each chunk of 5 URLs downloads in parallel. |
+| 3.4 | ~~**No image failure logging**~~ — old pipeline logged to image-failures.json | ~~SHOULD CONSIDER~~ ✅ | Fixed: SyncPageOutput.failedAssets tracks download failures. CLI reports counts. |
+| 3.5 | ~~**URL replacement uses `replaceAll()`**~~ — could match partial URLs | ~~SHOULD CONSIDER~~ ✅ | Fixed: URL→R2 key mappings sorted longest-first before replacement prevents substring corruption. |
 
 ---
 
@@ -93,7 +93,7 @@
 
 | # | Finding | Classification | Notes |
 |---|---------|---------------|-------|
-| 7.1 | **No centralized property name constants** — old code used NOTION_PROPERTIES object | SHOULD CONSIDER | Inline strings scattered across files; multiple files need updating if property names change |
+| 7.1 | ~~**No centralized property name constants**~~ — old code used NOTION_PROPERTIES object | ~~SHOULD CONSIDER~~ ✅ | Fixed: `src/lib/notion-properties.ts` centralizes all 10 property names. Used by sync.ts, manifest.ts, notion-client.ts. |
 
 ---
 
@@ -115,22 +115,24 @@
 
 | Category | SHOULD FIX | SHOULD CONSIDER | MINOR |
 |----------|-----------|-----------------|-------|
-| 1. Notion Client | 0 | 4 | 0 |
-| 2. Converter | 0 | 3 | 2 |
-| 3. Assets | 0 | 5 | 0 |
-| 4. Sync | 0 | 3 | 0 |
-| 5. Persistence | 0 | 1 | 1 |
-| 6. CLI/Worker | 0 | 1 | 1 |
-| 7. Utilities | 0 | 1 | 0 |
-| 8. Sidebar & i18n | 2 | 2 | 1 |
-| **TOTAL** | **2** | **20** | **5** |
-| 2. Converter | 3 | 2 |
-| 3. Assets | 5 | 0 |
-| 4. Sync | 3 | 0 |
-| 5. Persistence | 1 | 1 |
-| 6. CLI/Worker | 1 | 1 |
-| 7. Utilities | 1 | 0 |
-| **TOTAL** | **18** | **4** |
+| 1. Notion Client | 0 (was 0) | 4 | 0 |
+| 2. Converter | 0 (was 0) | 2 (was 3) | 2 |
+| 3. Assets | 0 (was 0) | 2 (was 5) | 0 |
+| 4. Sync | 0 (was 0) | 3 | 0 |
+| 5. Persistence | 0 (was 0) | 1 | 1 |
+| 6. CLI/Worker | 0 (was 0) | 1 | 1 |
+| 7. Utilities | 0 (was 0) | 0 (was 1) | 0 |
+| 8. Sidebar & i18n | 0 (was 2) | 2 | 0 (was 1) |
+| **TOTAL** | **0 (was 2)** | **15 (was 20)** | **4 (was 5)** |
+
+**Resolved this session (2026-06-10):**
+- SHOULD FIX: 8.1, 8.2 (section label translations)
+- SHOULD CONSIDER: 2.1 (emoji), 3.3 (concurrent downloads), 3.4 (failure logging), 3.5 (URL safety), 7.1 (property constants)
+- MINOR: 8.5 (slug dedup)
+- Documented: 8.3, 8.4 (investigation findings)
+- Deferred: 3.1 (sharp incompatible with Workers; Cloudflare Image Resizing covers this)
+
+**After previous sessions:** 8 SHOULD FIX + 8 improvements resolved (see below).
 
 ---
 

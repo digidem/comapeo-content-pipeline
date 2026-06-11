@@ -136,6 +136,7 @@ async function cmdSyncFull(args: Record<string, string>) {
   mkdirSync(outDir, { recursive: true });
   const usedSlugs = new Set<string>();
   const allMetadata = [];
+  const allFailedAssets: Array<{ pageId: string; url: string; timestamp: string }> = [];
   let count = 0;
   let maxLastEditedTime = "";
 
@@ -186,6 +187,13 @@ async function cmdSyncFull(args: Record<string, string>) {
         }
 
         if (result.failedAssets.length > 0) {
+          for (const url of result.failedAssets) {
+            allFailedAssets.push({
+              pageId: result.metadata.page_id,
+              url,
+              timestamp: new Date().toISOString(),
+            });
+          }
           console.warn(`    ⚠ ${result.failedAssets.length} asset download(s) failed`);
         }
       } catch (err) {
@@ -195,6 +203,20 @@ async function cmdSyncFull(args: Record<string, string>) {
 
     cursor = resp.next_cursor || undefined;
   } while (cursor);
+
+  // ── Persist image failure log ──
+  if (allFailedAssets.length > 0) {
+    const failuresPath = join(outDir, "image-failures.json");
+    let existing: typeof allFailedAssets = [];
+    if (existsSync(failuresPath)) {
+      try {
+        existing = JSON.parse(readFileSync(failuresPath, "utf8"));
+      } catch { /* ignore parse errors */ }
+    }
+    const merged = [...existing, ...allFailedAssets];
+    writeFileSync(failuresPath, JSON.stringify(merged, null, 2));
+    console.warn(`  ⚠ ${allFailedAssets.length} asset download(s) failed (total in log: ${merged.length})`);
+  }
 
   // ── Sidebar position fallback ──
   // Pages without explicit Order get sequential positions after max in their section.
