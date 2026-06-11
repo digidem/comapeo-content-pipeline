@@ -146,6 +146,9 @@ export async function convertPageData(input: {
     assetResults.push(...chunkResults);
   }
 
+  // Collect URL → R2 key mappings
+  const urlReplacements = new Map<string, string>();
+
   for (const item of assetResults) {
     if (!item || !item.result) {
       if (item) console.warn(`Failed to download asset (retries exhausted): ${item.url}`);
@@ -165,7 +168,13 @@ export async function convertPageData(input: {
 
     assetBinaries.push({ r2Key, data, contentType });
 
-    // Replace URL in markdown body
+    urlReplacements.set(url, r2Key);
+  }
+
+  // Apply replacements longest-first to avoid substring corruption
+  const sortedUrls = [...urlReplacements.keys()].sort((a, b) => b.length - a.length);
+  for (const url of sortedUrls) {
+    const r2Key = urlReplacements.get(url)!;
     markdownBody = markdownBody.replaceAll(url, r2Key);
   }
 
