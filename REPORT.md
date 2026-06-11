@@ -6,10 +6,9 @@
 
 ## Legend
 
+- **SHOULD FIX** — Logic gap that will cause incorrect output or missing data
 - **SHOULD CONSIDER** — Behavioral difference that may be intentional but should be reviewed
 - **MINOR** — Cosmetic or low-impact difference
-
-All SHOULD FIX items have been addressed. This report documents remaining differences.
 
 ---
 
@@ -98,11 +97,33 @@ All SHOULD FIX items have been addressed. This report documents remaining differ
 
 ---
 
+## 8. Sidebar & i18n
+
+### Issues
+
+| # | Finding | Classification | Notes |
+|---|---------|---------------|-------|
+| 8.1 | **Missing translated sidebar labels** — PT sections 2,3,6,8 show English labels | SHOULD FIX | No localized Toggle page exists in Notion for these sections. PT Toggle "Personalizando CoMapeo" exists but has no Content Section set (section=null). Need to either create missing PT Toggles in Notion, OR fall back to translating the EN Content Section name. |
+| 8.2 | **ES section "Overview" shows English label** — no ES Toggle for this section | SHOULD FIX | Same root cause as 8.1 — missing localized Toggle in Notion |
+| 8.3 | **Section ordering may not match old site** — positions derived from EN Toggle Order property | SHOULD CONSIDER | Old site had specific ordering (e.g., Getting Started at 4, Troubleshooting at 46). New pipeline uses Toggle Order values which differ. Verify with stakeholders if current order is acceptable. |
+| 8.4 | **Missing sections in some locales** — ES has 8 sections, EN/PT have 9 | SHOULD CONSIDER | ES locale missing one section entirely. Check if Notion data is complete. |
+| 8.5 | **Test pages cause duplicate route warnings** — 7 copies of test-guia-de-instalacao in PT | MINOR | Duplicate test pages in Notion with identical slugs. Clean up in Notion or add dedup logic. |
+
+---
+
 ## Summary
 
-| Category | SHOULD CONSIDER | MINOR |
-|----------|----------------|-------|
-| 1. Notion Client | 4 | 0 |
+| Category | SHOULD FIX | SHOULD CONSIDER | MINOR |
+|----------|-----------|-----------------|-------|
+| 1. Notion Client | 0 | 4 | 0 |
+| 2. Converter | 0 | 3 | 2 |
+| 3. Assets | 0 | 5 | 0 |
+| 4. Sync | 0 | 3 | 0 |
+| 5. Persistence | 0 | 1 | 1 |
+| 6. CLI/Worker | 0 | 1 | 1 |
+| 7. Utilities | 0 | 1 | 0 |
+| 8. Sidebar & i18n | 2 | 2 | 1 |
+| **TOTAL** | **2** | **20** | **5** |
 | 2. Converter | 3 | 2 |
 | 3. Assets | 5 | 0 |
 | 4. Sync | 3 | 0 |
