@@ -395,7 +395,9 @@ async function cmdDocsPull(args: Record<string, string>) {
     for (const [sectionName] of sortedEntries) {
       // Use translated label from Toggle page if available, otherwise English stripped label
       const translatedLabel = sectionLabels.get(locale)?.get(sectionName);
-      const label = translatedLabel ?? stripSectionPrefix(sectionName);
+      const strippedEn = stripSectionPrefix(sectionName);
+      const fallbackLabel = SECTION_TRANSLATIONS[locale]?.[strippedEn] ?? strippedEn;
+      const label = translatedLabel ?? fallbackLabel;
       const sectionDir = toSectionDir(sectionName);
       const categoryDir =
         locale === "en"
@@ -733,6 +735,36 @@ async function cmdDbMigrate(args: Record<string, string>) {
 }
 
 // ── Helpers ──
+
+/**
+ * Static translations for section sidebar labels.
+ * Used as fallback when a locale lacks a Toggle page for a section.
+ * Toggle-provided labels always win over these static translations.
+ */
+const SECTION_TRANSLATIONS: Record<string, Record<string, string>> = {
+  pt: {
+    "Overview": "Visão Geral",
+    "Preparing to use CoMapeo": "Preparando-se para usar o CoMapeo",
+    "Gathering Observations & Tracks": "Coletando Observações e Trayectos",
+    "Reviewing Observations & Tracks": "Revisando Observações e Trayectos",
+    "Managing Data Privacy and Security": "Gestão de Privacidade de Dados e Segurança",
+    "Managing Projects": "Gerenciando Projetos",
+    "Sharing and Exporting different data types": "Compartilhando e Exportando Diferentes Tipos de Dados",
+    "Troubleshooting": "Solução de Problemas",
+    "Using Exchange Over the Internet": "Usando Exchange pela Internet",
+  },
+  es: {
+    "Overview": "Vista General",
+    "Preparing to use CoMapeo": "Preparándose para usar CoMapeo",
+    "Gathering Observations & Tracks": "Registrando Observaciones y Trayectos",
+    "Reviewing Observations & Tracks": "Revisando Observaciones y Trayectos",
+    "Managing Data Privacy and Security": "Gestión de Privacidad y Seguridad de Datos",
+    "Managing Projects": "Gestión de Proyectos",
+    "Sharing and Exporting different data types": "Compartir y Exportar Diferentes Tipos de Datos",
+    "Troubleshooting": "Solución de Problemas",
+    "Using Exchange Over the Internet": "Usando Exchange por Internet",
+  },
+};
 
 /**
  * Strip number prefix from section name for display labels.
