@@ -9,7 +9,6 @@
  *   MAX_NOTION_RPS        — requests per second (default: 3)
  */
 
-import { NOTION_PROPERTIES } from "./notion-properties.js";
 import { classifyError, ClassifiedError, ErrorCategory } from "./errors.js";
 
 // Minimal Notion API types used internally
@@ -235,31 +234,6 @@ export class NotionClient {
       body.filter = params.filter;
     }
 
-    // When excludeSubItems is true, add a compound filter that keeps the
-    // existing filter (if any) AND requires the "Sub-item" relation to be empty,
-    // so only top-level pages are returned.
-    if (params.excludeSubItems) {
-      const subItemFilter = {
-        property: NOTION_PROPERTIES.SUB_ITEM,
-        relation: { is_empty: true },
-      };
-
-      if (params.filter) {
-        // Merge with existing filter using AND compound
-        body.filter = {
-          and: [params.filter, subItemFilter],
-        };
-      } else {
-        // Merge with default object filter using AND compound
-        body.filter = {
-          and: [
-            { property: "object", value: "page" },
-            subItemFilter,
-          ],
-        };
-      }
-    }
-
     const resp = await this.request<NotionPageResponse>(
       "/search",
       { method: "POST", body },
@@ -272,9 +246,18 @@ export class NotionClient {
     if (dbId && resp.results) {
       const normalizedDbId = dbId.replace(/-/g, "");
       resp.results = resp.results.filter((page) => {
-        const parent = page as unknown as { parent?: { database_id?: string } };
-        const pageDbId = parent?.parent?.database_id?.replace(/-/g, "") ?? "";
-        return pageDbId === normalizedDbId;
+        const parent = page as unknown as { parent?: { database_id?: string; page_id?: string } };
+        const pageParentDbId = parent?.parent?.database_id?.replace(/-/g, "") ?? "";
+        const matchesDb = pageParentDbId === normalizedDbId;
+
+        // When excludeSubItems is true, also exclude pages whose parent is another page
+        // (sub-items linked via "Sub-item" relation have page_id parent, not database_id).
+        // /v1/search doesn't support compound AND filters so we filter client-side.
+        if (params.excludeSubItems && parent?.parent?.page_id) {
+          return false;
+        }
+
+        return matchesDb;
       });
     }
 
