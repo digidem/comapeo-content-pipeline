@@ -310,7 +310,47 @@ async function cmdDocsPull(args: Record<string, string>) {
   let skippedNonPage = 0;
   // Track sections per locale for _category_.json generation
   const sectionPositions = new Map<string, Map<string, number>>(); // locale → section → min position
+
+  // Deduplicate pages with the same slug in the same locale
+  // (e.g. test pages that share a slug like "test-guia-de-instalacao" in PT)
+  const dedupedDocs: typeof manifest.docs = [];
+  const seenSlugs = new Map<string, (typeof manifest.docs)[number]>(); // locale/slug → doc
   for (const doc of manifest.docs) {
+    if (args.all !== "true" && doc.status !== "active") {
+      dedupedDocs.push(doc);
+      continue;
+    }
+    const elementType = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
+    const isContentPage = /^page$/i.test(elementType) || elementType === "";
+    if (!isContentPage) {
+      dedupedDocs.push(doc);
+      continue;
+    }
+    const translation = translationMap.get(doc.page_id);
+    const translationSlug = translation?.slug ?? doc.slug;
+    const normalizedLocale =
+      doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
+    const key = `${normalizedLocale}/${translationSlug}`;
+    const existing = seenSlugs.get(key);
+    if (existing) {
+      const existingOrder = existing.section_order ?? 999;
+      const docOrder = doc.section_order ?? 999;
+      if (docOrder < existingOrder) {
+        console.warn(`  Replacing duplicate slug "${translationSlug}" (${normalizedLocale}): ${existing.page_id} → ${doc.page_id}`);
+        // Replace existing in dedupedDocs
+        const idx = dedupedDocs.indexOf(existing);
+        if (idx !== -1) dedupedDocs[idx] = doc;
+        seenSlugs.set(key, doc);
+      } else {
+        console.warn(`  Skipping duplicate slug "${translationSlug}" (${normalizedLocale}): keeping ${existing.page_id}, dropping ${doc.page_id}`);
+      }
+      continue;
+    }
+    seenSlugs.set(key, doc);
+    dedupedDocs.push(doc);
+  }
+
+  for (const doc of dedupedDocs) {
     if (args.all !== "true" && doc.status !== "active") continue;
 
     // Skip structural pages (Toggles, Titles) — only publish content Pages
