@@ -59,7 +59,7 @@
 
 | # | Finding | Classification | Notes |
 |---|---------|---------------|-------|
-| 4.1 | **No sidebar position fallback with file scanning** — old code scanned existing files | SHOULD CONSIDER | Position collisions possible if pages synced in batches |
+| 4.1 | ~~**No sidebar position fallback with file scanning**~~ — old code scanned existing files | ~~SHOULD CONSIDER~~ ✅ | Fixed: `assignFallbackPositions` now reads existing `_category_.json` from output dir to determine base position. |
 | 4.2 | **No translation string management** — old code built translation maps | SHOULD CONSIDER | No automated translation title tracking |
 | 4.3 | **No sub-item relation handling in sync** — old code used Sub-item for page hierarchy | SHOULD CONSIDER | docs:pull handles this, but sync layer doesn't |
 
