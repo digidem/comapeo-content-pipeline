@@ -46,6 +46,8 @@ export interface SyncPageOutput {
   changed: boolean;
   /** Downloaded asset binaries keyed by R2 key (for upload to R2/disk) */
   assetBinaries: AssetBinary[];
+  /** URLs of assets that could not be downloaded */
+  failedAssets: string[];
 }
 
 /** Overrides for page properties — take precedence over values extracted from rawPage. */
@@ -126,6 +128,7 @@ export async function convertPageData(input: {
 
   // Process assets concurrently with a limit to avoid overwhelming the Notion CDN
   const CONCURRENCY = 5;
+  const failedUrls: string[] = [];
   const assetResults: Array<{
     url: string;
     result: Awaited<ReturnType<typeof rehostAsset>>;
@@ -140,6 +143,7 @@ export async function convertPageData(input: {
           return { url, result };
         } catch (err) {
           console.warn(`Failed to download asset: ${url}`, err);
+          failedUrls.push(url);
           return null;
         }
       }),
@@ -152,7 +156,10 @@ export async function convertPageData(input: {
 
   for (const item of assetResults) {
     if (!item || !item.result) {
-      if (item) console.warn(`Failed to download asset (retries exhausted): ${item.url}`);
+      if (item) {
+        console.warn(`Failed to download asset (retries exhausted): ${item.url}`);
+        failedUrls.push(item.url);
+      }
       continue;
     }
     const { url, result } = item;
@@ -216,6 +223,7 @@ export async function convertPageData(input: {
     hash,
     changed: true, // Caller determines this by comparing with stored hash
     assetBinaries,
+    failedAssets: failedUrls,
   };
 }
 

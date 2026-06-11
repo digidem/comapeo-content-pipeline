@@ -119,6 +119,10 @@ async function cmdSyncPage(args: Record<string, string>) {
   console.log(`  Slug: ${result.metadata.slug}`);
   console.log(`  Hash: ${result.hash}`);
   console.log(`  Output: ${join(outDir, `${pageId}.md`)}`);
+
+  if (result.failedAssets.length > 0) {
+    console.warn(`  ⚠ ${result.failedAssets.length} asset download(s) failed`);
+  }
 }
 
 async function cmdSyncFull(args: Record<string, string>) {
@@ -179,6 +183,10 @@ async function cmdSyncFull(args: Record<string, string>) {
         // Track latest edited time for watermark
         if (result.metadata.notion_last_edited_time > maxLastEditedTime) {
           maxLastEditedTime = result.metadata.notion_last_edited_time;
+        }
+
+        if (result.failedAssets.length > 0) {
+          console.warn(`    ⚠ ${result.failedAssets.length} asset download(s) failed`);
         }
       } catch (err) {
         console.error(`  Failed to sync page ${page.id}:`, err);
