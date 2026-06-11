@@ -31,7 +31,7 @@
 
 | # | Finding | Classification | Notes |
 |---|---------|---------------|-------|
-| 2.1 | **No emoji processing** — old code had custom emoji downloading and caching | SHOULD CONSIDER | Custom Notion emojis appear as broken references |
+| 2.1 | ~~**No emoji processing**~~ — old code had custom emoji downloading and caching | ~~SHOULD CONSIDER~~ ✅ | Fixed: custom emoji mentions in rich text now convert to `![name](url)` image references. Existing asset pipeline handles download/rehost. |
 | 2.2 | **Numbered list restart** — new code always starts with `1.` | MINOR | Markdown renderers handle sequential `1.` items correctly |
 | 2.3 | **No retry-based image processing** — old code had multi-pass retry for S3 URLs | SHOULD CONSIDER | Single-pass processing with no retry for failed image downloads |
 | 2.4 | **No centralized error classification** — old code classified errors into categories | SHOULD CONSIDER | Simpler try/catch with console.warn |
@@ -103,11 +103,11 @@
 
 | # | Finding | Classification | Notes |
 |---|---------|---------------|-------|
-| 8.1 | **Missing translated sidebar labels** — PT sections 2,3,6,8 show English labels | SHOULD FIX | No localized Toggle page exists in Notion for these sections. PT Toggle "Personalizando CoMapeo" exists but has no Content Section set (section=null). Need to either create missing PT Toggles in Notion, OR fall back to translating the EN Content Section name. |
-| 8.2 | **ES section "Overview" shows English label** — no ES Toggle for this section | SHOULD FIX | Same root cause as 8.1 — missing localized Toggle in Notion |
-| 8.3 | **Section ordering may not match old site** — positions derived from EN Toggle Order property | SHOULD CONSIDER | Old site had specific ordering (e.g., Getting Started at 4, Troubleshooting at 46). New pipeline uses Toggle Order values which differ. Verify with stakeholders if current order is acceptable. |
-| 8.4 | **Missing sections in some locales** — ES has 8 sections, EN/PT have 9 | SHOULD CONSIDER | ES locale missing one section entirely. Check if Notion data is complete. |
-| 8.5 | **Test pages cause duplicate route warnings** — 7 copies of test-guia-de-instalacao in PT | MINOR | Duplicate test pages in Notion with identical slugs. Clean up in Notion or add dedup logic. |
+| 8.1 | ~~**Missing translated sidebar labels**~~ — PT sections 2,3,6,8 show English labels | ~~SHOULD FIX~~ ✅ | Fixed: static SECTION_TRANSLATIONS map provides PT/ES fallback labels when no localized Toggle exists. Priority: Toggle title > static translation > EN stripped name. |
+| 8.2 | ~~**ES section "Overview" shows English label**~~ — no ES Toggle for this section | ~~SHOULD FIX~~ ✅ | Same fix as 8.1 — "Overview" → "Vista General" via static map. |
+| 8.3 | **Section ordering may not match old site** — positions derived from EN Toggle Order property | SHOULD CONSIDER | Investigated 2026-06-10: current EN _category_.json shows sequential positions (1-9). Old site reportedly had non-sequential values (e.g., Getting Started at 4, Troubleshooting at 46). The EN Toggle `Order` property in Notion controls this — verify values match desired sidebar order. |
+| 8.4 | **Missing sections in some locales** — ES has 8 sections, EN/PT have 9 | SHOULD CONSIDER | Investigated 2026-06-10: ES is missing `sharing-and-exporting-different-data-types` section. This is a Notion data issue — no ES pages exist for that Content Section. Either create ES translations for pages in this section, or the pipeline will skip the empty category (correct behavior for Docusaurus). |
+| 8.5 | ~~**Test pages cause duplicate route warnings**~~ — 7 copies of test-guia-de-instalacao in PT | ~~MINOR~~ ✅ | Fixed: slug deduplication in docs:pull keeps the page with lowest section_order and warns about skipped duplicates. |
 
 ---
 

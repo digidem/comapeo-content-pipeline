@@ -123,32 +123,50 @@ export async function convertPageData(input: {
   const extracted = extractAssetUrls(markdownBody);
   const notionAssets = extracted.filter((a) => a.isNotion);
 
-  for (const { url } of notionAssets) {
-    try {
-      const result = await rehostAsset(url);
-      if (!result) {
-        console.warn(`Failed to download asset (retries exhausted): ${url}`);
-        continue;
-      }
-      const { data, contentType, ext } = result;
-      const sha256 = await sha256Hex(data);
-      const r2Key = assetR2Key(sha256, ext);
+  // Process assets concurrently with a limit to avoid overwhelming the Notion CDN
+  const CONCURRENCY = 5;
+  const assetResults: Array<{
+    url: string;
+    result: Awaited<ReturnType<typeof rehostAsset>>;
+  } | null> = [];
 
-      assets.push({
-        original_url: url,
-        r2_key: r2Key,
-        sha256,
-        mime_type: contentType,
-      });
+  for (let i = 0; i < notionAssets.length; i += CONCURRENCY) {
+    const chunk = notionAssets.slice(i, i + CONCURRENCY);
+    const chunkResults = await Promise.all(
+      chunk.map(async ({ url }) => {
+        try {
+          const result = await rehostAsset(url);
+          return { url, result };
+        } catch (err) {
+          console.warn(`Failed to download asset: ${url}`, err);
+          return null;
+        }
+      }),
+    );
+    assetResults.push(...chunkResults);
+  }
 
-      assetBinaries.push({ r2Key, data, contentType });
-
-      // Replace URL in markdown body
-      markdownBody = markdownBody.replaceAll(url, r2Key);
-    } catch (err) {
-      console.warn(`Failed to download asset: ${url}`, err);
-      // Keep original URL — non-fatal
+  for (const item of assetResults) {
+    if (!item || !item.result) {
+      if (item) console.warn(`Failed to download asset (retries exhausted): ${item.url}`);
+      continue;
     }
+    const { url, result } = item;
+    const { data, contentType, ext } = result;
+    const sha256 = await sha256Hex(data);
+    const r2Key = assetR2Key(sha256, ext);
+
+    assets.push({
+      original_url: url,
+      r2_key: r2Key,
+      sha256,
+      mime_type: contentType,
+    });
+
+    assetBinaries.push({ r2Key, data, contentType });
+
+    // Replace URL in markdown body
+    markdownBody = markdownBody.replaceAll(url, r2Key);
   }
 
   // Build metadata
