@@ -78,3 +78,45 @@ export function classifyError(err: unknown, context?: string): ClassifiedError {
 
   return new ClassifiedError(`${prefix}${message}`, ErrorCategory.UNKNOWN, undefined, err);
 }
+
+export interface ErrorRecord {
+  timestamp: string;
+  message: string;
+  category: ErrorCategory;
+  statusCode?: number;
+}
+
+export class ErrorRecorder {
+  private errors: ErrorRecord[] = [];
+
+  record(err: unknown, context?: string): void {
+    const classified = classifyError(err, context);
+    this.errors.push({
+      timestamp: new Date().toISOString(),
+      message: classified.message,
+      category: classified.category,
+      statusCode: classified.statusCode,
+    });
+  }
+
+  summary(): {
+    total: number;
+    byCategory: Record<string, number>;
+    topMessages: string[];
+  } {
+    const byCategory: Record<string, number> = {};
+    const messageCounts = new Map<string, number>();
+
+    for (const e of this.errors) {
+      byCategory[e.category] = (byCategory[e.category] || 0) + 1;
+      messageCounts.set(e.message, (messageCounts.get(e.message) || 0) + 1);
+    }
+
+    const topMessages = [...messageCounts.entries()]
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([msg, count]) => `${msg} (×${count})`);
+
+    return { total: this.errors.length, byCategory, topMessages };
+  }
+}

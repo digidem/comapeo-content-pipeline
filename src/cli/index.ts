@@ -20,6 +20,7 @@ import { syncPage } from "../lib/sync.js";
 import { generateManifest } from "../lib/manifest.js";
 import { parseDoc } from "../lib/frontmatter.js";
 import { generateChunks, generateChunksManifest } from "../rag/chunker.js";
+import { ErrorRecorder } from "../lib/errors.js";
 
 const command = process.argv[2];
 const args = parseArgs(process.argv.slice(3));
@@ -76,6 +77,7 @@ async function cmdSyncPage(args: Record<string, string>) {
   const outDir = args.out || process.cwd();
 
   console.log(`Syncing page: ${pageId}...`);
+  const errorRecorder = new ErrorRecorder();
   const result = await syncPage({
     pageId,
     client,
@@ -111,6 +113,7 @@ async function cmdSyncPage(args: Record<string, string>) {
       mkdirSync(join(assetPath, ".."), { recursive: true });
       writeFileSync(assetPath, asset.data);
     } catch (err) {
+      errorRecorder.record(err, `write-asset:${asset.r2Key}`);
       console.warn(`Failed to write asset: ${asset.r2Key}`, err);
     }
   }
@@ -122,6 +125,21 @@ async function cmdSyncPage(args: Record<string, string>) {
 
   if (result.failedAssets.length > 0) {
     console.warn(`  ⚠ ${result.failedAssets.length} asset download(s) failed`);
+  }
+
+  // Print error summary
+  const errSummary = errorRecorder.summary();
+  if (errSummary.total > 0) {
+    console.warn(`\n  ⚠ Error summary: ${errSummary.total} total`);
+    for (const [cat, count] of Object.entries(errSummary.byCategory)) {
+      console.warn(`    ${cat}: ${count}`);
+    }
+    if (errSummary.topMessages.length > 0) {
+      console.warn("  Top errors:");
+      for (const msg of errSummary.topMessages) {
+        console.warn(`    - ${msg}`);
+      }
+    }
   }
 }
 
@@ -139,6 +157,7 @@ async function cmdSyncFull(args: Record<string, string>) {
   const allFailedAssets: Array<{ pageId: string; url: string; timestamp: string }> = [];
   let count = 0;
   let maxLastEditedTime = "";
+  const errorRecorder = new ErrorRecorder();
 
   // Pagination anomaly detection
   const seenPageIds = new Set<string>();
@@ -189,6 +208,7 @@ async function cmdSyncFull(args: Record<string, string>) {
             mkdirSync(join(assetPath, ".."), { recursive: true });
             writeFileSync(assetPath, asset.data);
           } catch (err) {
+            errorRecorder.record(err, `write-asset:${asset.r2Key}`);
             console.warn(`Failed to write asset: ${asset.r2Key}`, err);
           }
         }
@@ -209,6 +229,7 @@ async function cmdSyncFull(args: Record<string, string>) {
           console.warn(`    ⚠ ${result.failedAssets.length} asset download(s) failed`);
         }
       } catch (err) {
+        errorRecorder.record(err, `sync:${page.id}`);
         console.error(`  Failed to sync page ${page.id}:`, err);
       }
     }
@@ -279,6 +300,21 @@ async function cmdSyncFull(args: Record<string, string>) {
   console.log(`\nDone. ${allMetadata.length} pages synced.`);
   if (maxLastEditedTime) {
     console.log(`Watermark: ${maxLastEditedTime}`);
+  }
+
+  // Print error summary
+  const errSummary = errorRecorder.summary();
+  if (errSummary.total > 0) {
+    console.warn(`\n  ⚠ Error summary: ${errSummary.total} total`);
+    for (const [cat, count] of Object.entries(errSummary.byCategory)) {
+      console.warn(`    ${cat}: ${count}`);
+    }
+    if (errSummary.topMessages.length > 0) {
+      console.warn("  Top errors:");
+      for (const msg of errSummary.topMessages) {
+        console.warn(`    - ${msg}`);
+      }
+    }
   }
 }
 
