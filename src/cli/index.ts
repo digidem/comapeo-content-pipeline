@@ -140,6 +140,10 @@ async function cmdSyncFull(args: Record<string, string>) {
   let count = 0;
   let maxLastEditedTime = "";
 
+  // Pagination anomaly detection
+  const seenPageIds = new Set<string>();
+  const seenCursors = new Set<string>();
+
   // Paginate through all pages
   let cursor: string | undefined;
   // eslint-disable-next-line no-constant-condition
@@ -154,6 +158,14 @@ async function cmdSyncFull(args: Record<string, string>) {
 
     for (const page of resp.results) {
       if (count >= limit) break;
+
+      // Duplicate page ID detection
+      if (seenPageIds.has(page.id)) {
+        console.warn(`  ⚠ Duplicate page ID in pagination: ${page.id} (possible cursor issue)`);
+        continue;
+      }
+      seenPageIds.add(page.id);
+
       console.log(`  [${++count}] ${page.id}...`);
 
       try {
@@ -201,7 +213,15 @@ async function cmdSyncFull(args: Record<string, string>) {
       }
     }
 
-    cursor = resp.next_cursor || undefined;
+    const nextCursor = resp.next_cursor || undefined;
+    if (nextCursor) {
+      if (seenCursors.has(nextCursor)) {
+        console.error(`  ⚠ Stale cursor detected: ${nextCursor}. Breaking pagination to prevent infinite loop.`);
+        break;
+      }
+      seenCursors.add(nextCursor);
+    }
+    cursor = nextCursor;
   } while (cursor);
 
   // ── Persist image failure log ──

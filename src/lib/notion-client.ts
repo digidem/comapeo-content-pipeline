@@ -324,6 +324,7 @@ export class NotionClient {
   private async getAllBlockChildren(blockId: string): Promise<NotionBlock[]> {
     const all: NotionBlock[] = [];
     let cursor: string | null | undefined;
+    const seenCursors = new Set<string>();
 
     do {
       const params = new URLSearchParams({ page_size: "100" });
@@ -335,6 +336,15 @@ export class NotionClient {
 
       all.push(...resp.results);
       cursor = resp.next_cursor;
+
+      // Stale cursor detection to prevent infinite loops
+      if (cursor) {
+        if (seenCursors.has(cursor)) {
+          console.error(`  ⚠ Stale cursor detected in block children pagination: ${cursor}. Breaking to prevent infinite loop.`);
+          break;
+        }
+        seenCursors.add(cursor);
+      }
     } while (cursor);
 
     return all;
