@@ -240,7 +240,7 @@ async function cmdSyncFull(args: Record<string, string>) {
 
   // ── Sidebar position fallback ──
   // Pages without explicit Order get sequential positions after max in their section.
-  assignFallbackPositions(allMetadata);
+  assignFallbackPositions(allMetadata, outDir);
 
   // Re-write .md files with updated frontmatter (sidebar_position may have changed)
   for (const meta of allMetadata) {
@@ -892,7 +892,7 @@ function getSectionNumberPrefix(sectionName: string): number {
  * Groups pages by section, finds max explicit position per section,
  * then assigns sequential positions (max+1, max+2, ...) to remaining pages.
  */
-function assignFallbackPositions(metadata: Array<{ section: string | null; section_order: number | null }>) {
+function assignFallbackPositions(metadata: Array<{ section: string | null; section_order: number | null }>, outDir: string) {
   // Group by section (use "" key for null section)
   const sections = new Map<string, Array<typeof metadata[0]>>();
   for (const m of metadata) {
@@ -902,9 +902,24 @@ function assignFallbackPositions(metadata: Array<{ section: string | null; secti
     sections.set(key, list);
   }
 
-  for (const [, pages] of sections) {
-    // Find max explicit position
+  for (const [sectionKey, pages] of sections) {
     let maxPos = 0;
+
+    // Scan existing _category_.json on disk for this section
+    const sectionDir = sectionKey ? toSectionDir(sectionKey) : null;
+    if (sectionDir) {
+      const catPath = join(outDir, "docs", sectionDir, "_category_.json");
+      if (existsSync(catPath)) {
+        try {
+          const existing = JSON.parse(readFileSync(catPath, "utf8"));
+          if (typeof existing.position === "number" && existing.position > maxPos) {
+            maxPos = existing.position;
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    // Find max explicit position from metadata
     const unpositioned: typeof metadata = [];
     for (const p of pages) {
       if (p.section_order != null && p.section_order > maxPos) {
