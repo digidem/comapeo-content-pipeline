@@ -4,6 +4,7 @@
 
 import type { ContentManifest, ManifestDoc, SidebarItem } from "../schemas/manifest.js";
 import type { PageMetadata } from "../schemas/metadata.js";
+import { NOTION_PROPERTIES } from "./notion-properties.js";
 
 export interface ManifestInput {
   databaseId: string;
@@ -25,8 +26,8 @@ export function generateManifest(input: ManifestInput): ContentManifest {
       locale: meta.locale,
       section: meta.section,
       section_order: meta.section_order,
-      element_type: meta.properties?.["Element Type"] as string | null ?? null,
-      drafting_status: meta.properties?.["Drafting Status"] as string | null ?? null,
+      element_type: meta.properties?.[NOTION_PROPERTIES.ELEMENT_TYPE] as string | null ?? null,
+      drafting_status: meta.properties?.[NOTION_PROPERTIES.DRAFTING_STATUS] as string | null ?? null,
       slug: meta.slug,
       docusaurus_id: meta.docusaurus_id,
       docusaurus_path: `/${meta.slug}`,

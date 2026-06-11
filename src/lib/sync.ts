@@ -4,6 +4,7 @@
 
 import { NotionClient } from "./notion-client.js";
 import type { NotionPage, NotionBlock } from "./notion-client.js";
+import { NOTION_PROPERTIES } from "./notion-properties.js";
 import { convertBlocks } from "./notion-converter.js";
 import type { NotionBlockList } from "./notion-converter.js";
 import { postProcessMarkdown } from "./post-process.js";
@@ -87,15 +88,15 @@ export async function convertPageData(input: {
   const locale = overrides?.locale || extractLocale(pageLike) || "en";
   const resolvedSection = overrides?.section ?? extractSection(pageLike);
   const resolvedSectionOrder = overrides?.sectionOrder ?? extractSectionOrder(pageLike);
-  const resolvedElementType = overrides?.elementType ?? extractProperty(pageLike, "Element Type");
-  const resolvedDraftingStatus = overrides?.draftingStatus ?? extractProperty(pageLike, "Drafting Status");
+  const resolvedElementType = overrides?.elementType ?? extractProperty(pageLike, NOTION_PROPERTIES.ELEMENT_TYPE);
+  const resolvedDraftingStatus = overrides?.draftingStatus ?? extractProperty(pageLike, NOTION_PROPERTIES.DRAFTING_STATUS);
   const status = mapStatus(resolvedDraftingStatus);
 
   // Extract SEO and Docusaurus metadata properties
   const keywords = extractMultiSelect(pageLike, "Keywords");
   const tags = extractMultiSelect(pageLike, "Tags");
   // Extract sub-items (translations linked via Sub-item relation)
-  const subItems = extractRelation(pageLike, "Sub-item");
+  const subItems = extractRelation(pageLike, NOTION_PROPERTIES.SUB_ITEM);
   // Apply defaults matching old pipeline behavior
   const resolvedKeywords = keywords.length > 0 ? keywords : ["docs", "comapeo"];
   const resolvedTags = tags.length > 0 ? tags : ["comapeo"];
@@ -248,10 +249,10 @@ export async function syncPage(input: SyncPageInput): Promise<SyncPageOutput> {
 function extractTitle(page: NotionPage): string {
   // Try common title property names
   const titleProp =
-    page.properties?.["Content elements"] ||
-    page.properties?.["Name"] ||
-    page.properties?.["title"] ||
-    page.properties?.["Title"];
+    page.properties?.[NOTION_PROPERTIES.TITLE] ||
+    page.properties?.[NOTION_PROPERTIES.TITLE_FALLBACK_NAME] ||
+    page.properties?.[NOTION_PROPERTIES.TITLE_FALLBACK_LOWERCASE] ||
+    page.properties?.[NOTION_PROPERTIES.TITLE_FALLBACK_TITLE];
 
   if (titleProp && typeof titleProp === "object") {
     const tp = titleProp as { title?: Array<{ plain_text?: string }> };
@@ -297,7 +298,7 @@ function extractProperty(page: NotionPage, name: string): string | null {
 
 /** Extract locale from Notion "Language" property */
 function extractLocale(page: NotionPage): string | null {
-  const lang = extractProperty(page, "Language");
+  const lang = extractProperty(page, NOTION_PROPERTIES.LANGUAGE);
   if (!lang) return null;
 
   // Map Notion language names to locale codes
@@ -316,11 +317,11 @@ function extractLocale(page: NotionPage): string | null {
 
 /** Extract content section from Notion page properties */
 function extractSection(page: NotionPage): string | null {
-  return extractProperty(page, "Content Section");
+  return extractProperty(page, NOTION_PROPERTIES.CONTENT_SECTION);
 }
 
 function extractSectionOrder(page: NotionPage): number | null {
-  const val = extractProperty(page, "Order");
+  const val = extractProperty(page, NOTION_PROPERTIES.ORDER);
   if (val !== null) {
     const num = parseInt(val, 10);
     return isNaN(num) ? null : num;

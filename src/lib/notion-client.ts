@@ -9,6 +9,8 @@
  *   MAX_NOTION_RPS        — requests per second (default: 3)
  */
 
+import { NOTION_PROPERTIES } from "./notion-properties.js";
+
 // Minimal Notion API types used internally
 export interface NotionPage {
   id: string;
@@ -225,7 +227,7 @@ export class NotionClient {
     // so only top-level pages are returned.
     if (params.excludeSubItems) {
       const subItemFilter = {
-        property: "Sub-item",
+        property: NOTION_PROPERTIES.SUB_ITEM,
         relation: { is_empty: true },
       };
 
