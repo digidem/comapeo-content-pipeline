@@ -281,6 +281,18 @@ async function cmdDocsPull(args: Record<string, string>) {
     }
   }
 
+  // Build translated section labels from Toggle pages
+  // Toggle page titles in each locale provide the localized sidebar label
+  const sectionLabels = new Map<string, Map<string, string>>(); // locale → section → label
+  for (const doc of manifest.docs) {
+    const et = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
+    if (!/^toggle$/i.test(et)) continue;
+    const sec = doc.section || "__none__";
+    const loc = doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
+    if (!sectionLabels.has(loc)) sectionLabels.set(loc, new Map());
+    sectionLabels.get(loc)!.set(sec, doc.title);
+  }
+
   let count = 0;
   let skippedNonPage = 0;
   // Track sections per locale for _category_.json generation
@@ -368,7 +380,9 @@ async function cmdDocsPull(args: Record<string, string>) {
     });
     let position = 1;
     for (const [sectionName] of sortedEntries) {
-      const label = stripSectionPrefix(sectionName);
+      // Use translated label from Toggle page if available, otherwise English stripped label
+      const translatedLabel = sectionLabels.get(locale)?.get(sectionName);
+      const label = translatedLabel ?? stripSectionPrefix(sectionName);
       const sectionDir = toSectionDir(sectionName);
       const categoryDir =
         locale === "en"
