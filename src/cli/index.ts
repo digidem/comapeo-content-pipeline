@@ -389,6 +389,9 @@ async function cmdDocsPull(args: Record<string, string>) {
   let skippedTestPages = 0;
   // Track sections per locale for _category_.json generation
   const sectionPositions = new Map<string, Map<string, number>>(); // locale → section → min position
+  // Absolute section dirs that actually received .md writes — drives per-section
+  // asset copying (only assets referenced by each section's .md files).
+  const writtenSectionDirs = new Set<string>();
 
   // Editorial QA/test pages authored in Notion. They cannot be distinguished by
   // status/element_type (all draft Pages), so match by slug (most reliable —
@@ -493,8 +496,12 @@ async function cmdDocsPull(args: Record<string, string>) {
             `${translationSlug}.md`,
           );
 
+    // Inject a visible placeholder for pages whose body is empty (no Notion content yet).
+    content = ensurePlaceholderForEmptyBody(content);
+
     mkdirSync(join(finalPath, ".."), { recursive: true });
     writeFileSync(finalPath, content);
+    writtenSectionDirs.add(join(finalPath, ".."));
     count++;
 
     // Track minimum section_order per section for _category_.json position
@@ -569,36 +576,40 @@ async function cmdDocsPull(args: Record<string, string>) {
     }
   }
 
-  // Copy assets to each section directory (images referenced via relative paths)
+  // Optimize source images in the asset pool in place (best-effort; never fatal).
   const assetsDir = join(inputDir, "assets");
+  await optimizeAssets(assetsDir);
+
+  // Copy only the assets each section actually references — avoids copying the
+  // entire pool into every section dir (N×duplication). Each section dir gets
+  // only the assets referenced by the .md files written into it.
   if (existsSync(assetsDir)) {
     const assetFiles = readdirSync(assetsDir).filter((f) => statSync(join(assetsDir, f)).isFile());
-    if (assetFiles.length > 0) {
+    const availableAssets = new Set(assetFiles);
+    if (availableAssets.size > 0) {
       let assetsCopied = 0;
-      // Collect unique section dirs we wrote to
+      let dirsCopied = 0;
       const seenDirs = new Set<string>();
-      for (const [locale, sectionMap] of sectionPositions) {
-        for (const [sectionName] of sectionMap) {
-          const sectionDir = toSectionDir(sectionName);
-          const targetDir =
-            locale === "en"
-              ? join(outDir, "docs", sectionDir, "assets")
-              : join(outDir, "i18n", locale, "docusaurus-plugin-content-docs", "current", sectionDir, "assets");
-          if (seenDirs.has(targetDir)) continue;
-          seenDirs.add(targetDir);
-          mkdirSync(targetDir, { recursive: true });
-          for (const f of assetFiles) {
-            const src = join(assetsDir, f);
-            const dst = join(targetDir, f);
-            if (!existsSync(dst)) {
-              writeFileSync(dst, readFileSync(src));
-              assetsCopied++;
-            }
+      for (const sectionAbsDir of writtenSectionDirs) {
+        if (seenDirs.has(sectionAbsDir)) continue;
+        seenDirs.add(sectionAbsDir);
+        // Scan the .md files written into this section dir for asset references.
+        const referenced = collectReferencedAssets(sectionAbsDir, availableAssets);
+        if (referenced.size === 0) continue; // no assets/ subdir unless something is referenced
+        const targetDir = join(sectionAbsDir, "assets");
+        mkdirSync(targetDir, { recursive: true });
+        dirsCopied++;
+        for (const f of referenced) {
+          const src = join(assetsDir, f);
+          const dst = join(targetDir, f);
+          if (!existsSync(dst)) {
+            writeFileSync(dst, readFileSync(src));
+            assetsCopied++;
           }
         }
       }
       if (assetsCopied > 0) {
-        console.log(`  Copied ${assetsCopied} assets to ${seenDirs.size} section dirs`);
+        console.log(`  Copied ${assetsCopied} assets to ${dirsCopied} section dirs`);
       }
     }
   }
@@ -1041,6 +1052,150 @@ async function buildUpdatedFrontmatter(
     : [...fmLines, `sidebar_position: ${meta.section_order}`].join("\n");
 
   return `---\n${newFm}\n---\n${body}`;
+}
+
+/**
+ * Visible body inserted when a page has no content yet, so it doesn't render blank.
+ */
+const PLACEHOLDER_BODY = `:::note
+Content coming soon — this page has no content in Notion yet.
+:::`;
+
+/**
+ * If a doc's markdown BODY (everything after frontmatter) is empty or
+ * whitespace-only, inject the placeholder body. Non-empty bodies are returned
+ * unchanged. Does NOT special-case "[Insert content here]" — that string comes
+ * from Notion source, not here.
+ */
+function ensurePlaceholderForEmptyBody(content: string): string {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!fmMatch) {
+    // No frontmatter — treat the whole string as the body.
+    return content.trim().length === 0 ? `${PLACEHOLDER_BODY}\n` : content;
+  }
+  const [, fm, body] = fmMatch;
+  if (body.trim().length === 0) {
+    return `---\n${fm}\n---\n${PLACEHOLDER_BODY}\n`;
+  }
+  return content;
+}
+
+/**
+ * Scan the .md files in a section dir for `assets/<filename>` references and
+ * return the subset that exist in the available asset pool.
+ */
+function collectReferencedAssets(sectionAbsDir: string, availableAssets: Set<string>): Set<string> {
+  const referenced = new Set<string>();
+  let mdFiles: string[];
+  try {
+    mdFiles = readdirSync(sectionAbsDir).filter((f) => f.endsWith(".md"));
+  } catch {
+    return referenced;
+  }
+  const refRe = /assets\/([A-Za-z0-9._-]+)/g;
+  for (const mdFile of mdFiles) {
+    let md: string;
+    try {
+      md = readFileSync(join(sectionAbsDir, mdFile), "utf8");
+    } catch {
+      continue;
+    }
+    let m: RegExpExecArray | null;
+    refRe.lastIndex = 0;
+    while ((m = refRe.exec(md)) !== null) {
+      if (availableAssets.has(m[1])) referenced.add(m[1]);
+    }
+  }
+  return referenced;
+}
+
+/**
+ * Format a byte count as a compact human-readable string (e.g. "1.2 MB").
+ */
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 bytes";
+  const units = ["bytes", "KB", "MB", "GB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / Math.pow(1024, i);
+  return `${value.toFixed(value >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+/** Minimal structural type for the sharp chain we use (avoids importing types). */
+type SharpPipeline = {
+  resize: (opts: Record<string, unknown>) => SharpPipeline;
+  png: (opts: Record<string, unknown>) => SharpPipeline;
+  jpeg: (opts: Record<string, unknown>) => SharpPipeline;
+  webp: (opts: Record<string, unknown>) => SharpPipeline;
+  toBuffer: () => Promise<Buffer>;
+};
+
+/**
+ * Optimize images in the asset pool in place (best-effort). Resizes to a max
+ * width of 1280 (no upscaling via withoutEnlargement) and re-encodes; leaves
+ * .svg/.gif and non-images untouched. If `sharp` is missing or any per-file
+ * step errors, the failure is logged and the pull continues without that
+ * optimization — never fatal. Runs once per docs:pull.
+ */
+async function optimizeAssets(assetsDir: string): Promise<void> {
+  if (!existsSync(assetsDir)) return;
+
+  // Dynamic import via a non-literal specifier so TypeScript does not try to
+  // resolve the (optional) sharp module — the import yields `any`, and a failed
+  // import is caught so the command still works without sharp installed.
+  const SHARP_SPECIFIER = "sharp";
+  let sharpFn: (input: string) => SharpPipeline;
+  try {
+    // Non-literal specifier → import yields `any`; resolve sharp at runtime.
+    const mod: { default?: (input: string) => SharpPipeline } = await import(SHARP_SPECIFIER);
+    const fn = mod.default ?? (mod as unknown as (input: string) => SharpPipeline);
+    if (typeof fn !== "function") throw new Error("sharp import did not expose a function");
+    sharpFn = fn;
+  } catch (err) {
+    console.warn("  ⚠ sharp unavailable — skipping image optimization.");
+    console.warn(`    Install sharp (\`npm install sharp\`) to enable it. Cause: ${(err as Error).message}`);
+    return;
+  }
+
+  const isImage = /\.(png|jpe?g|webp)$/i;
+  let files: string[];
+  try {
+    files = readdirSync(assetsDir).filter((f) => isImage.test(f));
+  } catch (err) {
+    console.warn("  ⚠ Could not read assets dir for optimization — skipping:", (err as Error).message);
+    return;
+  }
+
+  let optimized = 0;
+  let bytesSaved = 0;
+  for (const f of files) {
+    const filePath = join(assetsDir, f);
+    try {
+      const before = statSync(filePath).size;
+      let pipeline: SharpPipeline = sharpFn(filePath).resize({ width: 1280, withoutEnlargement: true });
+      const lower = f.toLowerCase();
+      if (lower.endsWith(".png")) {
+        pipeline = pipeline.png({ compressionLevel: 9 });
+      } else if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
+        pipeline = pipeline.jpeg({ quality: 80 });
+      } else if (lower.endsWith(".webp")) {
+        pipeline = pipeline.webp({ quality: 80 });
+      }
+      const buffer: Buffer = await pipeline.toBuffer();
+      // Overwrite in place — filenames are content-hash keys and markdown
+      // references the filename, so refs stay valid.
+      writeFileSync(filePath, buffer);
+      bytesSaved += before - buffer.length;
+      optimized++;
+    } catch (err) {
+      console.warn(`  ⚠ Failed to optimize ${f} — leaving original:`, (err as Error).message);
+    }
+  }
+
+  if (optimized > 0) {
+    console.log(`  Optimized ${optimized} image(s), saved ${formatBytes(Math.max(bytesSaved, 0))}`);
+  } else {
+    console.log("  Image optimization skipped (no optimizable images found)");
+  }
 }
 
 function createClient(): NotionClient {
