@@ -149,14 +149,15 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
 
   return richText
     .map((rt) => {
-      // Custom emoji mention → image reference (asset pipeline handles download)
+      // Custom emoji mention → inline image sized as a 1.2em glyph
+      // (asset pipeline rehosts <img src> URLs to local assets/ paths)
       if (rt.type === "mention") {
         const mention = rt.mention as
           | { type?: string; custom_emoji?: { url?: string; name?: string } }
           | undefined;
         if (mention?.type === "custom_emoji" && mention.custom_emoji?.url) {
-          const emojiName = mention.custom_emoji.name || "emoji";
-          return `![${emojiName}](${mention.custom_emoji.url})`;
+          const emojiName = (mention.custom_emoji.name || "emoji").replace(/"/g, "&quot;");
+          return `<img src="${mention.custom_emoji.url}" alt="${emojiName}" className="emoji" style={{display:"inline",height:"1.2em",width:"auto",verticalAlign:"text-bottom",margin:"0 0.1em"}} />`;
         }
       }
 
@@ -663,11 +664,32 @@ function convertSingleBlock(
     case "child_page":
       return convertChildPage(block);
 
+    case "synced_block": {
+      // Inline resolved children of a synced block (original or duplicate).
+      const syncedChildren = childrenMap[block.id] ?? [];
+      if (syncedChildren.length === 0) return "";
+      return syncedChildren
+        .map((child) => convertSingleBlock(child, 0, childrenMap))
+        .filter(Boolean)
+        .join("\n");
+    }
+
+    case "link_to_page": {
+      // Best-effort link so the page reference is not lost.
+      const link = block.link_to_page as
+        | { type?: string; page_id?: string; database_id?: string }
+        | undefined;
+      const id = link?.page_id ?? link?.database_id;
+      if (!id) return "";
+      return `[Linked page](https://www.notion.so/${id.replace(/-/g, "")})`;
+    }
+
+    case "child_database":
+      // A Notion database view cannot be rendered statically.
+      return "";
+
     // Silently skip blocks the integration can't access or that we don't render
     case "unsupported":
-    case "child_database":
-    case "link_to_page":
-    case "synced_block":
     case "ai_block":
     case "column_list": {
       // Flatten column layout: iterate column children, then each column's children

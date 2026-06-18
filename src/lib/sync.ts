@@ -186,6 +186,41 @@ export async function convertPageData(input: {
     markdownBody = markdownBody.replaceAll(url, r2Key);
   }
 
+  // ── Neutralize any asset URL still pointing at a Notion host or a data: URI ──
+  // Successful rehosts were rewritten to `assets/…` above. Anything still flagged
+  // `isNotion` here is a failed download whose expiring Notion / raw `data:` URL
+  // must not ship — replace the image reference with a visible failure marker.
+  const leftoverUrls = extractAssetUrls(markdownBody)
+    .filter((a) => a.isNotion)
+    .map((a) => a.url);
+  for (const url of leftoverUrls) {
+    const esc = escapeRegExp(url);
+
+    // Markdown image: ![alt](url) → preserve alt text where present
+    markdownBody = markdownBody.replace(
+      new RegExp(`!\\[([^\\]]*)\\]\\(${esc}\\)`, "g"),
+      (_match, alt: string) =>
+        alt && alt.trim()
+          ? `**[Image unavailable: ${alt}]**\n<!-- failed-asset: ${url} -->`
+          : `**[Image unavailable]**\n<!-- failed-asset: ${url} -->`,
+    );
+
+    // HTML img: <img ... src="url" ...> (double or single quoted) → no alt recovery.
+    // Callback (not a string replacer) so any `$` in `url` isn't re-interpreted.
+    markdownBody = markdownBody.replace(
+      new RegExp(`<img\\b[^>]*\\ssrc=(["'])${esc}\\1[^>]*>`, "gi"),
+      () => `**[Image unavailable]**\n<!-- failed-asset: ${url} -->`,
+    );
+  }
+
+  // Final guard: if any expiring URL still survives, surface it (do not throw)
+  const stillLeftover = extractAssetUrls(markdownBody).filter((a) => a.isNotion);
+  if (stillLeftover.length > 0) {
+    console.warn(
+      `Failed-asset neutralization left ${stillLeftover.length} expiring URL(s) in body; first: ${stillLeftover[0].url}`,
+    );
+  }
+
   // Build metadata
   const metadata: PageMetadata = {
     page_id: pageId,
@@ -384,4 +419,9 @@ function extractIcon(rawPage: Record<string, unknown>): string | null {
     return icon.emoji;
   }
   return null;
+}
+
+/** Escape RegExp metacharacters in a literal string so it embeds safely in a pattern. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -177,7 +177,7 @@ describe("richTextToMarkdown", () => {
     expect(richTextToMarkdown([])).toBe("");
   });
 
-  it("converts custom emoji mention to image reference", () => {
+  it("renders custom emoji mention as an inline sized img (not markdown image)", () => {
     const text = richTextToMarkdown([
       {
         type: "mention",
@@ -195,8 +195,10 @@ describe("richTextToMarkdown", () => {
         },
       },
     ]);
+    // Inline <img> styled as a 1.2em glyph — never a full-size markdown image
+    expect(text).not.toContain("![");
     expect(text).toBe(
-      "![party-parrot](https://s3.us-west-2.amazonaws.com/secure.notion-static.com/abc123.png)",
+      '<img src="https://s3.us-west-2.amazonaws.com/secure.notion-static.com/abc123.png" alt="party-parrot" className="emoji" style={{display:"inline",height:"1.2em",width:"auto",verticalAlign:"text-bottom",margin:"0 0.1em"}} />',
     );
   });
 
@@ -218,8 +220,10 @@ describe("richTextToMarkdown", () => {
         },
       },
     ]);
-    // No bold/italic wrapping — plain image reference
-    expect(text).toBe("![wave](https://example.com/emoji.png)");
+    // No bold/italic wrapping — inline img only
+    expect(text).toBe(
+      '<img src="https://example.com/emoji.png" alt="wave" className="emoji" style={{display:"inline",height:"1.2em",width:"auto",verticalAlign:"text-bottom",margin:"0 0.1em"}} />',
+    );
   });
 
   it("custom emoji falls back to 'emoji' name when missing", () => {
@@ -239,7 +243,30 @@ describe("richTextToMarkdown", () => {
         },
       },
     ]);
-    expect(text).toBe("![emoji](https://example.com/emoji.png)");
+    expect(text).toBe(
+      '<img src="https://example.com/emoji.png" alt="emoji" className="emoji" style={{display:"inline",height:"1.2em",width:"auto",verticalAlign:"text-bottom",margin:"0 0.1em"}} />',
+    );
+  });
+
+  it("escapes quotes in custom emoji name", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "mention",
+        mention: {
+          type: "custom_emoji",
+          custom_emoji: {
+            url: "https://example.com/emoji.png",
+            name: 'say "hi"',
+          },
+        },
+        plain_text: ":hi:",
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: false, code: false, color: "default",
+        },
+      },
+    ]);
+    expect(text).toContain('alt="say &quot;hi&quot;"');
   });
 
   it("non-custom-emoji mention falls through to plain text", () => {
@@ -290,6 +317,72 @@ describe("blockPlainText", () => {
       },
     };
     expect(blockPlainText(block)).toBe("Hello world");
+  });
+});
+
+describe("convertBlocks — recovered blocks", () => {
+  it("inlines synced_block children instead of dropping them", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "synced-1",
+          type: "synced_block",
+          has_children: true,
+          synced_block: { synced_from: null },
+        },
+      ],
+      children: {
+        "synced-1": [
+          {
+            object: "block",
+            id: "p-1",
+            type: "paragraph",
+            has_children: false,
+            paragraph: {
+              rich_text: [
+                {
+                  type: "text",
+                  plain_text: "synced content",
+                  annotations: {
+                    bold: false, italic: false, strikethrough: false,
+                    underline: false, code: false, color: "default",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const output = convertBlocks(blockList);
+    expect(output).toContain("synced content");
+    expect(output.trim()).toBe("synced content");
+  });
+
+  it("emits a best-effort link for link_to_page", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "ltp-1",
+          type: "link_to_page",
+          has_children: false,
+          link_to_page: {
+            type: "page_id",
+            page_id: "abc-123-def",
+          },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    // dashes stripped, reference preserved (no longer dropped)
+    expect(output.trim()).toBe(
+      "[Linked page](https://www.notion.so/abc123def)",
+    );
   });
 });
 
