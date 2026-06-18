@@ -386,8 +386,15 @@ async function cmdDocsPull(args: Record<string, string>) {
 
   let count = 0;
   let skippedNonPage = 0;
+  let skippedTestPages = 0;
   // Track sections per locale for _category_.json generation
   const sectionPositions = new Map<string, Map<string, number>>(); // locale → section → min position
+
+  // Editorial QA/test pages authored in Notion. They cannot be distinguished by
+  // status/element_type (all draft Pages), so match by slug (most reliable —
+  // translations inherit the English slug) and by title as a secondary signal.
+  const TEST_PAGE_TITLE = /^\s*[\[(]?\s*(testing|test|teste|prueba)\b/i;
+  const TEST_PAGE_SLUG = /^(testing|teste)-/i;
 
   // Deduplicate pages with the same slug in the same locale
   // (e.g. test pages that share a slug like "test-guia-de-instalacao" in PT)
@@ -406,6 +413,10 @@ async function cmdDocsPull(args: Record<string, string>) {
     }
     const translation = translationMap.get(doc.page_id);
     const translationSlug = translation?.slug ?? doc.slug;
+    if (TEST_PAGE_TITLE.test(doc.title ?? "") || TEST_PAGE_SLUG.test(translationSlug ?? "")) {
+      skippedTestPages++;
+      continue; // drop editorial test page (and its translations), do not emit
+    }
     const normalizedLocale =
       doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
     const key = `${normalizedLocale}/${translationSlug}`;
@@ -646,6 +657,9 @@ async function cmdDocsPull(args: Record<string, string>) {
 
   if (skippedNonPage > 0) {
     console.log(`  (skipped ${skippedNonPage} structural pages: Toggle/Title)`);
+  }
+  if (skippedTestPages > 0) {
+    console.warn(`  (skipped ${skippedTestPages} editorial test page${skippedTestPages === 1 ? "" : "s"})`);
   }
   console.log(`Pulled ${count} active docs to ${outDir}`);
 }
