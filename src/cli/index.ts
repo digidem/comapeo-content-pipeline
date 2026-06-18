@@ -369,9 +369,9 @@ async function cmdDocsPull(args: Record<string, string>) {
 
   // Build translated section labels from Toggle pages.
   // Toggle page titles provide localized sidebar labels.
-  // Section order comes from EN Toggle's section_order (Order property).
+  // (Section order is derived from each section's numeric name prefix, not the
+  // Toggle Order property — see the category-sort block below.)
   const sectionLabels = new Map<string, Map<string, string>>(); // locale → section → label
-  const sectionOrder = new Map<string, number>(); // section → canonical position (from EN Toggle)
   for (const doc of manifest.docs) {
     const et = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
     if (!/^toggle$/i.test(et)) continue;
@@ -381,14 +381,6 @@ async function cmdDocsPull(args: Record<string, string>) {
     if (!sectionLabels.has(loc)) sectionLabels.set(loc, new Map());
     if (!sectionLabels.get(loc)!.has(sec)) {
       sectionLabels.get(loc)!.set(sec, doc.title);
-    }
-    // Use EN Toggle position as canonical order (lowest wins)
-    if (loc === "en") {
-      const pos = doc.section_order ?? 999;
-      const existing = sectionOrder.get(sec);
-      if (existing === undefined || pos < existing) {
-        sectionOrder.set(sec, pos);
-      }
     }
   }
 
@@ -513,14 +505,14 @@ async function cmdDocsPull(args: Record<string, string>) {
   // Sort sections by numeric prefix (10, 20, ...) then alphabetically
   for (const [locale, sectionMap] of sectionPositions) {
     const sortedEntries = Array.from(sectionMap.entries()).sort((a, b) => {
-      // Sections without a Toggle page default to 0 (sort before numbered sections).
-      // Number-prefixed sections (10, 20, ...) get their Toggle Order value.
+      // Prefix-less sections (e.g. "Overview") sort first; "Uncategorized" sorts last.
+      // Numbered sections ("10-…", "90+ - …") sort by their leading integer.
+      const OVERVIEW_ORDER = -1; // set to 9000 to instead place prefix-less sections last
       const getOrder = (name: string) => {
-        if (name === "Uncategorized") return 999;
-        const fromToggle = sectionOrder.get(name);
-        if (fromToggle != null) return fromToggle;
-        // Non-numbered sections (like "Overview") go first
-        return /^\d/.test(name) ? 999 : 0;
+        if (name === "Uncategorized") return 9999;
+        const m = name.match(/^(\d+)/);
+        if (m) return parseInt(m[1], 10);
+        return OVERVIEW_ORDER;
       };
       const aPos = getOrder(a[0]);
       const bPos = getOrder(b[0]);
@@ -529,11 +521,16 @@ async function cmdDocsPull(args: Record<string, string>) {
     });
     let position = 1;
     for (const [sectionName] of sortedEntries) {
-      // Use translated label from Toggle page if available, otherwise English stripped label
-      const translatedLabel = sectionLabels.get(locale)?.get(sectionName);
+      // Use translated label from Toggle page if available, otherwise the curated
+      // translation map, otherwise the stripped English label.
+      // Reject Notion-truncated Toggle titles (ending in …/...) and fall back instead.
+      const toggleLabel = sectionLabels.get(locale)?.get(sectionName);
       const strippedEn = stripSectionPrefix(sectionName);
-      const fallbackLabel = SECTION_TRANSLATIONS[locale]?.[strippedEn] ?? strippedEn;
-      const label = translatedLabel ?? fallbackLabel;
+      const curated = SECTION_TRANSLATIONS[locale]?.[strippedEn];
+      const isTruncated = (s?: string) => !!s && /(?:…|\.\.\.)$/.test(s.trim());
+      const label = toggleLabel && !isTruncated(toggleLabel)
+        ? toggleLabel
+        : (curated ?? strippedEn);
       const sectionDir = toSectionDir(sectionName);
       const categoryDir =
         locale === "en"
@@ -890,6 +887,8 @@ const SECTION_TRANSLATIONS: Record<string, Record<string, string>> = {
     "Preparing to use CoMapeo": "Preparando-se para usar o CoMapeo",
     "Gathering Observations & Tracks": "Coletando Observações e Trayectos",
     "Reviewing Observations & Tracks": "Revisando Observações e Trayectos",
+    // TODO: human-review these section translations
+    "Exchanging Observations": "Trocando Observações",
     "Managing Data Privacy and Security": "Gestão de Privacidade de Dados e Segurança",
     "Managing Projects": "Gerenciando Projetos",
     "Sharing and Exporting different data types": "Compartilhando e Exportando Diferentes Tipos de Dados",
@@ -902,6 +901,8 @@ const SECTION_TRANSLATIONS: Record<string, Record<string, string>> = {
     "Preparing to use CoMapeo": "Preparándose para usar CoMapeo",
     "Gathering Observations & Tracks": "Registrando Observaciones y Trayectos",
     "Reviewing Observations & Tracks": "Revisando Observaciones y Trayectos",
+    // TODO: human-review these section translations
+    "Exchanging Observations": "Intercambiando Observaciones",
     "Managing Data Privacy and Security": "Gestión de Privacidad y Seguridad de Datos",
     "Managing Projects": "Gestión de Proyectos",
     "Sharing and Exporting different data types": "Compartir y Exportar Diferentes Tipos de Datos",
