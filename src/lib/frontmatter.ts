@@ -49,19 +49,16 @@ function formatDate(dateStr: string): string {
 
 /**
  * Build the custom_edit_url for Docusaurus "Edit this page" link.
+ *
+ * These docs are generated from Notion — the editable source is the Notion
+ * page, not the generated markdown (which has no counterpart in the
+ * comapeo-docs repo). So the edit link targets the Notion page itself.
+ * Returns undefined when no page id is available so the field is omitted
+ * rather than emitted as an empty string.
  */
-function buildEditUrl(locale: string, section: string | null | undefined, slug: string): string {
-  const parts = [locale, "docs"];
-  if (section) {
-    // Sections are like "10 - Tutorials" → "10-tutorials"
-    const sectionSlug = section
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "");
-    parts.push(sectionSlug);
-  }
-  parts.push(`${slug}.md`);
-  return `https://github.com/digidem/comapeo-docs/edit/main/docs/${parts.join("/")}`;
+function buildEditUrl(pageId: string | null | undefined): string | undefined {
+  if (!pageId) return undefined;
+  return `https://www.notion.so/${pageId.replace(/-/g, "")}`;
 }
 
 /**
@@ -86,7 +83,7 @@ export function buildFrontmatter(
   >,
 ): DocFrontmatter {
   const docusaurusSlug = `/${metadata.slug}`;
-  const editUrl = buildEditUrl(metadata.locale, metadata.section, metadata.slug);
+  const editUrl = buildEditUrl(metadata.page_id);
 
   const fm: DocFrontmatter = {
     // Use only the slug as base ID — Docusaurus prefixes the source dir
