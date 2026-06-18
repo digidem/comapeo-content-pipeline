@@ -357,12 +357,27 @@ async function cmdDocsPull(args: Record<string, string>) {
 
   mkdirSync(outDir, { recursive: true });
 
-  // Build translation lookup from Sub-item relations: translation page_id → { slug, section }
-  const translationMap = new Map<string, { slug: string; section: string | null }>();
+  const docById = new Map<string, (typeof manifest.docs)[number]>();
+  for (const doc of manifest.docs) {
+    docById.set(doc.page_id, doc);
+  }
+
+  const containerIds = new Set<string>();
+  const containerHasEnChild = new Set<string>();
+  for (const doc of manifest.docs) {
+    if (doc.locale !== "en" || !Array.isArray(doc.sub_items) || doc.sub_items.length === 0) continue;
+    containerIds.add(doc.page_id);
+    if (doc.sub_items.some((subId: string) => docById.get(subId)?.locale === "en")) {
+      containerHasEnChild.add(doc.page_id);
+    }
+  }
+
+  // Build translation lookup from Sub-item relations: translation page_id → { slug, section, order }
+  const translationMap = new Map<string, { slug: string; section: string | null; order: number | null }>();
   for (const doc of manifest.docs) {
     if (doc.locale === "en" && doc.sub_items && doc.sub_items.length > 0) {
       for (const subId of doc.sub_items) {
-        translationMap.set(subId, { slug: doc.slug, section: doc.section });
+        translationMap.set(subId, { slug: doc.slug, section: doc.section, order: doc.section_order ?? null });
       }
     }
   }
@@ -404,6 +419,9 @@ async function cmdDocsPull(args: Record<string, string>) {
   const dedupedDocs: typeof manifest.docs = [];
   const seenSlugs = new Map<string, (typeof manifest.docs)[number]>(); // locale/slug → doc
   for (const doc of manifest.docs) {
+    if (containerIds.has(doc.page_id) && containerHasEnChild.has(doc.page_id)) {
+      continue;
+    }
     if (args.all !== "true" && doc.status !== "active") {
       dedupedDocs.push(doc);
       continue;
@@ -443,6 +461,9 @@ async function cmdDocsPull(args: Record<string, string>) {
   }
 
   for (const doc of dedupedDocs) {
+    if (containerIds.has(doc.page_id) && containerHasEnChild.has(doc.page_id)) {
+      continue;
+    }
     if (args.all !== "true" && doc.status !== "active") continue;
 
     // Skip structural pages (Toggles, Titles) — only publish content Pages
@@ -472,6 +493,9 @@ async function cmdDocsPull(args: Record<string, string>) {
       content = content
         .replace(/^id: .*$/m, `id: "${translationSlug}"`)
         .replace(/^slug: .*$/m, `slug: /${translationSlug}`);
+    }
+    if (translation && translation.order != null) {
+      content = content.replace(/^sidebar_position: .*$/m, `sidebar_position: ${translation.order}`);
     }
 
     // Build Docusaurus-compatible output path
