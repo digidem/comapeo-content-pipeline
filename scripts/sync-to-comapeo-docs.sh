@@ -22,7 +22,16 @@ echo ""
 echo "=== Syncing to comapeo-docs ==="
 mkdir -p "$DOCS_DIR"/docs "$DOCS_DIR"/i18n
 rsync -av --delete "$TEMP_OUT/docs/" "$DOCS_DIR/docs/"
-rsync -av --delete "$TEMP_OUT/i18n/" "$DOCS_DIR/i18n/"
+# The pipeline only owns i18n/<locale>/docusaurus-plugin-content-docs/current/**
+# (translated docs + _category_.json). Exclude the hand-maintained, git-tracked
+# i18n files so --delete cannot wipe them: code.json (UI string translations),
+# docusaurus-theme-classic/ (navbar/footer), and the blog/pages plugin dirs.
+rsync -av --delete \
+  --exclude='code.json' \
+  --exclude='docusaurus-theme-classic/' \
+  --exclude='docusaurus-plugin-content-blog/' \
+  --exclude='docusaurus-plugin-content-pages/' \
+  "$TEMP_OUT/i18n/" "$DOCS_DIR/i18n/"
 
 echo ""
 echo "=== Building Docusaurus ==="
