@@ -414,6 +414,10 @@ async function cmdDocsPull(args: Record<string, string>) {
   const TEST_PAGE_TITLE = /^\s*[\[(]?\s*(testing|test|teste|prueba)\b/i;
   const TEST_PAGE_SLUG = /^(testing|teste)-/i;
 
+  // Internal/template scratch pages authored in Notion that must never publish.
+  const INTERNAL_PAGE_TITLE = /^\s*(new element|process checklist)\s*$/i;
+  const INTERNAL_PAGE_MARKER = /\[\s*(add content here|en title|insert content here)\s*\]/i;
+
   // Deduplicate pages with the same slug in the same locale
   // (e.g. test pages that share a slug like "test-guia-de-instalacao" in PT)
   const dedupedDocs: typeof manifest.docs = [];
@@ -434,9 +438,18 @@ async function cmdDocsPull(args: Record<string, string>) {
     }
     const translation = translationMap.get(doc.page_id);
     const translationSlug = translation?.slug ?? doc.slug;
-    if (TEST_PAGE_TITLE.test(doc.title ?? "") || TEST_PAGE_SLUG.test(translationSlug ?? "")) {
+    const title = doc.title ?? "";
+    const isInternal =
+      INTERNAL_PAGE_TITLE.test(title) ||
+      INTERNAL_PAGE_MARKER.test(title) ||
+      title.trim() === doc.page_id; // untitled page (title defaulted to its id)
+    if (
+      TEST_PAGE_TITLE.test(title) ||
+      TEST_PAGE_SLUG.test(translationSlug ?? "") ||
+      isInternal
+    ) {
       skippedTestPages++;
-      continue; // drop editorial test page (and its translations), do not emit
+      continue; // drop editorial test/internal/template page (and its translations)
     }
     const normalizedLocale =
       doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
@@ -477,6 +490,19 @@ async function cmdDocsPull(args: Record<string, string>) {
     // Docusaurus i18n requires translations to share the English source's slug AND path
     const translation = translationMap.get(doc.page_id);
     const translationSlug = translation?.slug ?? doc.slug;
+    const title = doc.title ?? "";
+    const isInternal =
+      INTERNAL_PAGE_TITLE.test(title) ||
+      INTERNAL_PAGE_MARKER.test(title) ||
+      title.trim() === doc.page_id; // untitled page (title defaulted to its id)
+    if (
+      TEST_PAGE_TITLE.test(title) ||
+      TEST_PAGE_SLUG.test(translationSlug ?? "") ||
+      isInternal
+    ) {
+      skippedTestPages++;
+      continue; // drop editorial test/internal/template page (and its translations)
+    }
     // Use English section for translated page so paths match
     const effectiveSection = translation?.section ?? doc.section;
 
@@ -694,7 +720,7 @@ async function cmdDocsPull(args: Record<string, string>) {
     console.log(`  (skipped ${skippedNonPage} structural pages: Toggle/Title)`);
   }
   if (skippedTestPages > 0) {
-    console.warn(`  (skipped ${skippedTestPages} editorial test page${skippedTestPages === 1 ? "" : "s"})`);
+    console.warn(`  (skipped ${skippedTestPages} editorial/internal page${skippedTestPages === 1 ? "" : "s"})`);
   }
   console.log(`Pulled ${count} active docs to ${outDir}`);
 }
