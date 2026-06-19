@@ -402,6 +402,7 @@ async function cmdDocsPull(args: Record<string, string>) {
   let count = 0;
   let skippedNonPage = 0;
   let skippedTestPages = 0;
+  let skippedStubTranslations = 0;
   // Track sections per locale for _category_.json generation
   const sectionPositions = new Map<string, Map<string, number>>(); // locale → section → min position
   // Absolute section dirs that actually received .md writes — drives per-section
@@ -524,6 +525,10 @@ async function cmdDocsPull(args: Record<string, string>) {
       content = content.replace(/^sidebar_position: .*$/m, `sidebar_position: ${translation.order}`);
     }
 
+    // Strip stray Notion "[Insert/ADD content here]" placeholder lines left over
+    // inside otherwise-real content (the marker is never meaningful text).
+    content = content.replace(/^[ \t]*\[\s*(?:insert|add)\s+content\s+here\s*\][ \t]*\r?\n?/gim, "");
+
     // Build Docusaurus-compatible output path
     // en:   {outDir}/docs/{section}/{slug}.md
     // non-en: {outDir}/i18n/{locale}/docusaurus-plugin-content-docs/current/{section}/{slug}.md
@@ -546,8 +551,17 @@ async function cmdDocsPull(args: Record<string, string>) {
             `${translationSlug}.md`,
           );
 
-    // Inject a visible placeholder for pages whose body is empty (no Notion content yet).
-    content = ensurePlaceholderForEmptyBody(content);
+    // Stub bodies (empty or only an "[Insert/ADD content here]" marker) carry no
+    // real content. Skip translation stubs so Docusaurus falls back to the English
+    // content under the localized route; for the default locale, render a friendly
+    // placeholder so the page (and its sidebar entry) isn't blank.
+    if (isStubBody(content)) {
+      if (normalizedLocale !== "en") {
+        skippedStubTranslations++;
+        continue;
+      }
+      content = ensurePlaceholderForEmptyBody(content);
+    }
 
     mkdirSync(join(finalPath, ".."), { recursive: true });
     writeFileSync(finalPath, content);
@@ -721,6 +735,9 @@ async function cmdDocsPull(args: Record<string, string>) {
   }
   if (skippedTestPages > 0) {
     console.warn(`  (skipped ${skippedTestPages} editorial/internal page${skippedTestPages === 1 ? "" : "s"})`);
+  }
+  if (skippedStubTranslations > 0) {
+    console.warn(`  (skipped ${skippedStubTranslations} stub translation${skippedStubTranslations === 1 ? "" : "s"} → English fallback)`);
   }
   console.log(`Pulled ${count} active docs to ${outDir}`);
 }
@@ -1111,23 +1128,43 @@ const PLACEHOLDER_BODY = `:::note
 Content coming soon — this page has no content in Notion yet.
 :::`;
 
+/** Notion-authored "no content yet" markers (e.g. "[Insert content here]", "[ADD content here]"). */
+const STUB_BODY_MARKER = /\[\s*(insert|add)\s+content\s+here\s*\]/i;
+
 /**
- * If a doc's markdown BODY (everything after frontmatter) is empty or
- * whitespace-only, inject the placeholder body. Non-empty bodies are returned
- * unchanged. Does NOT special-case "[Insert content here]" — that string comes
- * from Notion source, not here.
+ * The doc body (everything after frontmatter), stripped of spacer divs, `---`
+ * thematic-break lines and whitespace — i.e. its meaningful content.
+ */
+function meaningfulBody(content: string): string {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  const body = fmMatch ? fmMatch[2] : content;
+  return body
+    .replace(/<div class="notion-spacer"[^>]*><\/div>/g, "")
+    .replace(/^---\s*$/gm, "")
+    .trim();
+}
+
+/**
+ * A body that carries no real content: empty/whitespace, or only a Notion
+ * "[Insert/ADD content here]" placeholder marker.
+ */
+function isStubBody(content: string): boolean {
+  const body = meaningfulBody(content);
+  if (body.length === 0) return true;
+  return STUB_BODY_MARKER.test(body) && body.replace(STUB_BODY_MARKER, "").trim().length === 0;
+}
+
+/**
+ * If a doc's body is a stub (empty or only an "[Insert content here]"-style
+ * marker), inject the visible placeholder body. Non-stub bodies are unchanged.
+ * Used for the default (en) locale; translation stubs are skipped entirely so
+ * Docusaurus falls back to the English content.
  */
 function ensurePlaceholderForEmptyBody(content: string): string {
+  if (!isStubBody(content)) return content;
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!fmMatch) {
-    // No frontmatter — treat the whole string as the body.
-    return content.trim().length === 0 ? `${PLACEHOLDER_BODY}\n` : content;
-  }
-  const [, fm, body] = fmMatch;
-  if (body.trim().length === 0) {
-    return `---\n${fm}\n---\n${PLACEHOLDER_BODY}\n`;
-  }
-  return content;
+  if (!fmMatch) return `${PLACEHOLDER_BODY}\n`;
+  return `---\n${fmMatch[1]}\n---\n${PLACEHOLDER_BODY}\n`;
 }
 
 /**
