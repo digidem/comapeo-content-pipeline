@@ -163,30 +163,44 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
 
       let text = rt.plain_text || "";
 
-      if (rt.annotations.bold) {
-        text = `**${text}**`;
-      }
-      if (rt.annotations.italic) {
-        text = `*${text}*`;
-      }
-      if (rt.annotations.strikethrough) {
-        text = `~~${text}~~`;
-      }
-      if (rt.annotations.underline) {
-        text = `<u>${text}</u>`;
-      }
-      if (rt.annotations.code) {
-        text = "`" + text + "`";
-      }
+      // Apply inline annotations to a single line segment. Markdown inline
+      // markers (**bold**, *italic*, ~~strike~~, `code`) must open and close on
+      // the same line, so wrapping is done per-line below — otherwise a run
+      // whose text spans a newline produces a dangling marker (e.g. `**Data`).
+      const applyInline = (segment: string): string => {
+        // Don't wrap empty segments (blank lines) — keeps them blank.
+        if (segment === "") return "";
+        let s = segment;
+        if (rt.annotations.bold) {
+          s = `**${s}**`;
+        }
+        if (rt.annotations.italic) {
+          s = `*${s}*`;
+        }
+        if (rt.annotations.strikethrough) {
+          s = `~~${s}~~`;
+        }
+        if (rt.annotations.underline) {
+          s = `<u>${s}</u>`;
+        }
+        if (rt.annotations.code) {
+          s = "`" + s + "`";
+        }
 
-      // Color (foreground only — skip "default" and background colors).
-      // Docusaurus parses .md as MDX, so the style prop must be a JSX object
-      // (style={{color:"red"}}), not an HTML string — a string style throws at
-      // static-site-generation time.
-      const color = rt.annotations.color;
-      if (color && color !== "default" && !color.endsWith("_background")) {
-        text = `<span style={{color:"${color}"}}>${text}</span>`;
-      }
+        // Color (foreground only — skip "default" and background colors).
+        // Docusaurus parses .md as MDX, so the style prop must be a JSX object
+        // (style={{color:"red"}}), not an HTML string — a string style throws
+        // at static-site-generation time.
+        const color = rt.annotations.color;
+        if (color && color !== "default" && !color.endsWith("_background")) {
+          s = `<span style={{color:"${color}"}}>${s}</span>`;
+        }
+        return s;
+      };
+
+      text = text.includes("\n")
+        ? text.split("\n").map(applyInline).join("\n")
+        : applyInline(text);
 
       // Links: prefer href from mention, then text.link, then annotations
       const linkUrl = rt.href || rt.text?.link?.url;

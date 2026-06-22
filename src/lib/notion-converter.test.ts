@@ -177,6 +177,39 @@ describe("richTextToMarkdown", () => {
     expect(richTextToMarkdown([])).toBe("");
   });
 
+  it("applies bold per line so markers don't dangle across newlines", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: "Data Privacy & Security\nProtected by encryption",
+        annotations: {
+          bold: true, italic: false, strikethrough: false,
+          underline: false, code: false, color: "default",
+        },
+      },
+    ]);
+    // Each line is wrapped independently — no `**` spans the newline.
+    expect(text).toBe("**Data Privacy & Security**\n**Protected by encryption**");
+    // Sanity: every line has an even number of `**` markers.
+    for (const line of text.split("\n")) {
+      expect((line.match(/\*\*/g) ?? []).length % 2).toBe(0);
+    }
+  });
+
+  it("preserves blank lines without wrapping when annotating across newlines", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: "First\n\nThird",
+        annotations: {
+          bold: true, italic: false, strikethrough: false,
+          underline: false, code: false, color: "default",
+        },
+      },
+    ]);
+    expect(text).toBe("**First**\n\n**Third**");
+  });
+
   it("renders custom emoji mention as an inline sized img (not markdown image)", () => {
     const text = richTextToMarkdown([
       {
