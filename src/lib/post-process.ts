@@ -219,6 +219,17 @@ export function sanitizeMarkdownContent(content: string): string {
     return `__CODESPAN_${codeSpans.length - 1}__`;
   });
 
+  // 0b. Mask JSX style objects (`style={{…}}`) so the curly-brace stripper and
+  // malformed-tag fixers below can't corrupt them. The converter emits color
+  // runs as `<span style={{color:"red"}}>` and custom emoji as inline
+  // `<img … style={{…}} />`; both must survive sanitization intact (a string
+  // style or stripped braces throws at MDX static-site-generation time).
+  const styleObjects: string[] = [];
+  sanitized = sanitized.replace(/style=\{\{[^{}]*\}\}/g, (m) => {
+    styleObjects.push(m);
+    return `__STYLEOBJ_${styleObjects.length - 1}__`;
+  });
+
   // 1. Fix heading hierarchy
   sanitized = fixHeadingHierarchy(sanitized, codeBlockPlaceholders);
 
@@ -277,6 +288,12 @@ export function sanitizeMarkdownContent(content: string): string {
   sanitized = sanitized.replace(
     /__CODESPAN_(\d+)__/g,
     (_m, i) => codeSpans[Number(i)],
+  );
+
+  // Restore masked JSX style objects.
+  sanitized = sanitized.replace(
+    /__STYLEOBJ_(\d+)__/g,
+    (_m, i) => styleObjects[Number(i)],
   );
 
   return sanitized;

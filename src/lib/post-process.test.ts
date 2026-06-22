@@ -123,6 +123,25 @@ describe("sanitizeMarkdownContent", () => {
     expect(result).not.toContain("# ");
   });
 
+  it("preserves JSX color-span style objects through brace stripping", () => {
+    const content =
+      'precision<span style={{color:"red"}}> </span>is worse than ±10m {{formula}}.';
+    const result = sanitizeMarkdownContent(content);
+    // The style object survives intact (a stripped/string style throws in MDX).
+    expect(result).toContain('<span style={{color:"red"}}>');
+    expect(result).not.toContain('style=color');
+    // Genuine Notion formula braces are still stripped.
+    expect(result).not.toContain("{{formula}}");
+  });
+
+  it("preserves custom-emoji img style objects", () => {
+    const content =
+      '<img src="https://x/abc.png" alt="wave" className="emoji" style={{display:"inline",height:"1.2em",width:"auto",verticalAlign:"text-bottom",margin:"0 0.1em"}} />';
+    const result = sanitizeMarkdownContent(content);
+    expect(result).toContain('style={{display:"inline"');
+    expect(result).toContain('className="emoji"');
+  });
+
   it("handles empty input", () => {
     expect(sanitizeMarkdownContent("")).toBe("");
   });
