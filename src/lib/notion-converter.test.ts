@@ -126,7 +126,7 @@ describe("richTextToMarkdown", () => {
         },
       },
     ]);
-    expect(text).toBe('<span style="color:blue">colored</span>');
+    expect(text).toBe('<span style={{color:"blue"}}>colored</span>');
   });
 
   it("ignores default color", () => {
@@ -170,7 +170,7 @@ describe("richTextToMarkdown", () => {
       },
     ]);
     // Order: bold → italic → strikethrough → underline → code → color
-    expect(text).toBe('<span style="color:green"><u>~~***fancy***~~</u></span>');
+    expect(text).toBe('<span style={{color:"green"}}><u>~~***fancy***~~</u></span>');
   });
 
   it("handles empty input", () => {

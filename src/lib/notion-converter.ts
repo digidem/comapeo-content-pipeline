@@ -179,10 +179,13 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
         text = "`" + text + "`";
       }
 
-      // Color (foreground only — skip "default" and background colors)
+      // Color (foreground only — skip "default" and background colors).
+      // Docusaurus parses .md as MDX, so the style prop must be a JSX object
+      // (style={{color:"red"}}), not an HTML string — a string style throws at
+      // static-site-generation time.
       const color = rt.annotations.color;
       if (color && color !== "default" && !color.endsWith("_background")) {
-        text = `<span style="color:${color}">${text}</span>`;
+        text = `<span style={{color:"${color}"}}>${text}</span>`;
       }
 
       // Links: prefer href from mention, then text.link, then annotations
