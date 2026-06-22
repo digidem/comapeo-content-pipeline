@@ -19,6 +19,8 @@ import { NotionClient } from "../lib/notion-client.js";
 import { syncPage } from "../lib/sync.js";
 import { generateManifest } from "../lib/manifest.js";
 import { parseDoc } from "../lib/frontmatter.js";
+import { slugify } from "../lib/slug.js";
+import { buildRouteMaps, resolveInternalLinks, type DocLite } from "../lib/links.js";
 import { generateChunks, generateChunksManifest } from "../rag/chunker.js";
 import { ErrorRecorder } from "../lib/errors.js";
 
@@ -373,14 +375,36 @@ async function cmdDocsPull(args: Record<string, string>) {
   }
 
   // Build translation lookup from Sub-item relations: translation page_id → { slug, section, order }
+  // The container parent's own slug may carry a collision suffix (e.g.
+  // `inviting-collaborators-2331b081`) because the real English child reserved
+  // the clean slug first. The parent is skipped from publishing, so the whole
+  // group (en child + translations) should publish at the *clean* slug derived
+  // from the title — that's what cross-references point at.
   const translationMap = new Map<string, { slug: string; section: string | null; order: number | null }>();
   for (const doc of manifest.docs) {
     if (doc.locale === "en" && doc.sub_items && doc.sub_items.length > 0) {
+      const cleanSlug = slugify(doc.title ?? "") || doc.slug;
       for (const subId of doc.sub_items) {
-        translationMap.set(subId, { slug: doc.slug, section: doc.section, order: doc.section_order ?? null });
+        translationMap.set(subId, { slug: cleanSlug, section: doc.section, order: doc.section_order ?? null });
       }
     }
   }
+
+  // Canonical published slug for a page: the (cleaned) English source slug for
+  // grouped pages, otherwise the page's own slug.
+  const canonicalSlugOf = (pageId: string): string | null => {
+    const t = translationMap.get(pageId);
+    if (t) return t.slug;
+    const d = docById.get(pageId);
+    if (!d) return null;
+    // Container parent (skipped from publishing): a link to its own (possibly
+    // suffixed) slug should resolve to the clean group slug its children use.
+    if (Array.isArray(d.sub_items) && d.sub_items.length > 0) {
+      return slugify(d.title ?? "") || d.slug;
+    }
+    return d.slug;
+  };
+  const routeMaps = buildRouteMaps(manifest.docs as DocLite[], canonicalSlugOf);
 
   // Build translated section labels from Toggle pages.
   // Toggle page titles provide localized sidebar labels.
@@ -538,6 +562,11 @@ async function cmdDocsPull(args: Record<string, string>) {
     // Normalize automated locales: "es - automated" → "es", "pt - automated" → "pt"
     const normalizedLocale =
       doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
+
+    // Resolve internal cross-references to the locale-correct published route
+    // and slugify heading anchors to Docusaurus heading-ID format.
+    content = resolveInternalLinks(content, { locale: normalizedLocale, maps: routeMaps });
+
     const finalPath =
       normalizedLocale === "en"
         ? join(outDir, "docs", ...(sectionDir ? [sectionDir] : []), `${translationSlug}.md`)
