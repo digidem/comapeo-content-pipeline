@@ -828,12 +828,27 @@ async function cmdRagChunks(args: Record<string, string>) {
 
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const inputDir = args["input-dir"] || join(manifestPath, "..");
+
+  // Mirror docs:pull selection: by default only "active" docs, but `--all`
+  // includes every status (Notion content is currently all "draft", so the
+  // RAG index needs --all to chunk anything). Structural pages (Toggle/Title)
+  // are never chunked — they carry section labels, not content.
+  const includeAll = args.all === "true";
   const activeDocs = (manifest.docs || []).filter(
-    (doc: { status: string }) => doc.status === "active",
+    (doc: { status: string; element_type?: { select?: { name?: string }; name?: string } }) => {
+      if (!includeAll && doc.status !== "active") return false;
+      const et = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
+      if (/^(toggle|title)$/i.test(et)) return false;
+      return true;
+    },
   );
 
   if (activeDocs.length === 0) {
-    console.log("No active docs in manifest. Nothing to chunk.");
+    console.log(
+      includeAll
+        ? "No chunkable docs in manifest."
+        : "No active docs in manifest. Nothing to chunk (try --all to include drafts).",
+    );
     return;
   }
 
