@@ -15,19 +15,19 @@
  * Runtime-agnostic (no Node APIs).
  */
 
+import GithubSlugger from "github-slugger";
 import { slugify } from "./slug.js";
 
 /**
- * Slugify a heading anchor to the Docusaurus heading-ID format:
- * lowercase, runs of non-(letter/number) collapsed to a single `-`, trimmed.
- * Keeps Unicode letters (accents) so localized anchors (es/pt) still match.
+ * Slugify a heading anchor to the Docusaurus heading-ID format.
+ *
+ * Docusaurus generates heading IDs with github-slugger, so we use the same
+ * library to maximize matches (it keeps Unicode letters/accents and, notably,
+ * does NOT collapse repeated separators — e.g. `A & B` → `a--b` — so we must
+ * not collapse either). A fresh slugger per call avoids the dedup counter.
  */
 export function slugifyAnchor(anchor: string): string {
-  return anchor
-    .trim()
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, "-")
-    .replace(/^-+|-+$/g, "");
+  return new GithubSlugger().slug(anchor.trim());
 }
 
 /** Minimal doc shape needed to build the route maps. */

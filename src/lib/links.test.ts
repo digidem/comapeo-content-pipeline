@@ -16,8 +16,8 @@ describe("slugifyAnchor", () => {
       "roles-available-in-comapeo",
     );
   });
-  it("collapses repeats and trims", () => {
-    expect(slugifyAnchor("  Adding   Photos!! ")).toBe("adding-photos");
+  it("trims and drops punctuation (github-slugger semantics)", () => {
+    expect(slugifyAnchor("  Adding Photos! ")).toBe("adding-photos");
   });
   it("keeps accented letters (localized anchors)", () => {
     expect(slugifyAnchor("Edición de Observaciones")).toBe(
