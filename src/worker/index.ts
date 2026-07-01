@@ -16,10 +16,10 @@ import { verifyWebhookSignature, verifyBearerAuth, parseWebhookEvent } from "../
 import { convertPageData } from "../lib/sync.js";
 import type { NotionBlock } from "../lib/notion-converter.js";
 import { NotionClient } from "../lib/notion-client.js";
+import { buildQueryFilter } from "../lib/notion-filters.js";
 import { classifyError, ErrorCategory } from "../lib/errors.js";
 import { R2_PATHS } from "../persistence/r2.js";
 import type { SidebarItem } from "../schemas/manifest.js";
-import { NOTION_API } from "../lib/notion-properties.js";
 
 // Minimal Cloudflare Workers type declarations (avoid @cloudflare/workers-types conflicts with @types/node)
 declare global {
@@ -428,7 +428,7 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
 
 // ── Cron trigger ──
 
-async function scheduledHandler(
+export async function scheduledHandler(
   _event: ScheduledEvent,
   env: Env,
   _ctx: ExecutionContext,
@@ -522,48 +522,28 @@ async function queryChangedPages(
   since: string | null,
   limit = 50,
 ): Promise<string[]> {
-  // Use /v1/search — the working query endpoint with API version 2026-03-11
-  const body: Record<string, unknown> = {
-    query: "",
-    filter: { property: "object", value: "page" },
-    sort: {
-      direction: "descending",
-      timestamp: "last_edited_time",
-    },
-    page_size: limit,
-  };
-
-  const resp = await fetch(`${NOTION_API.BASE_URL}/search`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.NOTION_TOKEN}`,
-      "Notion-Version": NOTION_API.SEARCH_VERSION,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
+  const client = new NotionClient({
+    token: env.NOTION_TOKEN,
+    databaseId: env.NOTION_DATABASE_ID,
+    dataSourceId: env.NOTION_DATA_SOURCE_ID || env.NOTION_DATABASE_ID,
   });
 
-  if (!resp.ok) return [];
+  const result = await client.queryDatabase({
+    filter: buildQueryFilter({ since }),
+  });
 
-  const data = (await resp.json()) as {
-    results: Array<{ id: string; last_edited_time: string; parent?: { database_id?: string } }>;
-  };
-
-  const dbId = env.NOTION_DATABASE_ID;
-  const normalizedDbId = dbId ? dbId.replace(/-/g, "") : null;
   const pageIds: string[] = [];
 
-  for (const page of data.results ?? []) {
-    // Filter by database_id on the client side (normalize UUIDs for comparison)
-    if (normalizedDbId) {
-      const pageDbId = (page.parent?.database_id ?? "").replace(/-/g, "");
-      if (pageDbId !== normalizedDbId) continue;
-    }
-
-    // Filter by watermark (stop at pages older than `since`)
+  for (const page of result.results) {
+    // Safety-net watermark check: the API filter handles this via last_edited_time.after,
+    // but we keep the client-side guard as a defence against clock skew or filter gaps.
     if (since && page.last_edited_time <= since) continue;
 
     pageIds.push(page.id);
+
+    // Cap at the per-tick limit (MAX_PAGES_PER_CRON) — queryDatabase already fetched
+    // all matching pages via its internal pagination loop; we just slice here.
+    if (pageIds.length >= limit) break;
   }
 
   return pageIds;

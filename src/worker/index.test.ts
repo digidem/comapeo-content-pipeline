@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // We only import types and the default export (Hono app) + queue consumer.
 // The worker module has side effects (global type declarations) — fine.
-import { app, queueHandler } from "./index.js";
+import { app, queueHandler, scheduledHandler } from "./index.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -451,5 +451,132 @@ describe("queue consumer", () => {
     // Verify job marked failed
     const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
     expect(findPrepareCall(prepareMock, "failed")).toBeDefined();
+  });
+});
+
+// ── 5.4 Cron / scheduledHandler tests ──
+
+describe("scheduledHandler (cron, plan 5.4)", () => {
+  let env: ReturnType<typeof buildEnv>;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const DS_ID = "test-ds-id";
+
+  function makeSdkPageResult(id: string, last_edited_time: string) {
+    return { object: "page", id, last_edited_time, properties: {} };
+  }
+
+  function sdkQueryResponse(
+    pages: ReturnType<typeof makeSdkPageResult>[],
+    next_cursor: string | null,
+    has_more: boolean,
+  ) {
+    return new Response(JSON.stringify({
+      object: "list",
+      type: "page_or_data_source",
+      page_or_data_source: {},
+      results: pages,
+      next_cursor,
+      has_more,
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  beforeEach(() => {
+    env = buildEnv();
+
+    // NOTE: Do NOT mock globalThis.setTimeout here.
+    // The @notionhq/client SDK uses setTimeout for request timeouts. Mocking it
+    // to fire immediately causes the SDK's timeout to beat the fetch mock, raising
+    // RequestTimeoutError. The NotionClient throttle at maxRps:999 is ~1ms and
+    // resolves without sleeping on the first request.
+
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    // getLastSyncWatermark queries D1 — return null by default (no prior watermark)
+    (env.DB.first as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it(">50 changed pages: paginates without loss (two API pages → all enqueued)", async () => {
+    const page1Pages = Array.from({ length: 5 }, (_, i) =>
+      makeSdkPageResult(`page-a${i}`, "2026-06-01T00:00:00.000Z"),
+    );
+    const page2Pages = Array.from({ length: 4 }, (_, i) =>
+      makeSdkPageResult(`page-b${i}`, "2026-06-01T00:00:00.000Z"),
+    );
+
+    fetchMock
+      .mockResolvedValueOnce(sdkQueryResponse(page1Pages, "cursor-p2", true))
+      .mockResolvedValueOnce(sdkQueryResponse(page2Pages, null, false));
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    // All 9 pages (5 + 4) should have been enqueued — not just the first 5
+    const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
+    expect(queue.messages).toHaveLength(9);
+    expect(queue.messages.map((m) => (m as { pageId: string }).pageId)).toEqual(
+      expect.arrayContaining(["page-a0", "page-a4", "page-b0", "page-b3"]),
+    );
+  });
+
+  it("watermark skip: pages older than since are not enqueued", async () => {
+    const since = "2026-06-01T00:00:00.000Z";
+
+    // Provide a watermark via D1 mock
+    (env.DB.first as ReturnType<typeof vi.fn>).mockResolvedValue({ value: since });
+
+    const newPage   = makeSdkPageResult("new-page",  "2026-06-15T00:00:00.000Z");
+    const oldPage   = makeSdkPageResult("old-page",  "2026-05-31T00:00:00.000Z"); // older than watermark
+    const equalPage = makeSdkPageResult("equal-page", since); // exactly equal to watermark
+
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([newPage, oldPage, equalPage], null, false));
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    // Only new-page should be enqueued (old-page and equal-page fail the watermark check)
+    const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
+    const enqueuedIds = queue.messages.map((m) => (m as { pageId: string }).pageId);
+    expect(enqueuedIds).toContain("new-page");
+    expect(enqueuedIds).not.toContain("old-page");
+    expect(enqueuedIds).not.toContain("equal-page");
+  });
+
+  it("dead pages: filter is present in the API request body", async () => {
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    expect(fetchMock).toHaveBeenCalled();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain(`data_sources/${DS_ID}/query`);
+
+    const body = JSON.parse(init.body as string);
+    // The status guard filter should be present (not undefined/null)
+    expect(body.filter).toBeDefined();
+    const filterStr = JSON.stringify(body.filter);
+    // Should contain a does_not_equal for "Remove" (the dead-status filter)
+    expect(filterStr).toContain("does_not_equal");
+    expect(filterStr).toContain("Remove");
+    // Must not reference Parent item or Sub-item (v3 regression guard)
+    expect(filterStr).not.toContain("Parent item");
+    expect(filterStr).not.toContain("Sub-item");
+  });
+
+  it("respects limit cap (MAX_PAGES_PER_CRON=50): stops after 50 pageIds", async () => {
+    // Return 60 pages in a single API response (no pagination)
+    const pages = Array.from({ length: 60 }, (_, i) =>
+      makeSdkPageResult(`page-${i}`, "2026-06-01T00:00:00.000Z"),
+    );
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse(pages, null, false));
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    // scheduledHandler uses maxPages=50, so only 50 should be enqueued
+    const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
+    expect(queue.messages).toHaveLength(50);
   });
 });

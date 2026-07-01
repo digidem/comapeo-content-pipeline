@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSy
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { NotionClient } from "../lib/notion-client.js";
+import { buildQueryFilter } from "../lib/notion-filters.js";
 import {
   isContentPage,
   isStructuralPage,
@@ -179,10 +180,10 @@ async function cmdSyncFull(args: Record<string, string>) {
   do {
     if (count >= limit) break;
 
-    const resp = await client.queryDataSource({
-      filter: args.filter ? JSON.parse(args.filter) : undefined,
-      startCursor: cursor,
-      excludeSubItems: true,
+    const resp = await client.queryDatabase({
+      filter: args.filter
+        ? JSON.parse(args.filter)
+        : buildQueryFilter({ includeAll: args.all === "true" }),
     });
 
     for (const page of resp.results) {
