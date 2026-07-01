@@ -373,6 +373,30 @@ async function cmdDocsPull(args: Record<string, string>) {
     docById.set(doc.page_id, doc);
   }
 
+  // ── Internal-page detection ──────────────────────────────────────────────
+  // Declared early so they can be used when building internalGroupIds below.
+
+  // Editorial QA/test pages authored in Notion. They cannot be distinguished by
+  // status/element_type (all draft Pages), so match by slug (most reliable —
+  // translations inherit the English slug) and by title as a secondary signal.
+  const TEST_PAGE_TITLE = /^\s*[\[(]?\s*(testing|test|teste|prueba)\b/i;
+  const TEST_PAGE_SLUG = /^(testing|teste)-/i;
+
+  // Internal/template scratch pages authored in Notion that must never publish.
+  const INTERNAL_PAGE_TITLE = /^\s*(new element|process checklist)\s*$/i;
+  const INTERNAL_PAGE_MARKER = /\[\s*(add content here|en title|insert content here)\s*\]/i;
+  // Staging/translation scratch containers whose titles carry a parenthesised annotation
+  // like "(translating for public page)" or "(staging)".
+  const INTERNAL_PAGE_ANNOTATION =
+    /\((?:translating|translation|for translation|staging|do not publish|internal)[^)]*\)/i;
+
+  /** Returns true when a page's own title marks it as internal/template. */
+  const isInternalTitle = (title: string, pageId: string): boolean =>
+    INTERNAL_PAGE_TITLE.test(title) ||
+    INTERNAL_PAGE_MARKER.test(title) ||
+    INTERNAL_PAGE_ANNOTATION.test(title) ||
+    title.trim() === pageId; // untitled page (title defaulted to its id)
+
   const containerIds = new Set<string>();
   const containerHasEnChild = new Set<string>();
   for (const doc of manifest.docs) {
@@ -395,6 +419,20 @@ async function cmdDocsPull(args: Record<string, string>) {
       const cleanSlug = slugify(doc.title ?? "") || doc.slug;
       for (const subId of doc.sub_items) {
         translationMap.set(subId, { slug: cleanSlug, section: doc.section, order: doc.section_order ?? null });
+      }
+    }
+  }
+
+  // Pages whose container title carries an internal annotation must be excluded
+  // along with all their sub-item children, because the children's own titles
+  // carry no annotation (the annotation lives only on the container).
+  const internalGroupIds = new Set<string>();
+  for (const doc of manifest.docs) {
+    if (!isInternalTitle(doc.title ?? "", doc.page_id)) continue;
+    internalGroupIds.add(doc.page_id);
+    if (Array.isArray(doc.sub_items)) {
+      for (const subId of doc.sub_items) {
+        internalGroupIds.add(subId);
       }
     }
   }
@@ -442,28 +480,6 @@ async function cmdDocsPull(args: Record<string, string>) {
   // asset copying (only assets referenced by each section's .md files).
   const writtenSectionDirs = new Set<string>();
 
-  // Editorial QA/test pages authored in Notion. They cannot be distinguished by
-  // status/element_type (all draft Pages), so match by slug (most reliable —
-  // translations inherit the English slug) and by title as a secondary signal.
-  const TEST_PAGE_TITLE = /^\s*[\[(]?\s*(testing|test|teste|prueba)\b/i;
-  const TEST_PAGE_SLUG = /^(testing|teste)-/i;
-
-  // Internal/template scratch pages authored in Notion that must never publish.
-  const INTERNAL_PAGE_TITLE = /^\s*(new element|process checklist)\s*$/i;
-  const INTERNAL_PAGE_MARKER = /\[\s*(add content here|en title|insert content here)\s*\]/i;
-  // Staging/translation scratch containers whose titles carry a parenthesised annotation
-  // like "(translating for public page)" or "(staging)" — these are editorial workspaces,
-  // not publishable content, and must never appear in the output.
-  const INTERNAL_PAGE_ANNOTATION =
-    /\((?:translating|translation|for translation|staging|do not publish|internal)[^)]*\)/i;
-
-  /** Returns true when a page should be treated as an internal/template page. */
-  const isInternalTitle = (title: string, pageId: string): boolean =>
-    INTERNAL_PAGE_TITLE.test(title) ||
-    INTERNAL_PAGE_MARKER.test(title) ||
-    INTERNAL_PAGE_ANNOTATION.test(title) ||
-    title.trim() === pageId; // untitled page (title defaulted to its id)
-
   // Deduplicate pages with the same slug in the same locale
   // (e.g. test pages that share a slug like "test-guia-de-instalacao" in PT)
   const dedupedDocs: typeof manifest.docs = [];
@@ -487,7 +503,8 @@ async function cmdDocsPull(args: Record<string, string>) {
     if (
       TEST_PAGE_TITLE.test(title) ||
       TEST_PAGE_SLUG.test(translationSlug ?? "") ||
-      isInternalTitle(title, doc.page_id)
+      isInternalTitle(title, doc.page_id) ||
+      internalGroupIds.has(doc.page_id)
     ) {
       skippedTestPages++;
       continue; // drop editorial test/internal/template page (and its translations)
@@ -533,7 +550,8 @@ async function cmdDocsPull(args: Record<string, string>) {
     if (
       TEST_PAGE_TITLE.test(title) ||
       TEST_PAGE_SLUG.test(translationSlug ?? "") ||
-      isInternalTitle(title, doc.page_id)
+      isInternalTitle(title, doc.page_id) ||
+      internalGroupIds.has(doc.page_id)
     ) {
       skippedTestPages++;
       continue; // drop editorial test/internal/template page (and its translations)
