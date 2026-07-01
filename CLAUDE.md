@@ -50,7 +50,7 @@ D1 schema (`migrations/0001_initial.sql`, queries in `src/persistence/d1.ts`): `
 
 Hono app. Routes: `GET /health`, `GET /health/deep` (D1+R2+Notion check), `POST /webhooks/notion` (verification challenge + enqueue), `POST /admin/sync/page|sync/changed|manifest/regenerate`. Admin routes require `Authorization: Bearer ${ADMIN_TOKEN}`. `scheduled` cron (`*/5 * * * *`) queries Notion for changed pages and enqueues.
 
-**Known gap (TASKS.md §1):** the Worker currently fetches raw page/blocks and writes raw JSON to R2 but does NOT yet run `convertBlocks`/`buildFrontmatter` — it does not emit canonical Markdown. The queue consumer is disabled in `wrangler.toml` (commented out) pending a fix. When wiring the converter into the Worker, share `syncPage` logic rather than duplicating it, and keep it Node-API-free.
+**Queue Consumer:** The queue consumer is enabled in `wrangler.toml` and processes events using the shared runtime-agnostic `convertPageData` to generate Markdown and upload assets to R2.
 
 ## Conventions
 
