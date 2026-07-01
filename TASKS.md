@@ -6,45 +6,32 @@ This file is the single source of truth for all pending and resolved tasks in th
 
 ## Pending Tasks
 
-### 1. Reduce Notion Fetching Time & API-Level Status Filtering (High Priority)
-*See full implementation spec: [plans/2026-06-27-notion-api-status-filtering-4.0.md](file:///home/luandro/Dev/digidem/comapeo-content-pipeline/plans/2026-06-27-notion-api-status-filtering-4.0.md)*
-
-- [ ] **Phase 1: Consolidate Constants**:
-  - Rename `DRAFTING_STATUS` to `PUBLISH_STATUS` (value `"Publish Status"`). Add `KEYWORDS`, `TAGS`, `DATE_PUBLISHED`, and `PARENT_ITEM: "Parent item"` constants.
-  - Centralize `DEAD_STATUSES = ["Remove", "Unplublished"]`. Add pattern mapping `/remove/i` and `/unpl?ublished/i` in [status.ts](file:///home/luandro/Dev/digidem/comapeo-content-pipeline/src/lib/status.ts).
-  - Centralize API constants (`BASE_URL`, `SEARCH_VERSION`, `DATABASE_VERSION`, `DEFAULT_PAGE_SIZE`), element types, locales, and section names.
-- [ ] **Phase 2: Live Verification & SDK compatibility gate**:
-  - Construct Notion client with version `"2025-09-03"` and test `dataSources.query` filter acceptance using `DEAD_STATUSES` under `wrangler dev`.
-- [ ] **Phase 3: SDK/Raw-Fetch Query Integration**:
-  - Implement paginated `queryDatabase()` in `NotionClient` to replace `queryDataSource()`.
-  - Implement `buildQueryFilter()` in `src/lib/notion-filters.ts` supporting exclusions for `DEAD_STATUSES`.
-  - Wire the new query filter into `cmdSyncFull()` and `queryChangedPages()`.
-- [ ] **Phase 4: Cron Watermark Pagination & Cleanup**:
-  - Implement a pagination loop in `queryChangedPages` (fixes the >50-page cron sync truncation bug).
-  - Add a cron safety counter (`MAX_PAGES = 10000`) to prevent runaway loops.
-  - Reconcile `wrangler.toml` and [CLAUDE.md](file:///home/luandro/Dev/digidem/comapeo-content-pipeline/CLAUDE.md) queue consumer discrepancy.
-- [ ] **Phase 5: Test Suite Expansion**:
-  - Add unit and integration tests for filtering logic, cron watermark pagination, and status mappings.
-- [ ] **Phase 6: Deploy & Verify**:
-  - Deploy worker, trigger `sync:full --force`, and verify page counts.
-
-### 2. Content Hygiene
-- [ ] **Task 6: Inline Image Notes (`[Image: <url>]` author-notes)**:
-  - Address plain-text `[Image: <expiring-url>]` written in blocks.
-  - *Decision Needed*: Defensively strip standalone `[Image: <url>]` lines in `docs:pull` or leave and flag for Notion cleanup.
-- [ ] **Task 7: Staging Container Leak**:
-  - Prevent internal container pages like `"CoMapeo Data & Privacy (translating for public page)"` from publishing under the Uncategorized section.
-  - *Decision Needed*: Recategorize/delete in Notion, or add title exclusion filters to `docs:pull`.
-
-### 3. Worker & RAG Validation
-- [ ] **Worker Conversion Path**:
-  - Validate that the Cloudflare Worker successfully runs `convertPageData` and writes canonical Markdown to R2 without runtime errors.
-- [ ] **RAG Chunks Validation**:
-  - Confirm the generated chunks from `rag:chunks` subcommand in [chunker.ts](file:///home/luandro/Dev/digidem/comapeo-content-pipeline/src/rag/chunker.ts) match WhatsApp RAG support bot requirements and that structural (Toggle/Title) pages are successfully skipped.
+### Follow-ups (discovered July 2026, deliberately deferred)
+- [ ] **`manifest:generate` is broken for the CLI layout**: it expects `*.metadata.json` files that `sync:full` never writes, so it silently produces an empty manifest (and overwrites the good one `sync:full` wrote). Either make `sync:full` emit per-page metadata blobs or point `manifest:generate` at the in-manifest data. Until fixed, do not run `manifest:generate` after a CLI sync.
+- [ ] **`mapStatus` active/draft realignment** (plan v4 "status vocabulary drift", explicitly out of scope there): today `active` = Published / Draft published / Ready to publish; the other 8 live options map to `draft`. Decide with editorial whether e.g. "Adding to staging site" should publish.
+- [ ] **Automated-locale casing**: live Notion `Language` values for automated translations don't exactly match the `NOTION_LOCALES` keys (sync stores the lowercase passthrough, e.g. `"es - automated"`), so locale canonicalization still happens in `docs:pull`, not at sync time. Same behavior as before the refactor; align the map keys with the live values when convenient.
 
 ---
 
 ## Completed Tasks
+
+### Notion API-Level Status Filtering (July 2026) — plan [plans/2026-06-27-notion-api-status-filtering-4.0.md](file:///home/luandro/Dev/digidem/comapeo-content-pipeline/plans/2026-06-27-notion-api-status-filtering-4.0.md)
+- [x] **Phase 1 — Constants consolidated**: `DRAFTING_STATUS` → `PUBLISH_STATUS` (fixes the property read — previously every page classified `draft` because "Drafting Status" doesn't exist); added `KEYWORDS`/`TAGS`/`DATE_PUBLISHED`/`PARENT_ITEM`, `DEAD_STATUSES = ["Remove", "Unplublished"]`, `NOTION_API`, element-type helpers, `normalizeLocale`, `SECTION_NAMES`. `/remove/i` + `/unpl?ublished/i` added to `DEPRECATED_PATTERNS`.
+- [x] **Phase 2 — Live gate passed**: SDK v5 `dataSources.query` with `Notion-Version: 2025-09-03` accepts the compound exclusion filter. Live counts: 284 rows total → filter keeps 280, excludes exactly the 4 Remove/Unplublished rows, keeps all 210 empty-status rows.
+- [x] **Phase 3A — SDK query integration**: paginated `NotionClient.queryDatabase()`; `buildQueryFilter()` in `notion-filters.ts` (exclusion-based, never touches Parent item/Sub-item); wired into `sync:full` (`--all`/`--filter` respected) and Worker cron `queryChangedPages` (replaces the broken `/v1/search` workaround). `queryDataSource()` deprecated.
+- [x] **Phase 4 — Cleanup**: cron pagination loop (fixes >50-page truncation), `MAX_PAGES = 10000` safety counter, dead `dataSourceId` param removed, `wrangler.toml`/CLAUDE.md queue-consumer docs reconciled.
+- [x] **Phase 5 — Tests**: 250 → 328 tests (filter construction, queryDatabase pagination + stale cursor, cron, locale/element-type helpers, status fixtures, DEAD_STATUSES↔mapStatus invariant, model-safety guard, no-stale-constant grep guard).
+- [x] **Phase 6 — Deployed & verified**: worker deployed (`/health/deep` ok), queue consumer processed a live page end-to-end (canonical MD in R2 with `status: active`), `sync:full` re-synced 280 pages (= 284 − 4 dead), manifest now classifies 36 active / 244 draft, cron watermark advancing with no job errors.
+
+### Content Hygiene (July 2026)
+- [x] **Task 6 — Inline `[Image: <url>]` author-notes**: decision taken — defensively strip whole lines consisting solely of `[Image: …]` in post-processing (expiring AWS URLs, editorial self-notes). Inline mentions and real `![…](…)` images untouched. The 4 leaked occurrences in the PT build are gone on regeneration.
+- [x] **Task 7 — Staging container leak**: decision taken — title-annotation exclusion in `docs:pull` (`(translating…)`, `(staging)`, `(do not publish)`, `(internal)`), extended to the whole sub-item group since children inherit the container slug but not its annotated title. Verified: `docs:pull --all` output differs from before by exactly the one leaked file. Consider also cleaning the page up in Notion.
+
+### Worker & RAG Validation (July 2026)
+- [x] **Worker conversion path**: validated live post-deploy — admin enqueue → queue consumer → `convertPageData` → canonical Markdown + metadata + raw JSON in R2, D1 `sync_jobs` completed without error.
+- [x] **RAG chunks**: all generated chunks and the chunks manifest validate against the zod schemas (1178/1178 with `--all`; 55/55 active-only after re-sync); 0 of 62 structural (Toggle/Title) pages leak into chunks.
+
+### Completed Tasks (earlier)
 
 ### Phase 2: Match Reference Output (Gap Mitigation)
 - [x] **Admonitions**: Converted Callout blocks to Docusaurus `:::` warnings/notes syntax.

@@ -30,7 +30,7 @@ npx vitest run src/rag/chunker.test.ts
 npx vitest run -t "slug"
 ```
 
-CLI subcommands: `sync:page <id>`, `sync:full [--out --limit --filter]`, `manifest:generate`, `docs:pull --out ./docs`, `validate`, `diff`, `rag:chunks`. Note `rag:chunks` and `diff` are stubs — see TASKS.md.
+CLI subcommands: `sync:page <id>`, `sync:full [--out --limit --filter --all]`, `manifest:generate`, `docs:pull --out ./docs`, `validate`, `diff`, `rag:chunks [--all]`. Caution: `manifest:generate` expects `*.metadata.json` blobs the CLI sync doesn't write — running it after `sync:full` overwrites the good manifest with an empty one (see TASKS.md follow-ups).
 
 ## Architecture / data flow
 
