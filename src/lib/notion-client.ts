@@ -10,6 +10,7 @@
  */
 
 import { classifyError, ClassifiedError, ErrorCategory } from "./errors.js";
+import { NOTION_API } from "./notion-properties.js";
 
 // Minimal Notion API types used internally
 export interface NotionPage {
@@ -64,14 +65,14 @@ export class NotionClient {
   private version: string;
   private maxRps: number;
   private lastRequestTime: number = 0;
-  private baseUrl = "https://api.notion.com/v1";
+  private baseUrl = NOTION_API.BASE_URL;
   private inFlightRequests: Map<string, Promise<unknown>> = new Map();
 
   constructor(config: NotionConfig) {
     this.token = config.token;
     this.databaseId = config.databaseId;
     this.dataSourceId = config.dataSourceId;
-    this.version = config.version || "2026-03-11";
+    this.version = config.version || NOTION_API.SEARCH_VERSION;
     this.maxRps = config.maxRps ?? 3;
   }
 
@@ -207,7 +208,6 @@ export class NotionClient {
    * Results are filtered client-side by parent database_id when configured.
    */
   async queryDataSource(params: {
-    dataSourceId?: string;
     filter?: Record<string, unknown>;
     startCursor?: string;
     pageSize?: number;
@@ -222,7 +222,7 @@ export class NotionClient {
         direction: "descending",
         timestamp: "last_edited_time",
       },
-      page_size: params.pageSize ?? 100,
+      page_size: params.pageSize ?? NOTION_API.DEFAULT_PAGE_SIZE,
     };
 
     if (params.startCursor) {

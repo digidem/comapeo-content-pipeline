@@ -4,7 +4,7 @@
 
 import { NotionClient } from "./notion-client.js";
 import type { NotionPage, NotionBlock } from "./notion-client.js";
-import { NOTION_PROPERTIES } from "./notion-properties.js";
+import { NOTION_PROPERTIES, normalizeLocale } from "./notion-properties.js";
 import { convertBlocks } from "./notion-converter.js";
 import type { NotionBlockList } from "./notion-converter.js";
 import { postProcessMarkdown } from "./post-process.js";
@@ -91,19 +91,19 @@ export async function convertPageData(input: {
   const resolvedSection = overrides?.section ?? extractSection(pageLike);
   const resolvedSectionOrder = overrides?.sectionOrder ?? extractSectionOrder(pageLike);
   const resolvedElementType = overrides?.elementType ?? extractProperty(pageLike, NOTION_PROPERTIES.ELEMENT_TYPE);
-  const resolvedDraftingStatus = overrides?.draftingStatus ?? extractProperty(pageLike, NOTION_PROPERTIES.DRAFTING_STATUS);
+  const resolvedDraftingStatus = overrides?.draftingStatus ?? extractProperty(pageLike, NOTION_PROPERTIES.PUBLISH_STATUS);
   const status = mapStatus(resolvedDraftingStatus);
 
   // Extract SEO and Docusaurus metadata properties
-  const keywords = extractMultiSelect(pageLike, "Keywords");
-  const tags = extractMultiSelect(pageLike, "Tags");
+  const keywords = extractMultiSelect(pageLike, NOTION_PROPERTIES.KEYWORDS);
+  const tags = extractMultiSelect(pageLike, NOTION_PROPERTIES.TAGS);
   // Extract sub-items (translations linked via Sub-item relation)
   const subItems = extractRelation(pageLike, NOTION_PROPERTIES.SUB_ITEM);
   // Apply defaults matching old pipeline behavior
   const resolvedKeywords = keywords.length > 0 ? keywords : ["docs", "comapeo"];
   const resolvedTags = tags.length > 0 ? tags : ["comapeo"];
   const icon = extractIcon(rawPage);
-  const publishedDate = extractDate(pageLike, "Date Published");
+  const publishedDate = extractDate(pageLike, NOTION_PROPERTIES.DATE_PUBLISHED);
 
   // Generate slug
   const slugSet = usedSlugs ?? new Set<string>();
@@ -343,19 +343,7 @@ function extractProperty(page: NotionPage, name: string): string | null {
 function extractLocale(page: NotionPage): string | null {
   const lang = extractProperty(page, NOTION_PROPERTIES.LANGUAGE);
   if (!lang) return null;
-
-  // Map Notion language names to locale codes
-  const localeMap: Record<string, string> = {
-    English: "en",
-    Portuguese: "pt",
-    Spanish: "es",
-    "pt-BR": "pt",
-    es: "es",
-    en: "en",
-    pt: "pt",
-  };
-
-  return localeMap[lang] ?? lang.toLowerCase();
+  return normalizeLocale(lang);
 }
 
 /** Extract content section from Notion page properties */

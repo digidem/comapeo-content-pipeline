@@ -27,7 +27,7 @@ export function generateManifest(input: ManifestInput): ContentManifest {
       section: meta.section,
       section_order: meta.section_order,
       element_type: meta.properties?.[NOTION_PROPERTIES.ELEMENT_TYPE] as string | null ?? null,
-      drafting_status: meta.properties?.[NOTION_PROPERTIES.DRAFTING_STATUS] as string | null ?? null,
+      drafting_status: meta.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS] as string | null ?? null,
       slug: meta.slug,
       docusaurus_id: meta.docusaurus_id,
       docusaurus_path: `/${meta.slug}`,

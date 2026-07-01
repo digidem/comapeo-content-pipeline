@@ -24,6 +24,10 @@ const DEPRECATED_PATTERNS = [
   /deprecated/i,
   /archive/i,
   /archived/i,
+  // Real dead values from the live Publish Status property (confirmed 2026-06-27).
+  // Unplublished is a real Notion typo — the pattern absorbs both spellings.
+  /remove/i,
+  /unpl?ublished/i,
 ];
 
 const DELETED_PATTERNS = [

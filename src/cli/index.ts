@@ -16,6 +16,14 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSy
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { NotionClient } from "../lib/notion-client.js";
+import {
+  isContentPage,
+  isStructuralPage,
+  normalizeLocale,
+  NOTION_ELEMENT_TYPES,
+  SECTION_NAMES,
+  UNCATEGORIZED_ORDER,
+} from "../lib/notion-properties.js";
 import { syncPage } from "../lib/sync.js";
 import { generateManifest } from "../lib/manifest.js";
 import { parseDoc } from "../lib/frontmatter.js";
@@ -413,9 +421,9 @@ async function cmdDocsPull(args: Record<string, string>) {
   const sectionLabels = new Map<string, Map<string, string>>(); // locale → section → label
   for (const doc of manifest.docs) {
     const et = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
-    if (!/^toggle$/i.test(et)) continue;
+    if (et.toLowerCase() !== NOTION_ELEMENT_TYPES.TOGGLE) continue;
     const sec = doc.section || "__none__";
-    const loc = doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
+    const loc = normalizeLocale(doc.locale);
     // Store label per locale (first Toggle wins — lowest section_order)
     if (!sectionLabels.has(loc)) sectionLabels.set(loc, new Map());
     if (!sectionLabels.get(loc)!.has(sec)) {
@@ -456,8 +464,7 @@ async function cmdDocsPull(args: Record<string, string>) {
       continue;
     }
     const elementType = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
-    const isContentPage = /^page$/i.test(elementType) || elementType === "";
-    if (!isContentPage) {
+    if (!isContentPage(elementType)) {
       dedupedDocs.push(doc);
       continue;
     }
@@ -476,8 +483,7 @@ async function cmdDocsPull(args: Record<string, string>) {
       skippedTestPages++;
       continue; // drop editorial test/internal/template page (and its translations)
     }
-    const normalizedLocale =
-      doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
+    const normalizedLocale = normalizeLocale(doc.locale);
     const key = `${normalizedLocale}/${translationSlug}`;
     const existing = seenSlugs.get(key);
     if (existing) {
@@ -506,8 +512,7 @@ async function cmdDocsPull(args: Record<string, string>) {
 
     // Skip structural pages (Toggles, Titles) — only publish content Pages
     const elementType = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
-    const isContentPage = /^page$/i.test(elementType) || elementType === "";
-    if (!isContentPage) {
+    if (!isContentPage(elementType)) {
       skippedNonPage++;
       continue;
     }
@@ -557,11 +562,10 @@ async function cmdDocsPull(args: Record<string, string>) {
     // en:   {outDir}/docs/{section}/{slug}.md
     // non-en: {outDir}/i18n/{locale}/docusaurus-plugin-content-docs/current/{section}/{slug}.md
     // Pages without a Content Section are placed in "Uncategorized" (appears last in sidebar)
-    const sectionRaw = effectiveSection || "Uncategorized";
+    const sectionRaw = effectiveSection || SECTION_NAMES.UNCATEGORIZED;
     const sectionDir = sectionRaw ? toSectionDir(sectionRaw) : undefined;
     // Normalize automated locales: "es - automated" → "es", "pt - automated" → "pt"
-    const normalizedLocale =
-      doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
+    const normalizedLocale = normalizeLocale(doc.locale);
 
     // Resolve internal cross-references to the locale-correct published route
     // and slugify heading anchors to Docusaurus heading-ID format.
@@ -620,7 +624,7 @@ async function cmdDocsPull(args: Record<string, string>) {
       // Numbered sections ("10-…", "90+ - …") sort by their leading integer.
       const OVERVIEW_ORDER = -1; // set to 9000 to instead place prefix-less sections last
       const getOrder = (name: string) => {
-        if (name === "Uncategorized") return 9999;
+        if (name === SECTION_NAMES.UNCATEGORIZED) return UNCATEGORIZED_ORDER;
         const m = name.match(/^(\d+)/);
         if (m) return parseInt(m[1], 10);
         return OVERVIEW_ORDER;
@@ -713,11 +717,11 @@ async function cmdDocsPull(args: Record<string, string>) {
     for (const doc of manifest.docs) {
       if (args.all !== "true" && doc.status !== "active") continue;
       const et = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
-      if (/^(toggle|title)$/i.test(et)) continue;
+      if (isStructuralPage(et)) continue;
       const orphanTranslation = translationMap.get(doc.page_id);
-      const sRaw = orphanTranslation?.section ?? (doc.section || "Uncategorized");
+      const sRaw = orphanTranslation?.section ?? (doc.section || SECTION_NAMES.UNCATEGORIZED);
       const sDir = toSectionDir(sRaw);
-      const nLoc = doc.locale === "es - automated" ? "es" : doc.locale === "pt - automated" ? "pt" : doc.locale;
+      const nLoc = normalizeLocale(doc.locale);
       const orphanSlug = orphanTranslation?.slug ?? doc.slug;
       const expectedPath = nLoc === "en"
         ? join(outDir, "docs", ...(sDir ? [sDir] : []), `${orphanSlug}.md`)
@@ -838,7 +842,7 @@ async function cmdRagChunks(args: Record<string, string>) {
     (doc: { status: string; element_type?: { select?: { name?: string }; name?: string } }) => {
       if (!includeAll && doc.status !== "active") return false;
       const et = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
-      if (/^(toggle|title)$/i.test(et)) return false;
+      if (isStructuralPage(et)) return false;
       return true;
     },
   );

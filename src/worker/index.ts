@@ -19,6 +19,7 @@ import { NotionClient } from "../lib/notion-client.js";
 import { classifyError, ErrorCategory } from "../lib/errors.js";
 import { R2_PATHS } from "../persistence/r2.js";
 import type { SidebarItem } from "../schemas/manifest.js";
+import { NOTION_API } from "../lib/notion-properties.js";
 
 // Minimal Cloudflare Workers type declarations (avoid @cloudflare/workers-types conflicts with @types/node)
 declare global {
@@ -532,11 +533,11 @@ async function queryChangedPages(
     page_size: limit,
   };
 
-  const resp = await fetch("https://api.notion.com/v1/search", {
+  const resp = await fetch(`${NOTION_API.BASE_URL}/search`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.NOTION_TOKEN}`,
-      "Notion-Version": "2026-03-11",
+      "Notion-Version": NOTION_API.SEARCH_VERSION,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),

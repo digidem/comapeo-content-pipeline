@@ -419,7 +419,7 @@ describe("queue consumer", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(blocksResponse), { status: 200 }));
 
     // D1 returns matching content_hash and status → should skip
-    // (status will be "draft" since fixture has no Drafting Status property)
+    // (status will be "draft" since fixture has no Publish Status property)
     env.DB.first.mockResolvedValue({
       content_hash: expectedHash,
       status: "draft",
