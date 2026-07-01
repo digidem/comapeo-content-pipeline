@@ -451,6 +451,18 @@ async function cmdDocsPull(args: Record<string, string>) {
   // Internal/template scratch pages authored in Notion that must never publish.
   const INTERNAL_PAGE_TITLE = /^\s*(new element|process checklist)\s*$/i;
   const INTERNAL_PAGE_MARKER = /\[\s*(add content here|en title|insert content here)\s*\]/i;
+  // Staging/translation scratch containers whose titles carry a parenthesised annotation
+  // like "(translating for public page)" or "(staging)" — these are editorial workspaces,
+  // not publishable content, and must never appear in the output.
+  const INTERNAL_PAGE_ANNOTATION =
+    /\((?:translating|translation|for translation|staging|do not publish|internal)[^)]*\)/i;
+
+  /** Returns true when a page should be treated as an internal/template page. */
+  const isInternalTitle = (title: string, pageId: string): boolean =>
+    INTERNAL_PAGE_TITLE.test(title) ||
+    INTERNAL_PAGE_MARKER.test(title) ||
+    INTERNAL_PAGE_ANNOTATION.test(title) ||
+    title.trim() === pageId; // untitled page (title defaulted to its id)
 
   // Deduplicate pages with the same slug in the same locale
   // (e.g. test pages that share a slug like "test-guia-de-instalacao" in PT)
@@ -472,14 +484,10 @@ async function cmdDocsPull(args: Record<string, string>) {
     const translation = translationMap.get(doc.page_id);
     const translationSlug = translation?.slug ?? doc.slug;
     const title = doc.title ?? "";
-    const isInternal =
-      INTERNAL_PAGE_TITLE.test(title) ||
-      INTERNAL_PAGE_MARKER.test(title) ||
-      title.trim() === doc.page_id; // untitled page (title defaulted to its id)
     if (
       TEST_PAGE_TITLE.test(title) ||
       TEST_PAGE_SLUG.test(translationSlug ?? "") ||
-      isInternal
+      isInternalTitle(title, doc.page_id)
     ) {
       skippedTestPages++;
       continue; // drop editorial test/internal/template page (and its translations)
@@ -522,14 +530,10 @@ async function cmdDocsPull(args: Record<string, string>) {
     const translation = translationMap.get(doc.page_id);
     const translationSlug = translation?.slug ?? doc.slug;
     const title = doc.title ?? "";
-    const isInternal =
-      INTERNAL_PAGE_TITLE.test(title) ||
-      INTERNAL_PAGE_MARKER.test(title) ||
-      title.trim() === doc.page_id; // untitled page (title defaulted to its id)
     if (
       TEST_PAGE_TITLE.test(title) ||
       TEST_PAGE_SLUG.test(translationSlug ?? "") ||
-      isInternal
+      isInternalTitle(title, doc.page_id)
     ) {
       skippedTestPages++;
       continue; // drop editorial test/internal/template page (and its translations)

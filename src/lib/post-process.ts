@@ -300,6 +300,36 @@ export function sanitizeMarkdownContent(content: string): string {
 }
 
 /**
+ * Strip standalone `[Image: <url>]` author-note lines.
+ *
+ * Notion authors sometimes write plain-text lines like
+ *   `[Image: https://prod-files-secure.s3...]`
+ * as self-notes. The AWS URLs expire and these lines are editorial annotations,
+ * not content. Strip whole lines that consist solely of such a bracket expression
+ * (optionally bold-wrapped, optionally surrounded by whitespace).
+ *
+ * Conservative rules:
+ *   - Only whole-line matches (the line must have NO other text).
+ *   - Only when the bracket content starts with `Image:` (case-insensitive).
+ *   - `![alt](url)` standard Markdown images are NOT affected.
+ */
+export function stripImageAuthorNotes(content: string): string {
+  if (!content) return content;
+
+  // Matches a line consisting solely of [Image: ...] or **[Image: ...]**
+  // with optional surrounding whitespace.
+  const IMAGE_NOTE_LINE =
+    /^[ \t]*(?:\*\*)?[ \t]*\[[ \t]*[Ii]mage:[ \t]*[^\]]*\][ \t]*(?:\*\*)?[ \t]*\r?$/gm;
+
+  let result = content.replace(IMAGE_NOTE_LINE, "");
+
+  // Collapse any triple (or more) blank lines left by the removal
+  result = result.replace(/\n{3,}/g, "\n\n");
+
+  return result;
+}
+
+/**
  * Sanitize markdown image syntax.
  *
  * Fixes common image issues from Notion exports:
@@ -346,6 +376,10 @@ export function postProcessMarkdown(
 
 	// Phase 3: Sanitize markdown images (remove empty/invalid URLs, strip whitespace)
 	processed = sanitizeMarkdownImages(processed);
+
+	// Phase 3b: Strip standalone [Image: <url>] author-note lines (editorial annotations
+	// that slip through from Notion; the AWS URLs expire and carry no content value).
+	processed = stripImageAuthorNotes(processed);
 
 	// Phase 4: Remove duplicate H1 matching the page title (after sanitize so heading hierarchy is already fixed)
 	processed = removeDuplicateTitle(processed, pageTitle);
