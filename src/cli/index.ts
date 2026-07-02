@@ -274,12 +274,19 @@ async function cmdSyncFull(args: Record<string, string>) {
   // Pages without explicit Order get sequential positions after max in their section.
   assignFallbackPositions(allMetadata, outDir);
 
-  // Re-write .md files with updated frontmatter (sidebar_position may have changed)
+  // Re-write .md files with updated frontmatter (sidebar_position may have changed),
+  // and write per-page .metadata.json blobs that reflect the final sidebar_position
+  // assigned by assignFallbackPositions above. These blobs are what manifest:generate
+  // reads — writing them here makes that command actually usable after a CLI sync.
   for (const meta of allMetadata) {
     const fm = await buildUpdatedFrontmatter(meta, outDir);
     if (fm) {
       writeFileSync(join(outDir, `${meta.page_id}.md`), fm);
     }
+    writeFileSync(
+      join(outDir, `${meta.page_id}.metadata.json`),
+      JSON.stringify(meta, null, 2),
+    );
   }
 
   // Write sync state watermark (only if pages were synced)
@@ -335,8 +342,40 @@ async function cmdManifestGenerate(args: Record<string, string>) {
 
   // Read all metadata files in input dir
   const fs = await import("node:fs");
-  const files = fs.readdirSync(input).filter((f) => f.endsWith(".metadata.json"));
-  const pages = files.map((f) =>
+
+  if (!fs.existsSync(input)) {
+    console.error(`Error: Input directory not found: ${input}`);
+    console.error(
+      "Run sync:full first to populate the directory with <page_id>.metadata.json files."
+    );
+    process.exit(1);
+  }
+
+  const files = fs.readdirSync(input).filter((f: string) => f.endsWith(".metadata.json"));
+
+  // Guard: no metadata blobs — do NOT write (and never clobber) the manifest.
+  //
+  // sync:full writes manifest.json directly from in-memory metadata AND (with the
+  // current fix) also emits per-page <page_id>.metadata.json blobs alongside each
+  // <page_id>.md.  manifest:generate is only useful when you want to regenerate the
+  // manifest from those on-disk blobs without re-running a full Notion sync.
+  //
+  // If you just ran sync:full, the manifest it wrote is already correct — there is
+  // no need to run manifest:generate.  If you specifically need manifest:generate,
+  // run sync:full first so the blobs exist, then run this command.
+  if (files.length === 0) {
+    console.error(`Error: No .metadata.json files found in: ${input}`);
+    console.error(
+      "\nmanifest:generate requires per-page <page_id>.metadata.json blobs.\n" +
+      "These are written by sync:full alongside each <page_id>.md file.\n" +
+      "\nIf you already ran sync:full, its manifest.json is already up to date —\n" +
+      "you do not need manifest:generate.  To use manifest:generate, run\n" +
+      "sync:full first so it emits the .metadata.json files, then run this command."
+    );
+    process.exit(1);
+  }
+
+  const pages = files.map((f: string) =>
     JSON.parse(fs.readFileSync(join(input, f), "utf8")),
   );
 
@@ -347,6 +386,23 @@ async function cmdManifestGenerate(args: Record<string, string>) {
     dataSourceId: dsId,
     pages,
   });
+
+  // Belt-and-suspenders: refuse to overwrite a non-empty manifest with a 0-doc result.
+  // This guards against data races, stale input dirs, or generateManifest edge cases.
+  if (manifest.docs.length === 0 && fs.existsSync(outFile)) {
+    try {
+      const existing = JSON.parse(fs.readFileSync(outFile, "utf8"));
+      if (Array.isArray(existing.docs) && existing.docs.length > 0) {
+        console.error(
+          `Error: Would clobber existing manifest (${existing.docs.length} docs) with an empty 0-doc result.\n` +
+          `Refusing to write ${outFile} to prevent data loss.\n` +
+          "Investigate why generateManifest produced 0 docs from non-empty .metadata.json files,\n" +
+          "or run sync:full to regenerate the manifest from fresh Notion data."
+        );
+        process.exit(1);
+      }
+    } catch { /* unparseable existing file — allow overwrite */ }
+  }
 
   writeFileSync(outFile, JSON.stringify(manifest, null, 2));
   console.log(`Manifest written to: ${outFile}`);
