@@ -577,6 +577,39 @@ describe("richTextToMarkdown", () => {
     expect(output).toContain("---");
   });
 
+  // ── Punctuation-only spans must not carry emphasis markers ──
+
+  it("drops emphasis markers on punctuation-only spans (e.g. bolded colon)", () => {
+    const rt = (plain: string, ann: Partial<{ bold: boolean; italic: boolean }>) => ({
+      type: "text" as const,
+      plain_text: plain,
+      annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default", ...ann },
+    });
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "p-punct",
+          type: "paragraph",
+          has_children: false,
+          paragraph: {
+            rich_text: [
+              rt("Step 1", { bold: true }),
+              rt(": ", { italic: true }),
+              rt("do the thing.", {}),
+            ],
+          },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    expect(output).toContain("**Step 1**: do the thing.");
+    expect(output).not.toContain("*:*");
+    expect(output).not.toContain("**:**");
+  });
+
   // ── Defect F: nested callouts need increasing-colon fences ──
 
   it("nested callout: outer fence uses 4 colons, inner keeps 3, all balanced", () => {

@@ -175,6 +175,20 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
         // emphasis delimiters in CommonMark — they render as literal asterisks.
         if (segment.trim() === "") return segment;
 
+        // Punctuation/symbol-only segments (no letters or digits) must not be
+        // emphasized either: authors sometimes bold/italicize just a ":" after
+        // a word ("Step 1*:*"), and per CommonMark flanking rules an emphasis
+        // delimiter between an alphanumeric and punctuation is not left-flanking
+        // — the markers render literally. Styling bare punctuation is visually
+        // meaningless, so drop the markers (keep color spans, which still work).
+        if (!/[\p{L}\p{N}]/u.test(segment) && !rt.annotations.code) {
+          const color = rt.annotations.color;
+          if (color && color !== "default" && !color.endsWith("_background")) {
+            return `<span style={{color:"${color}"}}>${segment}</span>`;
+          }
+          return segment;
+        }
+
         // Hoist leading/trailing whitespace outside inline markers (MD037).
         // e.g. bold(" Step 2: ") → " **Step 2:** " not "** Step 2: **"
         const leadMatch = segment.match(/^(\s+)/);
