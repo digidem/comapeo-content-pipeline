@@ -6,14 +6,16 @@ This file is the single source of truth for all pending and resolved tasks in th
 
 ## Pending Tasks
 
-### Follow-ups (discovered July 2026, deliberately deferred)
-- [ ] **`manifest:generate` is broken for the CLI layout**: it expects `*.metadata.json` files that `sync:full` never writes, so it silently produces an empty manifest (and overwrites the good one `sync:full` wrote). Either make `sync:full` emit per-page metadata blobs or point `manifest:generate` at the in-manifest data. Until fixed, do not run `manifest:generate` after a CLI sync.
-- [ ] **`mapStatus` active/draft realignment** (plan v4 "status vocabulary drift", explicitly out of scope there): today `active` = Published / Draft published / Ready to publish; the other 8 live options map to `draft`. Decide with editorial whether e.g. "Adding to staging site" should publish.
-- [ ] **Automated-locale casing**: live Notion `Language` values for automated translations don't exactly match the `NOTION_LOCALES` keys (sync stores the lowercase passthrough, e.g. `"es - automated"`), so locale canonicalization still happens in `docs:pull`, not at sync time. Same behavior as before the refactor; align the map keys with the live values when convenient.
+*(none — see Completed Tasks below; new work should be added here)*
 
 ---
 
 ## Completed Tasks
+
+### Follow-up Fixes (July 2026)
+- [x] **`manifest:generate` made safe and usable**: `sync:full`/`sync:page` now emit per-page `<page_id>.metadata.json` blobs (after final sidebar positions are assigned); `manifest:generate` exits with an actionable error when no blobs exist and refuses to clobber a non-empty manifest with a 0-doc result. Verified against all three footgun scenarios.
+- [x] **`mapStatus` realigned to the live vocabulary**: exact case-insensitive map for all 13 live "Publish Status" options, backed by an investigation of the old system's production semantics (only "Ready to publish" is pulled there; write-backs move pages to "Draft published" on staging deploy and "Published" on production deploy — this pipeline is stateless, so all post-gate states map `active`). active = Ready to publish / Adding to staging site / Draft published / Published; Remove → deprecated; Unplublished → archived. Regex fallback retained for legacy values. No immediate content change (all 36 currently-active pages are "Draft published").
+- [x] **Automated-locale casing**: `normalizeLocale` is case-insensitive; live values `"ES - automated"`/`"PT - automated"` now canonicalize to `es`/`pt` at sync time instead of falling through to docs:pull.
 
 ### Notion API-Level Status Filtering (July 2026) — plan [plans/2026-06-27-notion-api-status-filtering-4.0.md](file:///home/luandro/Dev/digidem/comapeo-content-pipeline/plans/2026-06-27-notion-api-status-filtering-4.0.md)
 - [x] **Phase 1 — Constants consolidated**: `DRAFTING_STATUS` → `PUBLISH_STATUS` (fixes the property read — previously every page classified `draft` because "Drafting Status" doesn't exist); added `KEYWORDS`/`TAGS`/`DATE_PUBLISHED`/`PARENT_ITEM`, `DEAD_STATUSES = ["Remove", "Unplublished"]`, `NOTION_API`, element-type helpers, `normalizeLocale`, `SECTION_NAMES`. `/remove/i` + `/unpl?ublished/i` added to `DEPRECATED_PATTERNS`.
