@@ -30,6 +30,7 @@ import { generateManifest } from "../lib/manifest.js";
 import { parseDoc } from "../lib/frontmatter.js";
 import { slugify } from "../lib/slug.js";
 import { buildRouteMaps, resolveInternalLinks, type DocLite } from "../lib/links.js";
+import { rewriteRawImgSrcToStatic } from "../lib/img-rewrite.js";
 import { generateChunks, generateChunksManifest } from "../rag/chunker.js";
 import { ErrorRecorder } from "../lib/errors.js";
 
@@ -535,6 +536,9 @@ async function cmdDocsPull(args: Record<string, string>) {
   // Absolute section dirs that actually received .md writes — drives per-section
   // asset copying (only assets referenced by each section's .md files).
   const writtenSectionDirs = new Set<string>();
+  // Inline <img> asset filenames referenced via /images/notion/ site-root paths;
+  // copied to <out>/static/images/notion/ after all docs are written.
+  const inlineStaticAssets = new Set<string>();
 
   // Deduplicate pages with the same slug in the same locale
   // (e.g. test pages that share a slug like "test-guia-de-instalacao" in PT)
@@ -676,6 +680,13 @@ async function cmdDocsPull(args: Record<string, string>) {
     }
 
     mkdirSync(join(finalPath, ".."), { recursive: true });
+    // Rewrite inline <img src="assets/..."> to site-root /images/notion/ paths
+    // (raw HTML src strings are invisible to the MDX bundler → 404s, and the
+    // consumer's ideal-image plugin breaks webpack-import alternatives). The
+    // referenced files are copied to <out>/static/images/notion/ below.
+    const rewritten = rewriteRawImgSrcToStatic(content);
+    content = rewritten.content;
+    for (const assetFile of rewritten.assets) inlineStaticAssets.add(assetFile);
     writeFileSync(finalPath, content);
     writtenSectionDirs.add(join(finalPath, ".."));
     count++;
@@ -787,6 +798,24 @@ async function cmdDocsPull(args: Record<string, string>) {
       if (assetsCopied > 0) {
         console.log(`  Copied ${assetsCopied} assets to ${dirsCopied} section dirs`);
       }
+    }
+
+    // Publish inline-img assets (emoji/icons referenced via /images/notion/
+    // site-root paths) into the Docusaurus static dir.
+    if (inlineStaticAssets.size > 0) {
+      const staticDir = join(outDir, "static", "images", "notion");
+      mkdirSync(staticDir, { recursive: true });
+      let staticCopied = 0;
+      for (const f of inlineStaticAssets) {
+        const src = join(assetsDir, f);
+        if (!existsSync(src)) {
+          console.warn(`  Missing inline asset in pool: ${f}`);
+          continue;
+        }
+        writeFileSync(join(staticDir, f), readFileSync(src));
+        staticCopied++;
+      }
+      console.log(`  Published ${staticCopied} inline assets to static/images/notion/`);
     }
   }
 

@@ -33,6 +33,14 @@ rsync -av --delete \
   --exclude='docusaurus-plugin-content-pages/' \
   "$TEMP_OUT/i18n/" "$DOCS_DIR/i18n/"
 
+# Inline-image assets published by docs:pull as site-root /images/notion/ paths.
+# Scoped --delete: the pipeline owns only static/images/notion/, never the
+# hand-maintained files elsewhere under static/images/.
+if [ -d "$TEMP_OUT/static/images/notion" ]; then
+  mkdir -p "$DOCS_DIR/static/images/notion"
+  rsync -av --delete "$TEMP_OUT/static/images/notion/" "$DOCS_DIR/static/images/notion/"
+fi
+
 echo ""
 echo "=== Building Docusaurus ==="
 cd "$DOCS_DIR"
