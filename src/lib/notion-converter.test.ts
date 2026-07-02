@@ -577,6 +577,44 @@ describe("richTextToMarkdown", () => {
     expect(output).toContain("---");
   });
 
+  // ── Callout title from a bold+italic span ──
+
+  it("callout with ***Title:*** span derives a clean title (no stray asterisks)", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "callout-bi",
+          type: "callout",
+          has_children: false,
+          callout: {
+            rich_text: [
+              {
+                type: "text",
+                plain_text: "Tip:",
+                annotations: { bold: true, italic: true, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+              {
+                type: "text",
+                plain_text: " After details are closed the editor returns.",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+            icon: { type: "emoji", emoji: "💡" },
+            color: "default",
+          },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    expect(output).toContain(":::note 💡 Tip");
+    expect(output).not.toContain("*Tip");
+    expect(output).not.toMatch(/^\* After/m);
+    expect(output).toContain("After details are closed the editor returns.");
+  });
+
   // ── Punctuation-only spans must not carry emphasis markers ──
 
   it("drops emphasis markers on punctuation-only spans (e.g. bolded colon)", () => {

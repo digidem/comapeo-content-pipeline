@@ -431,8 +431,11 @@ function convertCallout(
     const firstLine = lines[0].trimStart();
     const leading = lines[0].match(/^\s*/)?.[0] ?? "";
 
-    // Try bold title: **Title** separator? remainder
-    const boldMatch = firstLine.match(/^\*\*(.+?)\*\*(?:\s*[:;!?\-–—–—−‑‒：﹕꞉]+)?\s*(.*)$/u);
+    // Try bold title: **Title** (or bold+italic ***Title***) separator? remainder.
+    // \*{2,3} with a [^*] inner guard so ***Tip:*** captures "Tip:" cleanly —
+    // a lazy (.+?) against \*\* would swallow the third asterisk into the title
+    // and leak the closing one into the content ("*Tip" / "* After …").
+    const boldMatch = firstLine.match(/^\*{2,3}([^*]+?)\*{2,3}(?:\s*[:;!?\-–—–—−‑‒：﹕꞉]+)?\s*(.*)$/u);
     if (boldMatch && boldMatch[2]) {
       const rawTitle = boldMatch[1].trim();
       // Strip trailing punctuation
