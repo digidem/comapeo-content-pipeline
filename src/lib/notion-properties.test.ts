@@ -67,6 +67,20 @@ describe("normalizeLocale", () => {
     expect(normalizeLocale("pt - automated")).toBe("pt");
   });
 
+  // Real-cased live Notion select values (title-cased prefix)
+  it("maps 'ES - automated' (live Notion casing) → 'es'", () => {
+    expect(normalizeLocale("ES - automated")).toBe("es");
+  });
+
+  it("maps 'PT - automated' (live Notion casing) → 'pt'", () => {
+    expect(normalizeLocale("PT - automated")).toBe("pt");
+  });
+
+  // Case-insensitive: arbitrary casing of a known full language name
+  it("maps 'ENGLISH' (all-caps) → 'en'", () => {
+    expect(normalizeLocale("ENGLISH")).toBe("en");
+  });
+
   // Pass-through ISO codes already in canonical form
   it("maps 'en' → 'en'", () => {
     expect(normalizeLocale("en")).toBe("en");

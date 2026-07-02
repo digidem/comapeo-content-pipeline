@@ -67,30 +67,41 @@ export function isStructuralPage(elementType: string): boolean {
 
 /**
  * Notion Language property value → ISO locale code mappings.
- * Covers full language names, automated-translation variants, and pass-through ISO codes.
+ * Keys are the actual Notion select-option labels (display-cased).
+ * Lookup is case-insensitive — see normalizeLocale.
+ *
+ * Live Notion select options (confirmed 2026-07-01):
+ *   "English", "Portuguese", "PT - automated", "Spanish", "ES - automated"
  */
 export const NOTION_LOCALES: Record<string, string> = {
   English: "en",
   Portuguese: "pt",
   Spanish: "es",
   "pt-BR": "pt",
-  // Automated translation variants used by the Notion workflow
-  "es - automated": "es",
-  "pt - automated": "pt",
+  // Live Notion automated-translation select values (title-cased prefix)
+  "ES - automated": "es",
+  "PT - automated": "pt",
   // Pass-through ISO codes already in canonical form
   es: "es",
   en: "en",
   pt: "pt",
 };
 
+/** Lowercase-keyed version of NOTION_LOCALES for case-insensitive lookup. */
+const NOTION_LOCALES_LOWER: Record<string, string> = Object.fromEntries(
+  Object.entries(NOTION_LOCALES).map(([k, v]) => [k.toLowerCase(), v]),
+);
+
 /**
  * Normalize a Notion Language property value to a canonical ISO locale code.
- * Handles full language names ("English"), automated variants ("es - automated"),
- * and ISO codes ("pt"). Falls back to lowercasing the input for unknown values.
+ * Lookup is case-insensitive so the live Notion values "ES - automated" and
+ * "PT - automated" (title-cased) resolve to "es" and "pt" correctly.
+ * Falls back to lowercasing the input for unknown values.
+ * Returns "en" for null/undefined/empty input.
  */
 export function normalizeLocale(locale: string | null | undefined): string {
   if (!locale) return "en";
-  return NOTION_LOCALES[locale] ?? locale.toLowerCase();
+  return NOTION_LOCALES_LOWER[locale.toLowerCase()] ?? locale.toLowerCase();
 }
 
 /** Section name constants for consistent labeling across CLI and Worker. */
