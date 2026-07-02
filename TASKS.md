@@ -6,11 +6,29 @@ This file is the single source of truth for all pending and resolved tasks in th
 
 ## Pending Tasks
 
-*(none — see Completed Tasks below; new work should be added here)*
+### Residual broken refs (content-state, needs Notion editorial — NOT pipeline bugs)
+Full-output production build (2026-07-02): **46 broken links + 182 broken anchor refs across 35 pages** (warnings; build succeeds). Every sampled case traces to Notion content state, all in the categories recorded 2026-06-22:
+- [ ] ES pages link to localized slugs that don't exist as routes (`/es/docs/entiende-como-funciona-el-intercambio` ×8, `…seleccion-de-roles…` ×7, etc.) — pages renamed in Notion or never published; translations publish under the English slug.
+- [ ] Anchor targets on placeholder pages: e.g. `troubleshooting-mapping-with-collaborators` is "Content coming soon" in Notion (and its EN row carries a Spanish title — mislabeled), yet 9 pages link to `#exchange-problems` on it.
+- [ ] Cross-language fragments: PT/ES pages linking EN heading anchors (e.g. `/pt/docs/creating-a-new-observation#deleting-audio` — the PT heading is "Excluindo áudio").
+- [ ] Authoring errors: nested markdown link (`[Deleting…](…) /docs/deleting…`), `/doc/` typo, same-page `#adding-photos` anchors that belong to another page.
+- [ ] `Video: @document_….mp4` Drive link-mention with an ugly label on creating-a-new-observation (EN+ES) — works, but worth a nicer label in Notion.
 
 ---
 
 ## Completed Tasks
+
+### Markdown Quality Audit & Renderer Verification (July 2026)
+Full corpus (99 emitted files) audited with markdownlint + `findMdxHazards` + production Docusaurus build + visual inspection in Chrome. Converter defects found & fixed (all locked with unit tests, goldens updated):
+- [x] **Emphasis whitespace** (814 lint hits → 0): space-padded Notion spans rendered literal asterisks (`***Step 2: ***Choose`); whitespace now hoisted outside markers, whitespace-only spans unwrapped.
+- [x] **Punctuation-only emphasis** (42 → 0): bolded/italicized bare `:` after a word is invalid intraword emphasis — markers dropped. Bonus: heading text cleanup took build broken-anchor warnings on the ES residuals from 9 to their true content-state baseline.
+- [x] **Table cells with newlines** (35 table lint hits → 0): split rows (missing columns + spurious rows) — interior newlines → `<br />`, edges trimmed.
+- [x] **Nested admonitions**: equal-colon fences closed the outer container early → orphan `:::` rendered as text; outer fences now use deepest-inner+1 colons, closing fences always blank-line separated.
+- [x] **Divider-as-setext** and **padded heading text** (MD003/MD019) fixed.
+- [x] **Callout titles from bold+italic spans**: `***Tip:***` no longer leaks asterisks into title/content (regex fence fix, verified against raw Notion blocks).
+- [x] **Inline emoji/icon 404s**: raw `<img src="assets/…">` is invisible to the MDX bundler and `@docusaurus/plugin-ideal-image` breaks webpack-import alternatives — docs:pull now rewrites to site-root `/images/notion/…` and publishes the 61 referenced assets to `static/images/notion/` (sync script rsyncs it, scoped `--delete`). Icons verified rendering inline in Chrome.
+- [x] Remaining lint findings are Notion authoring structure (13 heading-level jumps, 5 list indents) — cosmetic, left alone.
+- [x] Visual verification in Chrome across EN/ES/PT: sidebar/i18n labels, admonitions, tables, images, hero assets, `[Image:` strip, staging-page 404 — all good.
 
 ### Follow-up Fixes (July 2026)
 - [x] **`manifest:generate` made safe and usable**: `sync:full`/`sync:page` now emit per-page `<page_id>.metadata.json` blobs (after final sidebar positions are assigned); `manifest:generate` exits with an actionable error when no blobs exist and refuses to clobber a non-empty manifest with a 0-doc result. Verified against all three footgun scenarios.
