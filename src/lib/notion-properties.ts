@@ -26,9 +26,11 @@ export const NOTION_PROPERTIES = {
 
 /**
  * Real Notion "Publish Status" select values that mean "take this page down".
- * Confirmed against the live DB (Phase 2.0, 2026-06-27).
+ * Confirmed against the live DB (2026-07-01).
  * "Unplublished" is the actual Notion typo — kept verbatim intentionally.
- * These values must stay in sync with DEPRECATED_PATTERNS in status.ts.
+ * mapStatus invariant: every value here maps to "deprecated" or "archived".
+ *   "Remove"       → "deprecated"  (explicit removal request)
+ *   "Unplublished" → "archived"    (page was live, now taken down)
  */
 export const DEAD_STATUSES = ["Remove", "Unplublished"] as const;
 

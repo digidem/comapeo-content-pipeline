@@ -29,12 +29,12 @@ describe("DEAD_STATUSES ↔ mapStatus consistency", () => {
     expect(mapStatus("Remove")).toBe("deprecated");
   });
 
-  it("mapStatus('Unplublished') returns 'deprecated'", () => {
-    expect(mapStatus("Unplublished")).toBe("deprecated");
+  it("mapStatus('Unplublished') returns 'archived' (page was live, now taken down)", () => {
+    expect(mapStatus("Unplublished")).toBe("archived");
   });
 
-  it("mapStatus('Unpublished') also returns 'deprecated' (covers corrected spelling)", () => {
-    expect(mapStatus("Unpublished")).toBe("deprecated");
+  it("mapStatus('Unpublished') also returns 'archived' (covers corrected spelling)", () => {
+    expect(mapStatus("Unpublished")).toBe("archived");
   });
 });
 

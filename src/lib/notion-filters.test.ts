@@ -141,10 +141,10 @@ describe("Publish Status property → mapStatus (fixture 5.7)", () => {
     expect(mapStatus(value)).toBe("deprecated");
   });
 
-  it("'Unplublished' (Notion typo) → status 'deprecated'", () => {
+  it("'Unplublished' (Notion typo) → status 'archived' (page was live, now taken down)", () => {
     const property = { type: "select", select: { name: "Unplublished" } };
     const value = extractSelectValue(property);
-    expect(mapStatus(value)).toBe("deprecated");
+    expect(mapStatus(value)).toBe("archived");
   });
 
   it("empty/missing Publish Status → status 'draft'", () => {
