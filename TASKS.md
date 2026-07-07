@@ -19,12 +19,13 @@ Full-output production build (2026-07-02): **46 broken links + 182 broken anchor
 - [ ] Translated pages linking to headings break when the fragment language doesn't match the target page's heading language (e.g. `/pt/docs/creating-a-new-observation#deleting-audio` vs the PT heading "Excluindo áudio"; `#configuracion-de-intercambio` on a page whose ES translation fell back to English content). Design: build an EN↔translated heading-anchor map per page group during `docs:pull` (headings are positionally parallel across a group's language children) and rewrite link fragments to the target page's actual heading ids, falling back to the English anchor when the target fell back to English content. Extends `src/lib/links.ts`. Only worth doing if editorial can't keep anchors consistent (see task 1).
 
 ### 3. Repo housekeeping
-- [ ] **ESLint v9 flat-config migration**: `npm run lint` is broken (no `eslint.config.js`; the script's `--ext` flag was removed in v9). CI intentionally skips lint until this lands (see comment in `.github/workflows/ci.yml`).
 - [ ] **Cosmetic markdownlint residuals** (optional): 13 heading-level jumps (MD001) and 5 list-indent inconsistencies (MD005) originate in Notion authoring structure. Harmless to rendering; fix in Notion or add a normalization pass only if they ever matter.
 
 ---
 
 ## Done (condensed changelog — details in git log)
+
+**ESLint flat-config migration (2026-07-07):** `eslint.config.js` added (ESLint 10 + typescript-eslint 8 recommended, flat config); `lint` script is now check-only (`lint:fix` autofixes); lint step re-enabled in CI; all 23 pre-existing violations fixed (dead code removed, unnecessary regex escapes dropped, invisible whitespace in the callout separator regex converted to `\uXXXX` escapes — semantics preserved, locked by the existing golden-fixture tests).
 
 **Markdown quality audit + renderer verification (2026-07-02, commits `8e4f156`…`4acad60`):** audited all 99 emitted files with markdownlint, `findMdxHazards`, a full production Docusaurus build, and visual inspection in Chrome across EN/ES/PT. Fixed in the converter/docs:pull, each locked with tests: emphasis whitespace hoisting (814 literal-asterisk hits → 0), punctuation-only emphasis (42 → 0), table-cell newlines (35 split-row hits → 0), nested-admonition fence depth (orphan `:::` gone), divider-as-setext, padded headings, bold+italic callout titles, and inline emoji/icon 404s (assets now published to `static/images/notion/` with site-root srcs — the consumer's `ideal-image` plugin breaks webpack-import alternatives).
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -187,7 +187,6 @@ function collectSourceFiles(dir: string): string[] {
 }
 
 describe("constants guard (plan 5.9)", () => {
-  const srcDir = join(__dirname, "../..");  // repo root/src/../..  → we want src/
   const srcRoot = join(__dirname, "..");    // one level up from lib → src/
 
   it("no source file outside notion-properties.ts references DRAFTING_STATUS", () => {

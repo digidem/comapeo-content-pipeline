@@ -46,7 +46,7 @@ interface MockD1Row {
   [key: string]: unknown;
 }
 
-function mockD1Db(rows: Map<string, MockD1Row[]> = new Map()) {
+function mockD1Db(_rows: Map<string, MockD1Row[]> = new Map()) {
   const db = {
     prepare: vi.fn().mockReturnThis(),
     bind: vi.fn().mockReturnThis(),

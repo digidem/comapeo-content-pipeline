@@ -39,38 +39,9 @@ export interface NotionBlockList {
 }
 
 // Block content accessors with type-specific payloads
-interface HeadingContent {
-  rich_text: NotionRichText[];
-}
-
-interface ParagraphContent {
-  rich_text: NotionRichText[];
-}
-
-interface BulletedListItemContent {
-  rich_text: NotionRichText[];
-}
-
-interface NumberedListItemContent {
-  rich_text: NotionRichText[];
-}
-
 interface ToDoContent {
   rich_text: NotionRichText[];
   checked?: boolean;
-}
-
-interface ToggleContent {
-  rich_text: NotionRichText[];
-}
-
-interface QuoteContent {
-  rich_text: NotionRichText[];
-}
-
-interface CalloutContent {
-  rich_text: NotionRichText[];
-  icon?: unknown;
 }
 
 interface CodeContent {
@@ -86,18 +57,8 @@ interface ImageContent {
   link?: { url: string };
 }
 
-interface TableContent {
-  table_width: number;
-  has_column_header: boolean;
-  has_row_header: boolean;
-}
-
 interface TableRowContent {
   cells: NotionRichText[][];
-}
-
-interface DividerContent {
-  // no content
 }
 
 // ── Rich text → Markdown ──
@@ -411,7 +372,7 @@ function convertCallout(
     if (trimmed.startsWith(icon)) {
       let remainder = trimmed.slice(icon.length);
       // Strip whitespace/separators after icon
-      const sepMatch = remainder.match(/^[\s   :;!?¡¿\-–—–—−‑‒：﹕꞉；，、。．·•・.]+/u);
+      const sepMatch = remainder.match(/^[\s\u00A0\u2007\u202F:;!?¡¿\-–—–—−‑‒：﹕꞉；，、。．·•・.]+/u);
       if (sepMatch) {
         remainder = remainder.slice(sepMatch[0].length);
       }

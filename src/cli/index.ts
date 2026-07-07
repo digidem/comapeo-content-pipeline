@@ -177,7 +177,6 @@ async function cmdSyncFull(args: Record<string, string>) {
 
   // Paginate through all pages
   let cursor: string | undefined;
-  // eslint-disable-next-line no-constant-condition
   do {
     if (count >= limit) break;
 
@@ -436,7 +435,7 @@ async function cmdDocsPull(args: Record<string, string>) {
   // Editorial QA/test pages authored in Notion. They cannot be distinguished by
   // status/element_type (all draft Pages), so match by slug (most reliable —
   // translations inherit the English slug) and by title as a secondary signal.
-  const TEST_PAGE_TITLE = /^\s*[\[(]?\s*(testing|test|teste|prueba)\b/i;
+  const TEST_PAGE_TITLE = /^\s*[[(]?\s*(testing|test|teste|prueba)\b/i;
   const TEST_PAGE_SLUG = /^(testing|teste)-/i;
 
   // Internal/template scratch pages authored in Notion that must never publish.
@@ -1165,7 +1164,7 @@ const SECTION_TRANSLATIONS: Record<string, Record<string, string>> = {
  * "90+ - Miscellaneous" → "Miscellaneous"
  */
 function stripSectionPrefix(sectionName: string): string {
-  return sectionName.replace(/^\d+[+\-]\s*(?:-\s*)?/, "").trim();
+  return sectionName.replace(/^\d+[+-]\s*(?:-\s*)?/, "").trim();
 }
 
 /**
@@ -1178,15 +1177,6 @@ function toSectionDir(sectionName: string): string {
     .replace(/&/g, "and")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
-}
-
-/**
- * Extract numeric prefix for section ordering.
- * "10-Preparing" → 10, "90+ - Misc" → 90, "Overview" → Infinity
- */
-function getSectionNumberPrefix(sectionName: string): number {
-  const match = sectionName.match(/^(\d+)/);
-  return match ? parseInt(match[1], 10) : Infinity;
 }
 
 /**

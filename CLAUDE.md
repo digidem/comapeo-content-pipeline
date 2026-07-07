@@ -22,7 +22,7 @@ npm test                     # vitest run (all *.test.ts under src/ and test/)
 npm run test:watch
 npm run test:coverage
 npm run typecheck            # tsc --noEmit
-npm run lint                 # eslint src --ext .ts --fix
+npm run lint                 # eslint src (npm run lint:fix to autofix)
 
 # Run a single test file
 npx vitest run src/rag/chunker.test.ts

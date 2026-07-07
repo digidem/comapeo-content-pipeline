@@ -3,7 +3,7 @@
  */
 
 import { NotionClient } from "./notion-client.js";
-import type { NotionPage, NotionBlock } from "./notion-client.js";
+import type { NotionPage } from "./notion-client.js";
 import { NOTION_PROPERTIES, normalizeLocale } from "./notion-properties.js";
 import { convertBlocks } from "./notion-converter.js";
 import type { NotionBlockList } from "./notion-converter.js";

@@ -78,7 +78,6 @@ declare global {
     retryAll(options?: { delaySeconds?: number }): void;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-empty-interface
   interface ScheduledEvent {
     cron: string;
     scheduledTime: number;

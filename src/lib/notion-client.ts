@@ -10,7 +10,7 @@
  */
 
 import { Client } from "@notionhq/client";
-import { classifyError, ClassifiedError, ErrorCategory } from "./errors.js";
+import { classifyError, ErrorCategory } from "./errors.js";
 import { NOTION_API } from "./notion-properties.js";
 
 // Minimal Notion API types used internally
