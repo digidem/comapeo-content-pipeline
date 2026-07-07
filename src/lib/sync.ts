@@ -67,7 +67,8 @@ export interface ConvertOverrides {
  * Asset rehosting: Notion image URLs are temporary (~1 hour). This function
  * downloads Notion-hosted images, hashes them, and replaces URLs in the
  * canonical markdown with stable R2 paths. The content_hash is computed
- * BEFORE URL replacement so it's stable across re-syncs.
+ * AFTER URL replacement (on the canonical markdown) so it's stable across
+ * re-syncs — pre-rewrite markdown embeds signed, expiring Notion URLs.
  */
 export async function convertPageData(input: {
   pageId: string;
@@ -115,9 +116,6 @@ export async function convertPageData(input: {
 
   // Post-process for Docusaurus compatibility (strip dup H1, fix headings, sanitize)
   markdownBody = postProcessMarkdown(markdownBody, title);
-
-  // Compute content hash BEFORE asset rehosting (stable across re-syncs)
-  const hash = await contentHash(markdownBody);
 
   // ── Asset rehosting ──
   // Download Notion-hosted images, replace URLs with stable R2 paths.
@@ -220,6 +218,12 @@ export async function convertPageData(input: {
       `Failed-asset neutralization left ${stillLeftover.length} expiring URL(s) in body; first: ${stillLeftover[0].url}`,
     );
   }
+
+  // Compute content hash on the CANONICAL markdown — after asset rehosting and
+  // failed-asset neutralization. Pre-rehost markdown embeds signed (expiring)
+  // Notion S3 URLs that change every fetch, which made the hash flap on every
+  // sync for asset pages; rehosted assets/<sha256> paths are stable.
+  const hash = await contentHash(markdownBody);
 
   // Build metadata
   const metadata: PageMetadata = {

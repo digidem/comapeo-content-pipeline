@@ -112,3 +112,15 @@ export function mapStatus(notionStatus: string | null | undefined): ContentStatu
 }
 
 export type { ContentStatus };
+
+/**
+ * Publish gate used by docs:pull / rag:chunks doc selection.
+ *
+ * `includeAll` widens the gate to drafts (most Notion content is still
+ * status "draft"), but NEVER to dead pages: deprecated ("Remove") and
+ * archived ("Unplublished") are excluded even under --all.
+ */
+export function isPublishableStatus(status: string, includeAll: boolean): boolean {
+  if (status === "deprecated" || status === "archived") return false;
+  return includeAll || status === "active";
+}

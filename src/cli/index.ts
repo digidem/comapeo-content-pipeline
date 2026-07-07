@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { NotionClient } from "../lib/notion-client.js";
 import { buildQueryFilter } from "../lib/notion-filters.js";
+import { isPublishableStatus } from "../lib/status.js";
 import {
   isContentPage,
   isStructuralPage,
@@ -547,7 +548,7 @@ async function cmdDocsPull(args: Record<string, string>) {
     if (containerIds.has(doc.page_id) && containerHasEnChild.has(doc.page_id)) {
       continue;
     }
-    if (args.all !== "true" && doc.status !== "active") {
+    if (!isPublishableStatus(doc.status, args.all === "true")) {
       dedupedDocs.push(doc);
       continue;
     }
@@ -593,7 +594,7 @@ async function cmdDocsPull(args: Record<string, string>) {
     if (containerIds.has(doc.page_id) && containerHasEnChild.has(doc.page_id)) {
       continue;
     }
-    if (args.all !== "true" && doc.status !== "active") continue;
+    if (!isPublishableStatus(doc.status, args.all === "true")) continue;
 
     // Skip structural pages (Toggles, Titles) — only publish content Pages
     const elementType = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
@@ -822,7 +823,7 @@ async function cmdDocsPull(args: Record<string, string>) {
   if (args["clean-orphans"] === "true") {
     const expectedPaths = new Set<string>();
     for (const doc of manifest.docs) {
-      if (args.all !== "true" && doc.status !== "active") continue;
+      if (!isPublishableStatus(doc.status, args.all === "true")) continue;
       const et = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
       if (isStructuralPage(et)) continue;
       const orphanTranslation = translationMap.get(doc.page_id);
@@ -947,7 +948,7 @@ async function cmdRagChunks(args: Record<string, string>) {
   const includeAll = args.all === "true";
   const activeDocs = (manifest.docs || []).filter(
     (doc: { status: string; element_type?: { select?: { name?: string }; name?: string } }) => {
-      if (!includeAll && doc.status !== "active") return false;
+      if (!isPublishableStatus(doc.status, includeAll)) return false;
       const et = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
       if (isStructuralPage(et)) return false;
       return true;
@@ -1486,7 +1487,8 @@ Options:
   --out <dir>             Output directory
   --input <file>          Input manifest or metadata file
   --limit <n>             Max pages for sync:full
-  --all                   Include all statuses (docs:pull, default: active only)
+  --all                   sync:full: fetch dead rows too; docs:pull/rag:chunks:
+                          include drafts (never deprecated/archived)
   --clean-orphans         Remove .md files not in manifest (docs:pull)
 `);
 }

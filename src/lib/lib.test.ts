@@ -7,6 +7,7 @@ import {
   generateSlug,
   slugToDocusaurusId,
   mapStatus,
+  isPublishableStatus,
   contentHash,
   hashJSON,
   hashesEqual,
@@ -135,6 +136,25 @@ describe("mapStatus", () => {
     expect(mapStatus(null)).toBe("draft");
     expect(mapStatus(undefined)).toBe("draft");
     expect(mapStatus("")).toBe("draft");
+  });
+});
+
+describe("isPublishableStatus", () => {
+  it("active is publishable with and without --all", () => {
+    expect(isPublishableStatus("active", false)).toBe(true);
+    expect(isPublishableStatus("active", true)).toBe(true);
+  });
+
+  it("draft is publishable only under --all", () => {
+    expect(isPublishableStatus("draft", false)).toBe(false);
+    expect(isPublishableStatus("draft", true)).toBe(true);
+  });
+
+  it("dead statuses are never publishable, even under --all", () => {
+    expect(isPublishableStatus("deprecated", false)).toBe(false);
+    expect(isPublishableStatus("deprecated", true)).toBe(false);
+    expect(isPublishableStatus("archived", false)).toBe(false);
+    expect(isPublishableStatus("archived", true)).toBe(false);
   });
 });
 
