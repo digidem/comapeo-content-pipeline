@@ -19,6 +19,9 @@ import { NotionClient } from "../lib/notion-client.js";
 import { buildQueryFilter } from "../lib/notion-filters.js";
 import { classifyError, ErrorCategory } from "../lib/errors.js";
 import { R2_PATHS } from "../persistence/r2.js";
+import { buildManifestFromStorage } from "../lib/manifest.js";
+import type { ManifestStorage } from "../lib/manifest.js";
+import { ContentManifestSchema } from "../schemas/manifest.js";
 import type { SidebarItem } from "../schemas/manifest.js";
 
 // Minimal Cloudflare Workers type declarations (avoid @cloudflare/workers-types conflicts with @types/node)
@@ -54,7 +57,7 @@ declare global {
     get(key: string): Promise<R2ObjectBody | null>;
     put(key: string, value: string | ArrayBuffer | ReadableStream, options?: { httpMetadata?: { contentType?: string } }): Promise<R2Object>;
     delete(key: string): Promise<void>;
-    list(options?: { prefix?: string }): Promise<{ objects: R2Object[] }>;
+    list(options?: { prefix?: string; cursor?: string; limit?: number }): Promise<{ objects: R2Object[]; truncated?: boolean; cursor?: string }>;
   }
 
   interface QueueSendOptions {
@@ -242,49 +245,21 @@ app.post("/admin/manifest/regenerate", async (c: Context) => {
     return c.json({ error: "unauthorized" }, 403);
   }
 
-  // Read all pages from D1, rebuild manifest
-  const { results } = await env.DB.prepare(
-    "SELECT * FROM source_pages WHERE status = 'active'",
-  ).all<{
-    page_id: string; title: string; locale: string; section: string | null;
-    section_order: number | null; slug: string; docusaurus_path: string;
-    content_hash: string; notion_last_edited_time: string; status: string;
-  }>();
+  // Rebuild from the per-page R2 metadata blobs (full PageMetadata), not D1
+  // rows — D1 omits element_type/drafting_status/sub_items, which the manifest
+  // schema requires. Validates against ContentManifestSchema and applies a
+  // no-clobber guard (mirrors CLI cmdManifestGenerate).
+  const result = await regenerateManifest(env);
 
-  const manifest = {
-    schema_version: "1.0",
-    generated_at: new Date().toISOString(),
-    source: {
-      type: "notion",
-      database_id: env.NOTION_DATABASE_ID,
-      data_source_id: env.NOTION_DATA_SOURCE_ID,
-    },
-    docs: results.map((row) => ({
-      page_id: row.page_id,
-      title: row.title,
-      locale: row.locale,
-      section: row.section,
-      section_order: row.section_order,
-      slug: row.slug,
-      docusaurus_id: row.docusaurus_path || row.slug,
-      docusaurus_path: `/${row.slug}`,
-      r2_doc_key: `docs/${row.locale}/docs/${row.section ? row.section + "/" : ""}${row.slug}.md`,
-      r2_metadata_key: `pages/${row.page_id}/metadata.json`,
-      source_url: `https://notion.so/${row.page_id.replace(/-/g, "")}`,
-      notion_last_edited_time: row.notion_last_edited_time,
-      content_hash: row.content_hash,
-      status: row.status as "active" | "draft" | "deprecated" | "archived",
-    })),
-    sidebars: {},
-  };
+  if (result.status === "clobbered") {
+    return c.json({ error: "refusing to clobber non-empty manifest with 0-doc result" }, 409);
+  }
 
-  await env.CONTENT_BUCKET.put(
-    "manifests/latest.json",
-    JSON.stringify(manifest, null, 2),
-    { httpMetadata: { contentType: "application/json" } },
-  );
-
-  return c.json({ regenerated: true, docs_count: results.length });
+  return c.json({
+    regenerated: true,
+    docs_count: result.docsCount,
+    skipped_count: result.skippedCount,
+  });
 });
 
 // ── Queue consumer ──
@@ -403,6 +378,13 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('last_sync_watermark', ?, datetime('now'))",
       ).bind(new Date().toISOString()).run();
 
+      // Mark the manifest dirty so the next cron tick rebuilds manifests/latest.json
+      // (spec §6.1). Rebuilding inline would add latency to every page sync; the cron
+      // batches it. Only the changed path sets this — the unchanged-skip path does not.
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '1', datetime('now'))",
+      ).run();
+
     } catch (err) {
       console.error(`Failed to sync page ${pageId}:`, err);
       await env.DB.prepare(
@@ -445,9 +427,105 @@ export async function scheduledHandler(
   }
 
   console.log(`Cron: enqueued ${pages.length} changed pages since ${since}`);
+
+  // ── Manifest regeneration (spec §6.1) ──
+  // A page sync marks `manifest_dirty`; rebuild manifests/latest.json here so the
+  // manifest reflects the latest R2 metadata blobs.
+  const dirtyRow = await env.DB.prepare(
+    "SELECT value FROM sync_state WHERE key = 'manifest_dirty'",
+  ).first<{ value: string }>();
+
+  if (dirtyRow?.value === "1") {
+    try {
+      const result = await regenerateManifest(env);
+      if (result.status === "clobbered") {
+        // Leave the flag dirty so the next tick retries; the existing manifest is preserved.
+        console.warn("Cron: refusing to clobber non-empty manifest with 0-doc result; leaving manifest_dirty set");
+      } else {
+        // Benign race: a sync landing mid-rebuild may be cleared along with this, but
+        // its change re-marks dirty — the 5-min cron provides eventual consistency.
+        await env.DB.prepare(
+          "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '0', datetime('now'))",
+        ).run();
+        console.log(`Cron: rebuilt manifest (${result.docsCount} docs, ${result.skippedCount} skipped)`);
+      }
+    } catch (err) {
+      // Flag stays dirty (never cleared on failure) → retried next cron tick.
+      console.error("Cron: manifest rebuild failed; leaving manifest_dirty set:", err);
+    }
+  }
 }
 
 // ── Helpers ──
+
+/**
+ * Adapt an R2 bucket binding to the runtime-agnostic ManifestStorage interface.
+ * R2 paginates `list` at 1000 keys per response, so the adapter loops on
+ * `cursor` until the response is no longer `truncated`.
+ */
+function r2ManifestStorage(bucket: R2Bucket): ManifestStorage {
+  return {
+    async get(key: string): Promise<string | null> {
+      const obj = await bucket.get(key);
+      return obj ? obj.text() : null;
+    },
+    async list(prefix: string): Promise<Array<{ key: string; size: number }>> {
+      const out: Array<{ key: string; size: number }> = [];
+      let cursor: string | undefined;
+      do {
+        const res = await bucket.list({ prefix, cursor });
+        for (const o of res.objects) out.push({ key: o.key, size: o.size });
+        cursor = res.truncated ? res.cursor : undefined;
+      } while (cursor);
+      return out;
+    },
+  };
+}
+
+interface RegenResult {
+  status: "written" | "clobbered";
+  docsCount: number;
+  skippedCount: number;
+}
+
+/**
+ * Rebuild `manifests/latest.json` (+ a timestamped version) from the per-page
+ * R2 metadata blobs. Shared by `/admin/manifest/regenerate` and the cron
+ * dirty-flag path. The result is Zod-validated before writing, and a no-clobber
+ * guard (mirrors CLI `cmdManifestGenerate`) refuses to overwrite a non-empty
+ * manifest with a 0-doc result.
+ */
+async function regenerateManifest(env: Env): Promise<RegenResult> {
+  const storage = r2ManifestStorage(env.CONTENT_BUCKET);
+  const { manifest, skipped } = await buildManifestFromStorage(storage, {
+    databaseId: env.NOTION_DATABASE_ID,
+    dataSourceId: env.NOTION_DATA_SOURCE_ID,
+  });
+
+  const validated = ContentManifestSchema.parse(manifest);
+
+  // No-clobber guard: never overwrite a non-empty manifest with a 0-doc result.
+  if (validated.docs.length === 0) {
+    const existing = await env.CONTENT_BUCKET.get(R2_PATHS.manifest);
+    if (existing) {
+      try {
+        const parsed = JSON.parse(await existing.text());
+        if (Array.isArray(parsed.docs) && parsed.docs.length > 0) {
+          return { status: "clobbered", docsCount: 0, skippedCount: skipped.length };
+        }
+      } catch { /* unparseable existing manifest — allow overwrite */ }
+    }
+  }
+
+  const body = JSON.stringify(validated, null, 2);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  await Promise.all([
+    env.CONTENT_BUCKET.put(R2_PATHS.manifest, body, { httpMetadata: { contentType: "application/json" } }),
+    env.CONTENT_BUCKET.put(R2_PATHS.manifestVersion(timestamp), body, { httpMetadata: { contentType: "application/json" } }),
+  ]);
+
+  return { status: "written", docsCount: validated.docs.length, skippedCount: skipped.length };
+}
 
 /**
  * Read existing Docusaurus sidebar from R2, upsert the page's entry, write back.

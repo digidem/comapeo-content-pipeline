@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { convertBlocks } from "../lib/notion-converter.js";
 import { contentHash } from "../lib/hash.js";
 import { postProcessMarkdown } from "../lib/post-process.js";
+import { ContentManifestSchema } from "../schemas/manifest.js";
 import type { NotionBlockList } from "../lib/notion-converter.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -93,7 +94,44 @@ function mockR2Bucket(objects: Map<string, string> = new Map()) {
       return val ? { key, size: val.length } : null;
     }),
     delete: vi.fn().mockResolvedValue(undefined),
-    list: vi.fn().mockResolvedValue({ objects: [] }),
+    // Enumerate the in-memory map by prefix so manifest regen can list pages/*.
+    list: vi.fn().mockImplementation(async (options?: { prefix?: string }) => {
+      const prefix = options?.prefix ?? "";
+      return {
+        objects: [...objects.entries()]
+          .filter(([k]) => k.startsWith(prefix))
+          .map(([k, v]) => ({ key: k, size: v.length })),
+      };
+    }),
+  };
+}
+
+/** A full, schema-valid PageMetadata blob (as written by the queue consumer). */
+function validMetadata(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    page_id: "p1",
+    title: "Intro",
+    source_url: "https://notion.so/p1",
+    notion_last_edited_time: "2026-01-01T00:00:00.000Z",
+    content_hash: "sha256:abc",
+    raw_hash: "sha256:def",
+    locale: "en",
+    section: "docs",
+    section_order: 1,
+    slug: "intro",
+    docusaurus_id: "docs/intro",
+    status: "active",
+    element_type: "page",
+    drafting_status: "Draft published",
+    // Raw Notion property objects, as sync actually stores them — the manifest
+    // reads the extracted top-level fields, never these.
+    properties: {
+      "Element Type": { id: "nqRr", type: "select", select: { name: "Page" } },
+      "Publish Status": { id: "BQMv", type: "select", select: { name: "Draft published" } },
+    },
+    assets: [],
+    sub_items: [],
+    ...overrides,
   };
 }
 
@@ -261,28 +299,58 @@ describe("Worker HTTP routes", () => {
   });
 
   describe("POST /admin/manifest/regenerate", () => {
-    it("regenerates manifest from D1 rows", async () => {
-      const db = env.DB;
-      (db.all as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-        results: [
-          {
-            page_id: "p1", title: "Test Page", locale: "en",
-            section: null, section_order: null, slug: "test-page",
-            docusaurus_path: "/test-page", content_hash: "sha256:abc",
-            notion_last_edited_time: "2026-01-01T00:00:00Z", status: "active",
-          },
-        ],
-        success: true,
-      });
+    it("writes a schema-valid manifest built from R2 metadata blobs", async () => {
+      const objects = new Map([["pages/p1/metadata.json", JSON.stringify(validMetadata())]]);
+      env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
 
       const res = await request(app, "/admin/manifest/regenerate", {
         method: "POST",
         headers: { Authorization: "Bearer test-admin-token" },
       }, env);
       expect(res.status).toBe(200);
-      const body = await res.json() as { regenerated: boolean; docs_count: number };
+      const body = await res.json() as { regenerated: boolean; docs_count: number; skipped_count: number };
       expect(body.regenerated).toBe(true);
       expect(body.docs_count).toBe(1);
+      expect(body.skipped_count).toBe(0);
+
+      // The written latest.json must pass ContentManifestSchema.
+      const puts = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
+      const latestPut = puts.find((c) => c[0] === "manifests/latest.json");
+      expect(latestPut).toBeDefined();
+      const written = JSON.parse(latestPut![1] as string);
+      expect(() => ContentManifestSchema.parse(written)).not.toThrow();
+      // element_type/drafting_status flow through from the metadata blob.
+      expect(written.docs[0].element_type).toBe("page");
+      expect(written.docs[0].drafting_status).toBe("Draft published");
+      // sidebars populated, not {}.
+      expect(Object.keys(written.sidebars)).toContain("en");
+    });
+
+    it("refuses to clobber a non-empty manifest with a 0-doc result (409)", async () => {
+      const existing = {
+        schema_version: "1.0",
+        generated_at: "2026-01-01T00:00:00.000Z",
+        source: { type: "notion", database_id: "test-db-id", data_source_id: "test-ds-id" },
+        docs: [{ page_id: "old", title: "Old", locale: "en" }],
+        sidebars: {},
+      };
+      // No pages/ metadata blobs → buildManifestFromStorage yields 0 docs.
+      const objects = new Map([["manifests/latest.json", JSON.stringify(existing)]]);
+      env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+
+      const res = await request(app, "/admin/manifest/regenerate", {
+        method: "POST",
+        headers: { Authorization: "Bearer test-admin-token" },
+      }, env);
+      expect(res.status).toBe(409);
+      const body = await res.json() as { error: string };
+      expect(body.error).toMatch(/clobber/);
+
+      // latest.json must be untouched — no put to that key or a version.
+      const puts = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
+      const putKeys = puts.map((c) => c[0] as string);
+      expect(putKeys).not.toContain("manifests/latest.json");
+      expect(putKeys.some((k) => k.startsWith("manifests/versions/"))).toBe(false);
     });
   });
 });
@@ -388,6 +456,9 @@ describe("queue consumer", () => {
 
     // Verify watermark updated
     expect(findPrepareCall(prepareMock, "last_sync_watermark")).toBeDefined();
+
+    // Changed path must mark the manifest dirty for cron rebuild (spec §6.1)
+    expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeDefined();
   });
 
   it("skips page when content_hash and status unchanged", async () => {
@@ -437,6 +508,9 @@ describe("queue consumer", () => {
     // Verify job marked skipped
     const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
     expect(findPrepareCall(prepareMock, "skipped")).toBeDefined();
+
+    // Unchanged-skip path must NOT mark the manifest dirty
+    expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeUndefined();
   });
 
   it("records failure when Notion API errors", async () => {
@@ -578,5 +652,51 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     // scheduledHandler uses maxPages=50, so only 50 should be enqueued
     const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
     expect(queue.messages).toHaveLength(50);
+  });
+
+  // ── manifest_dirty rebuild (spec §6.1) ──
+
+  it("manifest_dirty=1: cron rebuilds manifest and resets flag to 0", async () => {
+    // No changed pages from Notion.
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+
+    // first() call sequence: watermark (null), then manifest_dirty read ({value:"1"}).
+    (env.DB.first as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ value: "1" });
+
+    // Seed one metadata blob so the rebuild produces a 1-doc manifest.
+    const objects = new Map([
+      ["pages/p1/metadata.json", JSON.stringify(validMetadata())],
+      ["manifests/latest.json", JSON.stringify({ docs: [{ page_id: "old" }], sidebars: {} })],
+    ]);
+    env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    // Manifest written + flag cleared to 0.
+    const puts = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
+    expect(puts.find((c) => c[0] === "manifests/latest.json")).toBeDefined();
+
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "'manifest_dirty', '0'")).toBeDefined();
+  });
+
+  it("manifest_dirty absent: cron writes no manifest", async () => {
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+
+    // Watermark null, then manifest_dirty read null (flag absent).
+    (env.DB.first as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+
+    const objects = new Map([["manifests/latest.json", JSON.stringify({ docs: [], sidebars: {} })]]);
+    env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    // No manifest write.
+    const puts = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
+    expect(puts.find((c) => c[0] === "manifests/latest.json")).toBeUndefined();
   });
 });

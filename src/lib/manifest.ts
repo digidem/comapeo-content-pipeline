@@ -4,7 +4,7 @@
 
 import type { ContentManifest, ManifestDoc, SidebarItem } from "../schemas/manifest.js";
 import type { PageMetadata } from "../schemas/metadata.js";
-import { NOTION_PROPERTIES } from "./notion-properties.js";
+import { PageMetadataSchema } from "../schemas/metadata.js";
 
 export interface ManifestInput {
   databaseId: string;
@@ -26,8 +26,11 @@ export function generateManifest(input: ManifestInput): ContentManifest {
       locale: meta.locale,
       section: meta.section,
       section_order: meta.section_order,
-      element_type: meta.properties?.[NOTION_PROPERTIES.ELEMENT_TYPE] as string | null ?? null,
-      drafting_status: meta.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS] as string | null ?? null,
+      // Use the extracted top-level fields, NOT meta.properties — that record
+      // holds raw Notion property objects (select/rollup/…), and casting them
+      // to string produced schema-invalid manifests (objects in element_type).
+      element_type: meta.element_type ?? null,
+      drafting_status: meta.drafting_status ?? null,
       slug: meta.slug,
       docusaurus_id: meta.docusaurus_id,
       docusaurus_path: `/${meta.slug}`,
@@ -144,4 +147,80 @@ function buildDefaultSidebars(
   }
 
   return sidebars;
+}
+
+// ── Storage-driven manifest build (runtime-agnostic) ──
+
+/**
+ * Minimal structural storage interface. Matches the `get`/`list` subset of
+ * `StorageBackend` in `src/persistence/r2.ts`, decoupled from any runtime —
+ * both the CLI's filesystem backend and the Worker's R2 adapter satisfy it.
+ */
+export interface ManifestStorage {
+  get(key: string): Promise<string | null>;
+  list(prefix: string): Promise<Array<{ key: string; size: number }>>;
+}
+
+export interface BuildManifestResult {
+  manifest: ContentManifest;
+  /** Keys of metadata blobs that failed to parse/validate (never throws). */
+  skipped: string[];
+}
+
+/**
+ * Rebuild a ContentManifest from the per-page `pages/{id}/metadata.json` blobs
+ * in storage. Each blob is validated with `PageMetadataSchema`; corrupt or
+ * schema-mismatched blobs are collected in `skipped` rather than failing the
+ * build. The Worker's R2 metadata blobs are full `PageMetadata` (written by the
+ * queue consumer), so `element_type` / `drafting_status` / `sub_items` flow
+ * through — unlike the D1 rows the old route used, which omit those fields.
+ */
+export async function buildManifestFromStorage(
+  storage: ManifestStorage,
+  opts: { databaseId: string; dataSourceId: string },
+): Promise<BuildManifestResult> {
+  const listed = await storage.list("pages/");
+  const metadataKeys = listed
+    .map((o) => o.key)
+    .filter((key) => key.endsWith("/metadata.json"));
+
+  const pages: PageMetadata[] = [];
+  const skipped: string[] = [];
+
+  for (const key of metadataKeys) {
+    let raw: string | null;
+    try {
+      raw = await storage.get(key);
+    } catch {
+      skipped.push(key);
+      continue;
+    }
+    if (raw == null) {
+      skipped.push(key);
+      continue;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      skipped.push(key);
+      continue;
+    }
+
+    const result = PageMetadataSchema.safeParse(parsed);
+    if (result.success) {
+      pages.push(result.data);
+    } else {
+      skipped.push(key);
+    }
+  }
+
+  const manifest = generateManifest({
+    databaseId: opts.databaseId,
+    dataSourceId: opts.dataSourceId,
+    pages,
+  });
+
+  return { manifest, skipped };
 }

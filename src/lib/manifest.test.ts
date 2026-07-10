@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { generateManifest, generateSidebarJson } from "./manifest.js";
+import { generateManifest, generateSidebarJson, buildManifestFromStorage } from "./manifest.js";
+import type { ManifestStorage } from "./manifest.js";
 import type { PageMetadata } from "../schemas/metadata.js";
 
 const basePage: PageMetadata = {
@@ -135,5 +136,109 @@ describe("generateSidebarJson", () => {
 
     const sidebar = generateSidebarJson(pages);
     expect(sidebar).toEqual(["doc-b", "doc-a"]);
+  });
+});
+
+// ── buildManifestFromStorage ──
+
+/** In-memory ManifestStorage stub backed by a key→body map. */
+function memStorage(entries: Record<string, string>): ManifestStorage {
+  const map = new Map(Object.entries(entries));
+  return {
+    get: async (key) => map.get(key) ?? null,
+    list: async (prefix) =>
+      [...map.entries()]
+        .filter(([k]) => k.startsWith(prefix))
+        .map(([k, v]) => ({ key: k, size: v.length })),
+  };
+}
+
+describe("buildManifestFromStorage", () => {
+  it("builds manifest from valid blobs, skips corrupt ones, populates required doc fields", async () => {
+    const one: PageMetadata = {
+      ...basePage,
+      page_id: "p1",
+      slug: "page-one",
+      section: "intro",
+      section_order: 1,
+      status: "active",
+      element_type: "page",
+      drafting_status: "Draft published",
+      // Raw Notion property objects, as sync actually stores them — the manifest
+      // must read the extracted top-level fields above, never these (regression:
+      // casting these to string shipped objects inside element_type).
+      properties: {
+        "Element Type": { id: "nqRr", type: "select", select: { name: "Page" } },
+        "Publish Status": { id: "BQMv", type: "select", select: { name: "Draft published" } },
+      },
+      sub_items: ["p2"],
+    };
+    const two: PageMetadata = {
+      ...basePage,
+      page_id: "p2",
+      slug: "page-two",
+      section: null,
+      section_order: null,
+      status: "active",
+    };
+
+    const storage = memStorage({
+      "pages/p1/metadata.json": JSON.stringify(one),
+      "pages/p2/metadata.json": JSON.stringify(two),
+      "pages/p3/metadata.json": "{not valid json",
+      // Non-metadata blobs under pages/ must be ignored by the filter.
+      "pages/p1/raw-page.json": "{}",
+      "pages/p1/raw-blocks.json": "[]",
+    });
+
+    const { manifest, skipped } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+
+    expect(manifest.docs).toHaveLength(2);
+
+    const d1 = manifest.docs.find((d) => d.page_id === "p1");
+    expect(d1).toBeDefined();
+    // Required fields that D1 rows omit — now sourced from the metadata blobs.
+    expect(d1!.element_type).toBe("page");
+    expect(d1!.drafting_status).toBe("Draft published");
+    expect(d1!.sub_items).toEqual(["p2"]);
+
+    // sidebars must be populated (not {}), built from the active pages.
+    expect(Object.keys(manifest.sidebars)).toContain("en");
+    expect(manifest.sidebars.en.length).toBeGreaterThan(0);
+
+    expect(skipped).toEqual(["pages/p3/metadata.json"]);
+  });
+
+  it("skips blobs that fail PageMetadataSchema validation", async () => {
+    const valid: PageMetadata = { ...basePage, page_id: "p1", status: "active" };
+    // Missing required fields (no content_hash, no status) → schema rejects.
+    const invalid = { page_id: "p2", title: "No hash" };
+
+    const storage = memStorage({
+      "pages/p1/metadata.json": JSON.stringify(valid),
+      "pages/p2/metadata.json": JSON.stringify(invalid),
+    });
+
+    const { manifest, skipped } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+
+    expect(manifest.docs).toHaveLength(1);
+    expect(manifest.docs[0].page_id).toBe("p1");
+    expect(skipped).toEqual(["pages/p2/metadata.json"]);
+  });
+
+  it("returns an empty doc set when no metadata blobs exist", async () => {
+    const storage = memStorage({});
+    const { manifest, skipped } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+    expect(manifest.docs).toEqual([]);
+    expect(skipped).toEqual([]);
   });
 });
