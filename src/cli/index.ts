@@ -25,6 +25,12 @@ import { parseDoc } from "../lib/frontmatter.js";
 import { generateChunks, generateChunksManifest } from "../rag/chunker.js";
 import { ErrorRecorder } from "../lib/errors.js";
 import { docsPull, DocsPullError, toSectionDir } from "./docs-pull.js";
+import {
+  validateCmd,
+  diffCmd,
+  ValidationError,
+  type DiffPageFetcher,
+} from "./validate-diff.js";
 
 const command = process.argv[2];
 const args = parseArgs(process.argv.slice(3));
@@ -414,41 +420,14 @@ async function cmdDocsPull(args: Record<string, string>) {
 }
 
 async function cmdValidate(args: Record<string, string>) {
-  const input = args.input || join(process.cwd(), "output/manifest.json");
-
-  if (!existsSync(input)) {
-    console.error(`Manifest not found: ${input}`);
-    process.exit(1);
-  }
-
-  const manifest = JSON.parse(readFileSync(input, "utf8"));
-  const errors: string[] = [];
-
-  // Check schema version
-  if (manifest.schema_version !== "1.0") {
-    errors.push(`Unsupported schema version: ${manifest.schema_version}`);
-  }
-
-  // Check docs
-  const slugs = new Set<string>();
-  for (const doc of manifest.docs) {
-    if (slugs.has(doc.slug)) {
-      errors.push(`Duplicate slug: ${doc.slug}`);
+  try {
+    await validateCmd(args);
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      console.error(e.message);
+      process.exit(1);
     }
-    slugs.add(doc.slug);
-
-    if (!doc.page_id) errors.push(`Missing page_id for: ${doc.title}`);
-    if (!doc.content_hash) errors.push(`Missing content_hash for: ${doc.title}`);
-  }
-
-  if (errors.length === 0) {
-    console.log(`✓ Valid manifest with ${manifest.docs.length} docs`);
-  } else {
-    console.error(`${errors.length} validation errors:`);
-    for (const err of errors) {
-      console.error(`  ✗ ${err}`);
-    }
-    process.exit(1);
+    throw e;
   }
 }
 
@@ -544,74 +523,17 @@ async function cmdRagChunks(args: Record<string, string>) {
 }
 
 async function cmdDiff(args: Record<string, string>) {
-  const positional = JSON.parse(args._ || "[]") as string[];
-  const pageId = positional[0] || args.page;
-  if (!pageId) {
-    console.error("Usage: pnpm pipeline diff --page <page_id>");
-    process.exit(1);
-  }
-
-  const client = createClient();
-  const outDir = args.out || process.cwd();
-  const metadataPath = args.metadata || join(outDir, `${pageId}.metadata.json`);
-
-  console.log(`Fetching page from Notion: ${pageId}...`);
-  let result: Awaited<ReturnType<typeof syncPage>>;
+  // Wire the injected fetch to the real Notion client + syncPage.
+  const fetchPage: DiffPageFetcher = (pageId) =>
+    syncPage({ pageId, client: createClient(), usedSlugs: new Set() });
   try {
-    result = await syncPage({ pageId, client, usedSlugs: new Set() });
-  } catch (err) {
-    console.error(`Failed to fetch page: ${err}`);
-    process.exit(1);
-  }
-
-  const current = result.metadata;
-
-  // No stored metadata — show current info only
-  if (!existsSync(metadataPath)) {
-    console.log(`\nPage: ${pageId}`);
-    console.log(`Title: ${current.title}`);
-    console.log(`Status: ${current.status}`);
-    console.log(`Hash: ${current.content_hash}`);
-    console.log(`Last edited: ${current.notion_last_edited_time}`);
-    console.log(`\nNo stored metadata found at: ${metadataPath}`);
-    return;
-  }
-
-  let stored: Record<string, unknown>;
-  try {
-    stored = JSON.parse(readFileSync(metadataPath, "utf8"));
-  } catch {
-    console.error(`Failed to parse stored metadata: ${metadataPath}`);
-    process.exit(1);
-  }
-
-  // Compare fields
-  const fields: Array<{ label: string; key: string }> = [
-    { label: "title", key: "title" },
-    { label: "content_hash", key: "content_hash" },
-    { label: "status", key: "status" },
-    { label: "last_edited", key: "notion_last_edited_time" },
-  ];
-
-  const changes: Array<{ label: string; old: string; cur: string }> = [];
-  for (const { label, key } of fields) {
-    const oldVal = String(stored[key] ?? "");
-    const curVal = String((current as Record<string, unknown>)[key] ?? "");
-    if (oldVal !== curVal) {
-      changes.push({ label, old: oldVal, cur: curVal });
+    await diffCmd(args, fetchPage);
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      console.error(e.message);
+      process.exit(1);
     }
-  }
-
-  console.log(`\nPage: ${pageId}`);
-  console.log(`Title: ${current.title}`);
-
-  if (changes.length === 0) {
-    console.log("\nNo changes detected");
-  } else {
-    console.log("\nChanges:");
-    for (const c of changes) {
-      console.log(`  ${c.label}: "${c.old}" → "${c.cur}"`);
-    }
+    throw e;
   }
 }
 
