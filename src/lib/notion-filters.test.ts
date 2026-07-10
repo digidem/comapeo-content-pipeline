@@ -22,70 +22,69 @@ describe("buildQueryFilter", () => {
     expect(filter).toBeDefined();
   });
 
-  it("default filter has or-clause at top level", () => {
-    const filter = buildQueryFilter() as Record<string, unknown>;
-    expect(filter).toHaveProperty("or");
-    expect(Array.isArray(filter.or)).toBe(true);
-  });
+  // The status guard distributes the OR over the AND — one `or[is_empty, ≠value]`
+  // clause per dead status — so composing with the `since` time window never
+  // exceeds Notion's two-level compound-filter nesting limit.
+  type OrClause = { or: Array<{ property: string; select: Record<string, unknown> }> };
 
-  it("default filter or-clause includes is_empty branch for Publish Status", () => {
-    const filter = buildQueryFilter() as { or: Array<Record<string, unknown>> };
-    const isEmptyBranch = filter.or.find(
-      (clause) =>
-        typeof clause === "object" &&
-        "property" in clause &&
-        clause.property === NOTION_PROPERTIES.PUBLISH_STATUS &&
-        typeof clause.select === "object" &&
-        clause.select !== null &&
-        "is_empty" in (clause.select as object),
-    );
-    expect(isEmptyBranch).toBeDefined();
-  });
-
-  it("default filter or-clause includes and-of-does_not_equal for each DEAD_STATUSES value", () => {
-    const filter = buildQueryFilter() as { or: Array<Record<string, unknown>> };
-    const andBranch = filter.or.find(
-      (clause) => typeof clause === "object" && "and" in clause,
-    ) as { and: Array<{ property: string; select: { does_not_equal: string } }> } | undefined;
-
-    expect(andBranch).toBeDefined();
-    expect(andBranch!.and).toHaveLength(DEAD_STATUSES.length);
-
+  function assertStatusGuardClauses(clauses: OrClause[]) {
+    expect(clauses).toHaveLength(DEAD_STATUSES.length);
     for (const deadStatus of DEAD_STATUSES) {
-      const clause = andBranch!.and.find((c) => c.select.does_not_equal === deadStatus);
-      expect(
-        clause,
-        `Expected does_not_equal clause for "${deadStatus}"`,
-      ).toBeDefined();
-      expect(clause!.property).toBe(NOTION_PROPERTIES.PUBLISH_STATUS);
+      const clause = clauses.find((c) =>
+        c.or.some((leaf) => leaf.select.does_not_equal === deadStatus),
+      );
+      expect(clause, `Expected or-clause for "${deadStatus}"`).toBeDefined();
+      // Each clause: is_empty branch + does_not_equal branch, both on Publish Status
+      expect(clause!.or).toHaveLength(2);
+      for (const leaf of clause!.or) {
+        expect(leaf.property).toBe(NOTION_PROPERTIES.PUBLISH_STATUS);
+      }
+      expect(clause!.or.some((leaf) => leaf.select.is_empty === true)).toBe(true);
     }
+  }
+
+  it("default filter is an and of per-dead-status or-clauses", () => {
+    const filter = buildQueryFilter() as { and: OrClause[] };
+    expect(filter).toHaveProperty("and");
+    assertStatusGuardClauses(filter.and);
   });
 
-  it("with since: wraps status guard in and-clause with last_edited_time.after", () => {
+  it("with since: prepends last_edited_time.after to the same flat and-clause", () => {
     const since = "2026-05-01T00:00:00.000Z";
     const filter = buildQueryFilter({ since }) as { and: Array<Record<string, unknown>> };
 
-    expect(filter).toHaveProperty("and");
-    expect(Array.isArray(filter.and)).toBe(true);
-    expect(filter.and).toHaveLength(2);
-
-    // First element: time window
-    const timeClause = filter.and[0];
-    expect(timeClause).toMatchObject({
+    expect(filter.and).toHaveLength(1 + DEAD_STATUSES.length);
+    expect(filter.and[0]).toMatchObject({
       timestamp: "last_edited_time",
       last_edited_time: { after: since },
     });
-
-    // Second element: the status guard (or-clause)
-    const statusGuard = filter.and[1] as { or: unknown[] };
-    expect(statusGuard).toHaveProperty("or");
-    expect(Array.isArray(statusGuard.or)).toBe(true);
+    assertStatusGuardClauses(filter.and.slice(1) as OrClause[]);
   });
 
   it("with since: null does not add time clause (returns status guard only)", () => {
-    const filter = buildQueryFilter({ since: null });
-    expect(filter).not.toHaveProperty("and");
-    expect(filter).toHaveProperty("or");
+    const filter = buildQueryFilter({ since: null }) as { and: Array<Record<string, unknown>> };
+    expect(filter.and).toHaveLength(DEAD_STATUSES.length);
+    expect(JSON.stringify(filter)).not.toContain("last_edited_time");
+  });
+
+  // Regression (2026-07-09 prod bug): the Notion API rejects compound filters
+  // nested more than two levels deep. The old `and[ts, or[empty, and[…]]]`
+  // shape 400'd on every cron tick. Guard the maximum compound depth directly.
+  it("regression: never nests compound filters more than two levels deep", () => {
+    function compoundDepth(node: unknown): number {
+      if (node === null || typeof node !== "object") return 0;
+      const obj = node as Record<string, unknown>;
+      let depth = 0;
+      for (const key of ["and", "or"]) {
+        const branch = obj[key];
+        if (Array.isArray(branch)) {
+          depth = Math.max(depth, 1 + Math.max(0, ...branch.map(compoundDepth)));
+        }
+      }
+      return depth;
+    }
+    expect(compoundDepth(buildQueryFilter())).toBeLessThanOrEqual(2);
+    expect(compoundDepth(buildQueryFilter({ since: "2026-01-01T00:00:00Z" }))).toBeLessThanOrEqual(2);
   });
 
   // Regression guard (v3 bug): filter must NEVER mention parent/sub-item relations

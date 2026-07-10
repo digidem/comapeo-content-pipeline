@@ -17,11 +17,19 @@ import { NOTION_PROPERTIES, DEAD_STATUSES } from "./notion-properties.js";
  * @param options.since      - When provided, wraps the status guard with a
  *                             `last_edited_time.after` time window.
  *
- * Implementation note: the status guard uses an `or` of `is_empty` + an `and`
- * of `does_not_equal` clauses (exclusion-based) rather than enumerating active
- * values, so any new "live" status name is automatically included.
+ * Implementation note: the status guard is exclusion-based (keep rows whose
+ * status is empty OR not a dead value) rather than enumerating active values,
+ * so any new "live" status name is automatically included.
  * Never references "Parent item" or "Sub-item" — all rows (containers + children)
  * must pass through for the docs:pull emit logic to work correctly.
+ *
+ * Nesting constraint: the Notion API rejects compound filters nested more than
+ * two levels deep. The naive shape `and[ts, or[empty, and[not-dead…]]]` is
+ * three levels and returns a 400 validation error (this silently broke the
+ * Worker cron in production). So the guard distributes the OR over the AND:
+ * `(empty OR (¬A AND ¬B)) ≡ ((empty OR ¬A) AND (empty OR ¬B))`, giving a flat
+ * `and` of two-level `or` clauses that composes with the time window without
+ * exceeding the limit.
  */
 export function buildQueryFilter(options?: {
   includeAll?: boolean;
@@ -29,35 +37,33 @@ export function buildQueryFilter(options?: {
 }): Record<string, unknown> | undefined {
   if (options?.includeAll) return undefined;
 
-  // Keep pages whose status is empty OR is not one of the dead values.
-  const statusGuard: Record<string, unknown> = {
+  // One clause per dead value: keep the row if its status is empty or ≠ value.
+  const statusGuards: Array<Record<string, unknown>> = DEAD_STATUSES.map((v) => ({
     or: [
       {
         property: NOTION_PROPERTIES.PUBLISH_STATUS,
         select: { is_empty: true },
       },
       {
-        and: DEAD_STATUSES.map((v) => ({
-          property: NOTION_PROPERTIES.PUBLISH_STATUS,
-          select: { does_not_equal: v },
-        })),
+        property: NOTION_PROPERTIES.PUBLISH_STATUS,
+        select: { does_not_equal: v },
       },
     ],
-  };
+  }));
 
   if (options?.since) {
-    // Wrap the status guard with a time-window filter so the cron only re-processes
-    // pages edited after the watermark.
+    // Prepend a time-window filter so the cron only re-processes pages edited
+    // after the watermark.
     return {
       and: [
         {
           timestamp: "last_edited_time",
           last_edited_time: { after: options.since },
         },
-        statusGuard,
+        ...statusGuards,
       ],
     };
   }
 
-  return statusGuard;
+  return statusGuards.length === 1 ? statusGuards[0] : { and: statusGuards };
 }
