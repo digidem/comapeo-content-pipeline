@@ -24,8 +24,8 @@ Full-output production build (2026-07-02): **46 broken links + 182 broken anchor
 
 ### 4. Test-coverage gaps (spec §15) — residual
 - [x] ~~Golden `manifest.json` + `chunks.json` fixtures (§15.2)~~ — done 2026-07-10: `test/fixtures/golden/` inputs + `test/fixtures/expected/manifest.json`/`chunks.json`, deep-equal tests in `manifest.test.ts` and `chunker.test.ts` (only `generated_at` normalized; chunks fully deterministic).
-- [ ] **RAG chunk minimum size**: 400-token minimum unenforced (`chunker.ts:129` `_minTokens` unused) and untested; tables can split across chunks (code blocks are protected, tables aren't).
-- [ ] **`validate` / `diff` CLI commands** — no tests.
+- [x] ~~RAG chunk minimum size + tables split across chunks~~ — done 2026-07-10: merge-up rule folds sub-400-token split remainders into the previous chunk (≤ 960 ceiling); tables are atomic units like code fences. Golden chunks.json unchanged (existing corpus unaffected).
+- [x] ~~`validate` / `diff` CLI commands — no tests~~ — done 2026-07-10: extracted to `src/cli/validate-diff.ts` (docs-pull pattern, injected page fetcher), 13 hermetic tests.
 
 ### 5. Recorded spec deviations (won't-fix unless a consumer needs them)
 Static audit (2026-07-09) found these intentional/harmless deviations — recorded so they stop resurfacing:
