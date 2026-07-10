@@ -1,0 +1,82 @@
+[
+  {
+    "page_id": "golden-en-sectioned",
+    "title": "Getting Started with CoMapeo",
+    "source_url": "https://www.notion.so/golden-en-sectioned",
+    "notion_last_edited_time": "2026-06-01T10:00:00.000Z",
+    "content_hash": "sha256:golden-en-sectioned-body",
+    "raw_hash": "sha256:golden-en-sectioned-raw",
+    "locale": "en",
+    "section": "Getting Started",
+    "section_order": 1,
+    "slug": "getting-started",
+    "docusaurus_id": "getting-started",
+    "status": "active",
+    "properties": {
+      "Content elements": { "id": "title", "type": "title", "title": [{ "plain_text": "Getting Started with CoMapeo" }] },
+      "Element Type": { "id": "%5EXy", "type": "select", "select": { "name": "Page" } },
+      "Publish Status": { "id": "BQMv", "type": "select", "select": { "name": "Published" } },
+      "Language": { "id": "lng", "type": "select", "select": { "name": "English" } },
+      "Content Section": { "id": "sec", "type": "select", "select": { "name": "Getting Started" } },
+      "Order": { "id": "ord", "type": "number", "number": 1 }
+    },
+    "assets": [],
+    "keywords": ["setup", "installation"],
+    "tags": ["intro"],
+    "icon": "🚀",
+    "published_date": "2026-06-01",
+    "element_type": "page",
+    "drafting_status": "Published",
+    "sub_items": ["golden-es-translation"]
+  },
+  {
+    "page_id": "golden-es-translation",
+    "title": "Primeros pasos con CoMapeo",
+    "source_url": "https://www.notion.so/golden-es-translation",
+    "notion_last_edited_time": "2026-06-02T12:30:00.000Z",
+    "content_hash": "sha256:golden-es-translation-body",
+    "raw_hash": "sha256:golden-es-translation-raw",
+    "locale": "es",
+    "section": "Primeros pasos",
+    "section_order": 1,
+    "slug": "primeros-pasos",
+    "docusaurus_id": "primeros-pasos",
+    "status": "active",
+    "properties": {
+      "Content elements": { "id": "title", "type": "title", "title": [{ "plain_text": "Primeros pasos con CoMapeo" }] },
+      "Element Type": { "id": "%5EXy", "type": "select", "select": { "name": "Page" } },
+      "Publish Status": { "id": "BQMv", "type": "select", "select": { "name": "Published" } },
+      "Language": { "id": "lng", "type": "select", "select": { "name": "Spanish" } },
+      "Content Section": { "id": "sec", "type": "select", "select": { "name": "Primeros pasos" } },
+      "Order": { "id": "ord", "type": "number", "number": 1 }
+    },
+    "assets": [],
+    "element_type": "page",
+    "drafting_status": "Published"
+  },
+  {
+    "page_id": "golden-en-flat",
+    "title": "Frequently Asked Questions",
+    "source_url": "https://www.notion.so/golden-en-flat",
+    "notion_last_edited_time": "2026-06-03T08:15:00.000Z",
+    "content_hash": "sha256:golden-en-flat-body",
+    "raw_hash": "sha256:golden-en-flat-raw",
+    "locale": "en",
+    "section": null,
+    "section_order": 10,
+    "slug": "faq",
+    "docusaurus_id": "faq",
+    "status": "active",
+    "properties": {
+      "Content elements": { "id": "title", "type": "title", "title": [{ "plain_text": "Frequently Asked Questions" }] },
+      "Element Type": { "id": "%5EXy", "type": "select", "select": { "name": "Page" } },
+      "Publish Status": { "id": "BQMv", "type": "select", "select": { "name": "Published" } },
+      "Language": { "id": "lng", "type": "select", "select": { "name": "English" } },
+      "Content Section": { "id": "sec", "type": "select", "select": null },
+      "Order": { "id": "ord", "type": "number", "number": 10 }
+    },
+    "assets": [],
+    "element_type": "page",
+    "drafting_status": "Published"
+  }
+]

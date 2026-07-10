@@ -23,7 +23,7 @@ Full-output production build (2026-07-02): **46 broken links + 182 broken anchor
 - [ ] **Worker RAG chunk generation (spec §6.1 "optionally")**: decided 2026-07-09 to keep RAG chunks CLI-only for now (no consumer needs sub-daily chunk freshness; avoids free-plan CPU risk). Revisit only if the RAG bot needs fresher chunks; then implement behind the manifest dirty-flag cron step.
 
 ### 4. Test-coverage gaps (spec §15) — residual
-- [ ] **Golden `manifest.json` + `chunks.json` fixtures** (§15.2) — currently inline-only assertions.
+- [x] ~~Golden `manifest.json` + `chunks.json` fixtures (§15.2)~~ — done 2026-07-10: `test/fixtures/golden/` inputs + `test/fixtures/expected/manifest.json`/`chunks.json`, deep-equal tests in `manifest.test.ts` and `chunker.test.ts` (only `generated_at` normalized; chunks fully deterministic).
 - [ ] **RAG chunk minimum size**: 400-token minimum unenforced (`chunker.ts:129` `_minTokens` unused) and untested; tables can split across chunks (code blocks are protected, tables aren't).
 - [ ] **`validate` / `diff` CLI commands** — no tests.
 

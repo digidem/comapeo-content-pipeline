@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { generateChunks, generateChunksManifest } from "./chunker.js";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const fixturesDir = join(__dirname, "../../test/fixtures");
 
 const baseInput = {
   pageId: "abc123",
@@ -108,5 +114,39 @@ describe("generateChunksManifest", () => {
     expect(manifest.schema_version).toBe("1.0");
     expect(manifest.chunks).toHaveLength(1);
     expect(manifest.generated_at).toBeDefined();
+  });
+});
+
+// ── Golden fixture (spec §15.2) ──
+
+describe("generateChunks — golden fixture", () => {
+  it("deep-equals test/fixtures/expected/chunks.json", async () => {
+    // Fixed markdown doc (~1200 words, h2/h3 headings, a table, a fenced code
+    // block). Input params are identical to the throwaway generator so the
+    // output is byte-stable.
+    const markdown = readFileSync(
+      join(fixturesDir, "golden", "golden-doc.md"),
+      "utf8",
+    );
+
+    const chunks = await generateChunks({
+      pageId: "abc123",
+      title: "CoMapeo Synchronization",
+      locale: "en",
+      slug: "sync",
+      sourceUrl: "https://notion.so/abc123",
+      docusaurusPath: "/sync",
+      contentHash: "sha256:abc",
+      markdownBody: markdown,
+    });
+
+    // No volatile fields to normalize: chunk_id is a content-hash of
+    // deterministic inputs (pageId:contentHash:headingPath.join("/"):chunkIndex)
+    // and a RagChunk carries no timestamps. The full array compares as-is.
+    const expected = JSON.parse(
+      readFileSync(join(fixturesDir, "expected", "chunks.json"), "utf8"),
+    );
+
+    expect(JSON.parse(JSON.stringify(chunks))).toEqual(expected);
   });
 });

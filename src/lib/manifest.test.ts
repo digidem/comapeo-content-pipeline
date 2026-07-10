@@ -2,6 +2,12 @@ import { describe, it, expect } from "vitest";
 import { generateManifest, generateSidebarJson, buildManifestFromStorage } from "./manifest.js";
 import type { ManifestStorage } from "./manifest.js";
 import type { PageMetadata } from "../schemas/metadata.js";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const fixturesDir = join(__dirname, "../../test/fixtures");
 
 const basePage: PageMetadata = {
   page_id: "abc123",
@@ -91,6 +97,37 @@ describe("generateManifest", () => {
       label: "basics",
       items: ["basics/getting-started"],
     });
+  });
+});
+
+// ── Golden fixture (spec §15.2) ──
+
+describe("generateManifest — golden fixture", () => {
+  it("deep-equals test/fixtures/expected/manifest.json", () => {
+    // Deterministic input: 3 hand-written PageMetadata (EN sectioned, ES
+    // translation, EN unsectioned). properties carry the raw Notion property
+    // objects for Element Type / Publish Status, but the manifest must read the
+    // extracted top-level element_type / drafting_status fields.
+    const pages = JSON.parse(
+      readFileSync(join(fixturesDir, "golden", "golden-pages.json"), "utf8"),
+    ) as PageMetadata[];
+
+    const manifest = generateManifest({
+      databaseId: "db-golden",
+      dataSourceId: "ds-golden",
+      pages,
+    });
+
+    // generated_at is the only volatile field — normalize to a literal.
+    (manifest as { generated_at: string }).generated_at = "<GENERATED_AT>";
+
+    const expected = JSON.parse(
+      readFileSync(join(fixturesDir, "expected", "manifest.json"), "utf8"),
+    );
+
+    // Round-trip both sides through JSON so key order / undefined handling is
+    // identical, then deep-equal against the frozen golden file.
+    expect(JSON.parse(JSON.stringify(manifest))).toEqual(expected);
   });
 });
 
