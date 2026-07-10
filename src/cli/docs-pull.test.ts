@@ -1,0 +1,205 @@
+import { describe, it, expect, afterEach } from "vitest";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { docsPull, DocsPullError } from "./docs-pull.js";
+
+/**
+ * Hermetic integration tests for docs:pull.
+ *
+ * Each test builds a tiny manifest + per-page markdown in a fresh temp dir,
+ * runs `docsPull` (the extracted, testable entry point — no Bun/Node CLI
+ * argv parsing, no process.exit), and asserts the Docusaurus tree it writes.
+ * No network, no real images, no `assets/` dir (so optimizeAssets early-returns
+ * and sharp is never imported). Keeps each run well under 2s.
+ */
+
+// Notion content "Page" element type — docs:pull reads element_type as an object
+// (`.select.name` / `.name`); "page" passes the isContentPage gate.
+const PAGE_TYPE = { select: { name: "Page" } } as const;
+
+/** Canonical source markdown as sync:full emits it: frontmatter + body. */
+function sourceMd(title: string, slug: string, position: number, body: string): string {
+  return `---
+title: ${title}
+id: ${slug}
+slug: /${slug}
+sidebar_position: ${position}
+---
+${body}
+`;
+}
+
+interface FixtureDoc {
+  page_id: string;
+  title: string;
+  locale: string;
+  section: string;
+  section_order: number;
+  status: string;
+  slug: string;
+  sub_items?: string[];
+}
+
+function buildManifest(docs: FixtureDoc[]): Record<string, unknown> {
+  return {
+    schema_version: "1.0",
+    generated_at: "2026-01-01T00:00:00.000Z",
+    source: { type: "notion", database_id: "db-id", data_source_id: "ds-id" },
+    docs: docs.map((d) => ({ element_type: PAGE_TYPE, ...d })),
+    sidebars: {},
+  };
+}
+
+/**
+ * Writes the shared fixture (6 docs across the scenarios the task requires) into
+ * a fresh temp input dir and returns it together with the manifest path.
+ *
+ * Pages:
+ *  - en-active + es-active      : EN content page with an ES translation
+ *  - en-missing-es + es-missing : EN page whose ES source .md is absent (fallback case)
+ *  - en-draft                   : status "draft"
+ *  - en-deprecated              : status "deprecated"
+ */
+function buildFixture(): { inputDir: string; manifestPath: string } {
+  const inputDir = mkdtempSync(join(tmpdir(), "docspull-in-"));
+  temps.push(inputDir);
+
+  const docs: FixtureDoc[] = [
+    { page_id: "en-active", title: "Getting Started", locale: "en", section: "10-Getting Started", section_order: 10, status: "active", slug: "getting-started", sub_items: ["es-active"] },
+    { page_id: "es-active", title: "Getting Started", locale: "es", section: "10-Getting Started", section_order: 10, status: "active", slug: "getting-started-es" },
+    { page_id: "en-missing-es", title: "Configuring Devices", locale: "en", section: "20-Configuring Devices", section_order: 20, status: "active", slug: "configuring-devices", sub_items: ["es-missing"] },
+    { page_id: "es-missing", title: "Configuring Devices", locale: "es", section: "20-Configuring Devices", section_order: 20, status: "active", slug: "configuring-devices-es" },
+    { page_id: "en-draft", title: "Draft Page", locale: "en", section: "30-Draft Section", section_order: 30, status: "draft", slug: "draft-page" },
+    { page_id: "en-deprecated", title: "Deprecated Page", locale: "en", section: "40-Deprecated", section_order: 40, status: "deprecated", slug: "deprecated-page" },
+  ];
+
+  writeFileSync(join(inputDir, "en-active.md"), sourceMd("Getting Started", "getting-started", 10, "Welcome to CoMapeo."));
+  writeFileSync(join(inputDir, "es-active.md"), sourceMd("Getting Started", "getting-started-es", 10, "Bienvenido a CoMapeo."));
+  writeFileSync(join(inputDir, "en-missing-es.md"), sourceMd("Configuring Devices", "configuring-devices", 20, "How to configure devices."));
+  // NOTE: es-missing.md intentionally NOT written — exercises the missing-source path.
+  writeFileSync(join(inputDir, "en-draft.md"), sourceMd("Draft Page", "draft-page", 30, "Draft body still being written."));
+  writeFileSync(join(inputDir, "en-deprecated.md"), sourceMd("Deprecated Page", "deprecated-page", 40, "This page is deprecated."));
+
+  const manifestPath = join(inputDir, "manifest.json");
+  writeFileSync(manifestPath, JSON.stringify(buildManifest(docs), null, 2));
+  return { inputDir, manifestPath };
+}
+
+/** Fresh empty output dir for a docs:pull run. */
+function freshOut(): string {
+  const out = mkdtempSync(join(tmpdir(), "docspull-out-"));
+  temps.push(out);
+  return out;
+}
+
+const temps: string[] = [];
+afterEach(() => {
+  while (temps.length) rmSync(temps.pop()!, { recursive: true, force: true });
+});
+
+const ES_DOCS_CURRENT = ["i18n", "es", "docusaurus-plugin-content-docs", "current"];
+
+describe("docsPull", () => {
+  it("default run: writes active EN page with frontmatter, skips draft and deprecated", async () => {
+    const { inputDir, manifestPath } = buildFixture();
+    const out = freshOut();
+
+    await docsPull({ input: manifestPath, "input-dir": inputDir, out });
+
+    // Active EN page published under docs/<section-dir>/<slug>.md with frontmatter.
+    const enPath = join(out, "docs", "getting-started", "getting-started.md");
+    expect(existsSync(enPath)).toBe(true);
+    const written = readFileSync(enPath, "utf8");
+    expect(written.startsWith("---\n")).toBe(true);
+    expect(written).toContain("title: Getting Started");
+    expect(written).toContain("Welcome to CoMapeo.");
+
+    // Draft page NOT written (isPublishableStatus("draft", false) === false).
+    expect(existsSync(join(out, "docs", "draft-section", "draft-page.md"))).toBe(false);
+    // Deprecated page NOT written.
+    expect(existsSync(join(out, "docs", "deprecated", "deprecated-page.md"))).toBe(false);
+  });
+
+  it("--all: writes the draft page but still never writes deprecated", async () => {
+    const { inputDir, manifestPath } = buildFixture();
+    const out = freshOut();
+
+    await docsPull({ input: manifestPath, "input-dir": inputDir, out, all: "true" });
+
+    // Draft now published (--all widens the gate to drafts).
+    expect(existsSync(join(out, "docs", "draft-section", "draft-page.md"))).toBe(true);
+    // Deprecated is still gated out even under --all (isPublishableStatus never admits it).
+    expect(existsSync(join(out, "docs", "deprecated", "deprecated-page.md"))).toBe(false);
+  });
+
+  it("publishes ES translation under i18n and emits _category_.json on both sides", async () => {
+    const { inputDir, manifestPath } = buildFixture();
+    const out = freshOut();
+
+    await docsPull({ input: manifestPath, "input-dir": inputDir, out });
+
+    // ES translation lands at i18n/es/docusaurus-plugin-content-docs/current/<section>/<slug>.md,
+    // sharing the EN slug ("getting-started") as Docusaurus i18n requires.
+    const esFile = join(out, ...ES_DOCS_CURRENT, "getting-started", "getting-started.md");
+    expect(existsSync(esFile)).toBe(true);
+
+    // _category_.json emitted for the section on the docs/ (en) side…
+    expect(existsSync(join(out, "docs", "getting-started", "_category_.json"))).toBe(true);
+    // …and on the i18n/es side.
+    expect(existsSync(join(out, ...ES_DOCS_CURRENT, "getting-started", "_category_.json"))).toBe(true);
+
+    // The ES doc's id/slug frontmatter was rewritten to the shared EN slug.
+    expect(readFileSync(esFile, "utf8")).toContain('id: "getting-started"');
+  });
+
+  it("missing ES source file: EN still publishes, ES is skipped (renderer falls back to EN)", async () => {
+    const { inputDir, manifestPath } = buildFixture();
+    const out = freshOut();
+
+    await docsPull({ input: manifestPath, "input-dir": inputDir, out });
+
+    // The EN page publishes normally.
+    expect(existsSync(join(out, "docs", "configuring-devices", "configuring-devices.md"))).toBe(true);
+    // The ES counterpart has no source .md on disk: docs:pull logs
+    // "Missing source file" and `continue`s, so no ES file is emitted.
+    // (Docusaurus then serves the EN content under the localized route — that
+    // fallback is the renderer's behaviour, not docs:pull's.)
+    const esMissing = join(out, ...ES_DOCS_CURRENT, "configuring-devices", "configuring-devices.md");
+    expect(existsSync(esMissing)).toBe(false);
+  });
+
+  it("--clean-orphans: removes stale .md under docs/, leaves non-managed files untouched", async () => {
+    const { inputDir, manifestPath } = buildFixture();
+    const out = freshOut();
+
+    // Pre-seed a stale pipeline .md inside the managed docs/ tree.
+    mkdirSync(join(out, "docs", "getting-started"), { recursive: true });
+    writeFileSync(join(out, "docs", "getting-started", "stale-orphan.md"), "ghost of a deleted page");
+    // Pre-seed files OUTSIDE the managed docs/ + i18n/ trees — clean-orphans
+    // only walks those, so these must survive.
+    mkdirSync(join(out, "extras"), { recursive: true });
+    writeFileSync(join(out, "extras", "keep-me.md"), "hand-authored, not pipeline-managed");
+    writeFileSync(join(out, "README-top.md"), "top-level, outside docs/");
+
+    await docsPull({ input: manifestPath, "input-dir": inputDir, out, "clean-orphans": "true" });
+
+    // Stale file inside the managed tree is removed.
+    expect(existsSync(join(out, "docs", "getting-started", "stale-orphan.md"))).toBe(false);
+    // Non-managed files are untouched (deletion is scoped to docs/ + i18n/{es,pt}).
+    expect(existsSync(join(out, "extras", "keep-me.md"))).toBe(true);
+    expect(existsSync(join(out, "README-top.md"))).toBe(true);
+    // A legit pipeline-managed file is preserved.
+    expect(existsSync(join(out, "docs", "getting-started", "getting-started.md"))).toBe(true);
+  });
+
+  it("throws DocsPullError (not process.exit) when the manifest path does not exist", async () => {
+    const { inputDir } = buildFixture();
+    const out = freshOut();
+    const missing = join(inputDir, "does-not-exist.json");
+
+    await expect(
+      docsPull({ input: missing, "input-dir": inputDir, out }),
+    ).rejects.toBeInstanceOf(DocsPullError);
+  });
+});
