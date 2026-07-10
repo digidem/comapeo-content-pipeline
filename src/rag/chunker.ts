@@ -122,11 +122,12 @@ function splitIntoSections(markdown: string): Section[] {
 
 /**
  * Split text into overlapping chunks aiming for [minTokens, maxTokens] token range.
- * Preserves paragraph and code-block boundaries.
+ * Preserves paragraph, code-block, and table boundaries. A trailing piece below
+ * minTokens is merged into the previous chunk when the result stays ≤ max + 20%.
  */
 function splitText(
   text: string,
-  _minTokens: number,
+  minTokens: number,
   maxTokens: number,
   overlapTokens: number,
 ): string[] {
@@ -157,50 +158,78 @@ function splitText(
     chunks.push(current.join("\n\n"));
   }
 
+  // Merge-up (spec §10.1): if the trailing piece is smaller than the minimum,
+  // fold it into the previous chunk of the same section — but only when the
+  // result stays within max + 20% tolerance; otherwise leave it as-is. A
+  // naturally small section never reaches splitText (it emits via the ≤ max
+  // path), so this only collapses split remainders, never forces cross-section
+  // merging.
+  const mergeCeiling = Math.ceil(maxTokens * 1.2);
+  if (chunks.length >= 2) {
+    const last = chunks[chunks.length - 1];
+    const prev = chunks[chunks.length - 2];
+    if (estimateTokens(last) < minTokens) {
+      const merged = `${prev}\n\n${last}`;
+      if (estimateTokens(merged) <= mergeCeiling) {
+        chunks[chunks.length - 2] = merged;
+        chunks.pop();
+      }
+    }
+  }
+
   return chunks;
 }
 
 /**
- * Split text into logical paragraphs, preserving code blocks.
+ * Split text into logical paragraphs, preserving code blocks and tables.
  */
 function splitByParagraphs(text: string): string[] {
   const parts: string[] = [];
   let inCodeBlock = false;
   let buffer: string[] = [];
 
-  const lines = text.split("\n");
-  for (const line of lines) {
+  function flush() {
+    if (buffer.length > 0) {
+      parts.push(buffer.join("\n"));
+      buffer = [];
+    }
+  }
+
+  for (const line of text.split("\n")) {
+    // Fenced code blocks are atomic units (spec §10.1).
     if (line.startsWith("```")) {
-      // Flush current paragraph
-      if (buffer.length > 0 && !inCodeBlock) {
-        parts.push(buffer.join("\n"));
-        buffer = [];
-      }
+      if (!inCodeBlock) flush(); // break any in-progress paragraph
       inCodeBlock = !inCodeBlock;
       buffer.push(line);
-      if (!inCodeBlock) {
-        // End of code block — emit as single unit
-        parts.push(buffer.join("\n"));
-        buffer = [];
-      }
+      if (!inCodeBlock) flush(); // closing fence → emit whole block
       continue;
     }
 
-    if (!inCodeBlock && line.trim() === "") {
-      if (buffer.length > 0) {
-        parts.push(buffer.join("\n"));
-        buffer = [];
-      }
+    if (inCodeBlock) {
+      buffer.push(line);
       continue;
     }
 
-    // Inside code block or regular text
+    // Markdown tables are atomic units too: a run of consecutive lines each
+    // starting with "|" (header + separator + rows) stays together, mirroring
+    // code-fence protection. A table larger than max chunk size is emitted
+    // whole as an oversized unit (same as an oversized code block).
+    const isTableLine = line.startsWith("|");
+    const bufferIsTable =
+      buffer.length > 0 && buffer.every((b) => b.startsWith("|"));
+    if (buffer.length > 0 && isTableLine !== bufferIsTable) {
+      flush(); // boundary between prose and a table run
+    }
+
+    if (line.trim() === "") {
+      flush();
+      continue;
+    }
+
     buffer.push(line);
   }
 
-  if (buffer.length > 0) {
-    parts.push(buffer.join("\n"));
-  }
+  flush();
 
   return parts.filter((p) => p.trim().length > 0);
 }

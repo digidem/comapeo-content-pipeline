@@ -103,6 +103,94 @@ After the code block.
   });
 });
 
+// ── Spec §10.1: minimum chunk size + atomic tables ──
+
+describe("generateChunks — spec §10.1 (min size + atomic tables)", () => {
+  // estimateTokens is ceil(len/4), so a run of N chars is exactly N/4 tokens.
+  const para = (tokenCount: number): string => "w".repeat(tokenCount * 4);
+  const tokens = (text: string): number => Math.ceil(text.length / 4);
+
+  it("keeps a table atomic across a chunk boundary", async () => {
+    // A section large enough to split, with a table sitting between two big
+    // prose blocks so it lands at a chunk seam.
+    const markdown = [
+      "## Table Boundary",
+      "",
+      para(550),
+      "",
+      "| Name | Role |",
+      "| --- | --- |",
+      "| Ada | Engineer |",
+      "| Bo | Designer |",
+      "| Cy | PM |",
+      "| Dee | QA |",
+      "| Eli | Writer |",
+      "| Fen | Support |",
+      "| Gia | DevRel |",
+      "| Hugo | SRE |",
+      "",
+      para(550),
+    ].join("\n");
+
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+    expect(chunks.length).toBeGreaterThan(1);
+
+    const tableLines = markdown.split("\n").filter((l) => l.startsWith("|"));
+
+    // No chunk may hold a partial table: any chunk that touches the table
+    // (overlap can repeat the whole table into a neighbor) must contain every
+    // table line — header, separator, and all rows — never a torn subset.
+    const chunksWithTables = chunks.filter((c) =>
+      c.text.split("\n").some((l) => l.startsWith("|")),
+    );
+    expect(chunksWithTables.length).toBeGreaterThan(0);
+    for (const c of chunksWithTables) {
+      for (const line of tableLines) {
+        expect(c.text).toContain(line);
+      }
+    }
+  });
+
+  it("merges a sub-minimum split remainder into the previous chunk", async () => {
+    // Sized so the trailing piece is < 400 tokens but merges to ≤ 960.
+    // Paragraphs (tokens): 460, 460, 100, 241 → final remainder ~342 tokens,
+    // which folds into the previous ~560-token chunk (~903 merged).
+    const markdown = [
+      "## Merge Remainder",
+      "",
+      para(460),
+      "",
+      para(460),
+      "",
+      para(100),
+      "",
+      para(241),
+    ].join("\n");
+
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+
+    // The merge-up rule guarantees no chunk falls below the 400-token minimum.
+    for (const c of chunks) {
+      expect(tokens(c.text)).toBeGreaterThanOrEqual(400);
+    }
+    const finalTokens = tokens(chunks[chunks.length - 1].text);
+    expect(finalTokens).toBeGreaterThanOrEqual(400);
+    expect(finalTokens).toBeLessThanOrEqual(960);
+  });
+
+  it("leaves a naturally tiny section as a single small chunk", async () => {
+    const markdown = "## Tiny\n\nShort paragraph here, well under the minimum.";
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+
+    // Small sections emit directly via the ≤ max path — never force-merged,
+    // never padded, never dropped.
+    expect(chunks).toHaveLength(1);
+    expect(tokens(chunks[0].text)).toBeLessThan(400);
+    expect(chunks[0].heading_path).toEqual(["Tiny"]);
+  });
+});
+
 describe("generateChunksManifest", () => {
   it("generates a valid manifest", async () => {
     const chunks = await generateChunks({
