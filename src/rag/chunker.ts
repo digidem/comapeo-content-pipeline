@@ -135,40 +135,45 @@ function splitText(
   overlapTokens: number,
 ): string[] {
   const paragraphs = splitByParagraphs(text);
-  const chunks: string[] = [];
+
+  // Phase 1 — pack paragraphs greedily into pieces (NO overlap yet).
+  const pieces: string[][] = [];
   let current: string[] = [];
   let currentTokens = 0;
-
   for (const para of paragraphs) {
     const paraTokens = estimateTokens(para);
-
     if (currentTokens + paraTokens > maxTokens && current.length > 0) {
-      // Emit current chunk
-      chunks.push(current.join("\n\n"));
-
-      // Overlap: keep last ~overlapTokens tokens
-      const overlapText = buildOverlap(current, overlapTokens);
-      current = overlapText ? [overlapText] : [];
-      currentTokens = estimateTokens(overlapText);
+      pieces.push(current);
+      current = [];
+      currentTokens = 0;
     }
-
     current.push(para);
     currentTokens += paraTokens;
   }
+  if (current.length > 0) pieces.push(current);
 
-  // Emit final chunk
-  if (current.length > 0) {
-    chunks.push(current.join("\n\n"));
-  }
+  // Phase 2 — min-size repair (spec §10.1) on the raw pieces. Greedy packing
+  // can leave a piece below the minimum anywhere in the sequence, not just as
+  // a trailing remainder. A naturally small section never reaches splitText
+  // (it emits via the ≤ max path), so this only ever collapses split pieces —
+  // never forces cross-section merging.
+  repairMinSize(pieces, minTokens, maxTokens);
 
-  // Min-size repair (spec §10.1): greedy packing can leave a piece below the
-  // minimum anywhere in the sequence, not just as a trailing remainder. A
-  // naturally small section never reaches splitText (it emits via the ≤ max
-  // path), so this only ever collapses split pieces — never forces cross-section
-  // merging.
-  repairMinSize(chunks, minTokens, maxTokens);
+  // Phase 3 — overlap is applied LAST, between the final (post-repair)
+  // adjacent pieces. Applying it during packing and repairing afterwards
+  // duplicated content: merging a piece into its predecessor kept the
+  // predecessor-tail overlap baked into the piece, so the merged chunk carried
+  // those paragraphs twice.
+  return pieces.map((piece, idx) => {
+    if (idx === 0) return piece.join("\n\n");
+    const overlapText = buildOverlap(pieces[idx - 1], overlapTokens);
+    return overlapText ? [overlapText, ...piece].join("\n\n") : piece.join("\n\n");
+  });
+}
 
-  return chunks;
+/** Token estimate for a piece (its paragraphs joined as they will be emitted). */
+function pieceTokens(piece: string[]): number {
+  return estimateTokens(piece.join("\n\n"));
 }
 
 /**
@@ -186,36 +191,30 @@ function splitText(
  *   3. Leave as-is (escape hatch): when neither applies — e.g. a small piece
  *      pinned next to an oversized atomic unit — the minimum is best-effort.
  */
-function repairMinSize(pieces: string[], minTokens: number, maxTokens: number): void {
+function repairMinSize(pieces: string[][], minTokens: number, maxTokens: number): void {
   const mergeCeiling = Math.ceil(maxTokens * 1.2);
 
   for (let pass = 0; pass < 2; pass++) {
     let repaired = false;
     for (let i = 0; i < pieces.length; i++) {
-      if (estimateTokens(pieces[i]) >= minTokens) continue;
+      if (pieceTokens(pieces[i]) >= minTokens) continue;
 
       // 1. Merge with previous neighbor when it fits.
-      if (i > 0) {
-        const merged = `${pieces[i - 1]}\n\n${pieces[i]}`;
-        if (estimateTokens(merged) <= mergeCeiling) {
-          pieces[i - 1] = merged;
-          pieces.splice(i, 1);
-          repaired = true;
-          i--; // re-check the slot that just shifted into index i
-          continue;
-        }
+      if (i > 0 && pieceTokens([...pieces[i - 1], ...pieces[i]]) <= mergeCeiling) {
+        pieces[i - 1] = [...pieces[i - 1], ...pieces[i]];
+        pieces.splice(i, 1);
+        repaired = true;
+        i--; // re-check the slot that just shifted into index i
+        continue;
       }
 
       // 1b. Else merge with the next neighbor when it fits.
-      if (i < pieces.length - 1) {
-        const merged = `${pieces[i]}\n\n${pieces[i + 1]}`;
-        if (estimateTokens(merged) <= mergeCeiling) {
-          pieces[i] = merged;
-          pieces.splice(i + 1, 1);
-          repaired = true;
-          i--; // re-check this slot (now holds the merged piece)
-          continue;
-        }
+      if (i < pieces.length - 1 && pieceTokens([...pieces[i], ...pieces[i + 1]]) <= mergeCeiling) {
+        pieces[i] = [...pieces[i], ...pieces[i + 1]];
+        pieces.splice(i + 1, 1);
+        repaired = true;
+        i--; // re-check this slot (now holds the merged piece)
+        continue;
       }
 
       // 2. Rebalance with the larger neighbor when no merge fits.
@@ -237,14 +236,14 @@ function repairMinSize(pieces: string[], minTokens: number, maxTokens: number): 
  * commits when both halves reach `minTokens`; a single-paragraph (atomic)
  * neighbor is skipped because it cannot be subdivided. Returns true when applied.
  */
-function rebalancePiece(pieces: string[], i: number, minTokens: number): boolean {
+function rebalancePiece(pieces: string[][], i: number, minTokens: number): boolean {
   const prev = i > 0 ? pieces[i - 1] : null;
   const next = i < pieces.length - 1 ? pieces[i + 1] : null;
 
-  let neighbor: string | null = null;
+  let neighbor: string[] | null = null;
   let neighborIdx = -1;
   if (prev && next) {
-    if (estimateTokens(next) >= estimateTokens(prev)) {
+    if (pieceTokens(next) >= pieceTokens(prev)) {
       neighbor = next;
       neighborIdx = i + 1;
     } else {
@@ -260,15 +259,11 @@ function rebalancePiece(pieces: string[], i: number, minTokens: number): boolean
   }
   if (!neighbor) return false;
 
-  const underParas = splitByParagraphs(pieces[i]);
-  const neighborParas = splitByParagraphs(neighbor);
   // Atomic guard: a single-unit neighbor cannot be re-split.
-  if (neighborParas.length <= 1) return false;
+  if (neighbor.length <= 1) return false;
 
   const combined =
-    neighborIdx < i
-      ? [...neighborParas, ...underParas]
-      : [...underParas, ...neighborParas];
+    neighborIdx < i ? [...neighbor, ...pieces[i]] : [...pieces[i], ...neighbor];
   const combinedTokens = combined.reduce((sum, p) => sum + estimateTokens(p), 0);
   if (combinedTokens < minTokens * 2) return false;
 
@@ -285,9 +280,9 @@ function rebalancePiece(pieces: string[], i: number, minTokens: number): boolean
     }
   }
 
-  const firstHalf = combined.slice(0, bestSplit).join("\n\n");
-  const secondHalf = combined.slice(bestSplit).join("\n\n");
-  if (estimateTokens(firstHalf) < minTokens || estimateTokens(secondHalf) < minTokens) {
+  const firstHalf = combined.slice(0, bestSplit);
+  const secondHalf = combined.slice(bestSplit);
+  if (pieceTokens(firstHalf) < minTokens || pieceTokens(secondHalf) < minTokens) {
     return false;
   }
 
@@ -361,9 +356,20 @@ function buildOverlap(paragraphs: string[], targetTokens: number): string {
 
   for (let i = paragraphs.length - 1; i >= 0; i--) {
     const pt = estimateTokens(paragraphs[i]);
-    if (tokens + pt > targetTokens * 1.5 && overlap.length > 0) break;
+    if (tokens + pt > targetTokens * 1.5) break;
     overlap.unshift(paragraphs[i]);
     tokens += pt;
+  }
+
+  if (overlap.length === 0) {
+    // The tail paragraph alone exceeds the overlap budget (spec targets
+    // 80–120 tokens — carrying a whole 400+-token paragraph as "overlap" both
+    // bloats the next chunk and violates the target). Slice the trailing
+    // characters of prose; NEVER tear an atomic unit (code fence / table) —
+    // skip the overlap entirely instead.
+    const tail = paragraphs[paragraphs.length - 1];
+    if (tail.startsWith("```") || tail.startsWith("|")) return "";
+    return tail.slice(-targetTokens * 4);
   }
 
   return overlap.join("\n\n");

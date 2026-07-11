@@ -179,6 +179,36 @@ describe("generateChunks — spec §10.1 (min size + atomic tables)", () => {
     expect(finalTokens).toBeLessThanOrEqual(960);
   });
 
+  it("merge repair never duplicates overlap content (overlap applied after repair)", async () => {
+    // Distinct-letter paragraphs so duplication is detectable. Packing leaves a
+    // sub-400 trailing piece that merges into its predecessor. With overlap
+    // baked in before repair (the old order), the merged chunk carried the
+    // predecessor's tail twice.
+    const pA = "a".repeat(460 * 4);
+    const pB = "b".repeat(460 * 4);
+    const pC = "c".repeat(100 * 4);
+    const pD = "d".repeat(241 * 4);
+    const markdown = ["## Overlap Dup", "", pA, "", pB, "", pC, "", pD].join("\n");
+
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+
+    // No chunk may contain the same source paragraph twice.
+    for (const c of chunks) {
+      for (const para of [pA, pB, pC, pD]) {
+        const occurrences = c.text.split(para).length - 1;
+        expect(occurrences, "paragraph duplicated inside a single chunk").toBeLessThanOrEqual(1);
+      }
+    }
+
+    // Overlap still present BETWEEN adjacent chunks: each later chunk starts
+    // with tail content of its predecessor.
+    for (let i = 1; i < chunks.length; i++) {
+      const prevTailChar = chunks[i - 1].text.trimEnd().slice(-1);
+      expect(chunks[i].text.startsWith(prevTailChar.repeat(10))).toBe(true);
+    }
+  });
+
   it("leaves a naturally tiny section as a single small chunk", async () => {
     const markdown = "## Tiny\n\nShort paragraph here, well under the minimum.";
     const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
@@ -214,10 +244,10 @@ describe("generateChunks — repair pass (non-tail under-min pieces)", () => {
   });
 
   it("rebalances when merge would exceed the ceiling, yielding two ≥ min pieces", async () => {
-    // Packs to [~800 (multi-paragraph), ~350]. Merge would be ~1150 > 960, so
-    // repair rebalances: recombine the piece's paragraphs with the larger
-    // neighbor and re-split near even → both halves ≥ 400.
-    const markdown = ["## A", "", para(499), "", para(300), "", para(50)].join("\n");
+    // Packs to [heading+500+290 ≈ 792, 350]. Merge would be ~1142 > 960, so
+    // repair rebalances: recombine with the multi-paragraph neighbor and
+    // re-split near even → [~502, ~640], both ≥ 400.
+    const markdown = ["## A", "", para(500), "", para(290), "", para(350)].join("\n");
     const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
 
     // Rebalance keeps two pieces (a merge would have collapsed to one); both
@@ -236,7 +266,7 @@ describe("generateChunks — repair pass (non-tail under-min pieces)", () => {
     // two ≥ 400 halves because the atomic code block cannot be subdivided — any
     // split leaves one side below the minimum. The documented escape hatch
     // fires: the small piece is emitted unchanged.
-    const codeBody = "x".repeat(900 * 4); // 900 tokens
+    const codeBody = "x".repeat(950 * 4); // 950 tokens: merge (~1001) exceeds the 960 ceiling
     const codeBlock = "```ts\n" + codeBody + "\n```";
     const markdown = ["## A", "", para(49), "", codeBlock].join("\n");
     const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
