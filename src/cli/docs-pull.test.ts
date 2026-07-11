@@ -202,4 +202,46 @@ describe("docsPull", () => {
       docsPull({ input: missing, "input-dir": inputDir, out }),
     ).rejects.toBeInstanceOf(DocsPullError);
   });
+
+  it("path-traversal inline asset: nothing escapes static/images/notion/, run does not throw", async () => {
+    // Standalone fixture (needs a real assets/ dir + a file outside the pool)
+    // rather than buildFixture(), which deliberately omits assets/ to keep
+    // sharp unimported. Here the publish loop must run, so assets/ exists;
+    // the safe asset is a .gif so optimizeAssets (png/jpg/webp only) skips it.
+    const inputDir = mkdtempSync(join(tmpdir(), "docspull-trav-in-"));
+    temps.push(inputDir);
+    const out = freshOut();
+
+    mkdirSync(join(inputDir, "assets"), { recursive: true });
+    writeFileSync(join(inputDir, "assets", "icon.gif"), "GIF87a-fake");
+    // Sensitive file OUTSIDE the asset pool that a pre-fix read-side traversal
+    // (join(assetsDir, "../evil.txt") === inputDir/evil.txt) would have read.
+    writeFileSync(join(inputDir, "evil.txt"), "SECRET");
+
+    // Markdown with a safe inline img AND a malicious traversal src.
+    // Pre-fix the rewrite captured `../evil.txt`; the publish loop would then
+    //   read  join(assetsDir,        "../evil.txt") = inputDir/evil.txt
+    //   write join(static/images/notion, "../evil.txt") = static/images/evil.txt
+    // Post-fix img-rewrite drops the traversal src, so evil.txt is never touched.
+    const body =
+      'Safe <img src="assets/icon.gif" alt="ok" /> and ' +
+      'evil <img src="assets/../evil.txt" alt="x" />.';
+    writeFileSync(join(inputDir, "trav.md"), sourceMd("Traversal Page", "trav-page", 10, body));
+
+    const docs: FixtureDoc[] = [
+      { page_id: "trav", title: "Traversal Page", locale: "en", section: "10-Trav", section_order: 10, status: "active", slug: "trav-page" },
+    ];
+    const manifestPath = join(inputDir, "manifest.json");
+    writeFileSync(manifestPath, JSON.stringify(buildManifest(docs), null, 2));
+
+    // Must not throw.
+    await docsPull({ input: manifestPath, "input-dir": inputDir, out });
+
+    // Legit inline asset still published under static/images/notion/.
+    expect(existsSync(join(out, "static", "images", "notion", "icon.gif"))).toBe(true);
+    // Traversal write blocked: evil.txt did NOT escape one dir above notion.
+    expect(existsSync(join(out, "static", "images", "evil.txt"))).toBe(false);
+    // Nor land anywhere else under out/.
+    expect(existsSync(join(out, "evil.txt"))).toBe(false);
+  });
 });

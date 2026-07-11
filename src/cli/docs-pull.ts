@@ -428,6 +428,14 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
       mkdirSync(staticDir, { recursive: true });
       let staticCopied = 0;
       for (const f of inlineStaticAssets) {
+        // Defense in depth: img-rewrite already drops non-basename names, but
+        // never join an attacker-influenced segment into a filesystem path — a
+        // name containing `/`, `\`, or `..` would read from / write to outside
+        // the asset pool and the static dir.
+        if (f.includes("/") || f.includes("\\") || f.includes("..")) {
+          console.warn(`  Skipping unsafe inline asset name (path segment): ${f}`);
+          continue;
+        }
         const src = join(assetsDir, f);
         if (!existsSync(src)) {
           console.warn(`  Missing inline asset in pool: ${f}`);

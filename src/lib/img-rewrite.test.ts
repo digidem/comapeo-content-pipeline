@@ -64,4 +64,20 @@ describe("rewriteRawImgSrcToStatic", () => {
     expect(content).toBe(input);
     expect(assets).toEqual([]);
   });
+
+  it("leaves a traversal src (../) untouched and reports no asset", () => {
+    // Pre-fix this captured `../../.env` and fed it to the asset-copy loop,
+    // which joined it into a path on both read and write sides.
+    const input = '<img src="assets/../../.env" alt="evil" />';
+    const { content, assets } = rewriteRawImgSrcToStatic(input);
+    expect(content).toBe(input); // src left as-is → harmless 404, never copied
+    expect(assets).toEqual([]);
+  });
+
+  it("leaves a multi-segment (subdir) src untouched and reports no asset", () => {
+    const input = '<img src="assets/sub/dir.png" alt="nested" />';
+    const { content, assets } = rewriteRawImgSrcToStatic(input);
+    expect(content).toBe(input);
+    expect(assets).toEqual([]);
+  });
 });
