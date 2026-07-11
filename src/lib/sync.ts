@@ -193,21 +193,25 @@ export async function convertPageData(input: {
     .map((a) => a.url);
   for (const url of leftoverUrls) {
     const esc = escapeRegExp(url);
+    // Drop the expiring query-string signature so the marker carries a stable
+    // identifier (see stripUrlSignature). Regex still matches the full signed
+    // URL because that's what's in the body; only the emitted marker is stripped.
+    const markerUrl = stripUrlSignature(url);
 
     // Markdown image: ![alt](url) → preserve alt text where present
     markdownBody = markdownBody.replace(
       new RegExp(`!\\[([^\\]]*)\\]\\(${esc}\\)`, "g"),
       (_match, alt: string) =>
         alt && alt.trim()
-          ? `**[Image unavailable: ${alt}]**\n<!-- failed-asset: ${url} -->`
-          : `**[Image unavailable]**\n<!-- failed-asset: ${url} -->`,
+          ? `**[Image unavailable: ${alt}]**\n<!-- failed-asset: ${markerUrl} -->`
+          : `**[Image unavailable]**\n<!-- failed-asset: ${markerUrl} -->`,
     );
 
     // HTML img: <img ... src="url" ...> (double or single quoted) → no alt recovery.
     // Callback (not a string replacer) so any `$` in `url` isn't re-interpreted.
     markdownBody = markdownBody.replace(
       new RegExp(`<img\\b[^>]*\\ssrc=(["'])${esc}\\1[^>]*>`, "gi"),
-      () => `**[Image unavailable]**\n<!-- failed-asset: ${url} -->`,
+      () => `**[Image unavailable]**\n<!-- failed-asset: ${markerUrl} -->`,
     );
   }
 
@@ -416,4 +420,27 @@ function extractIcon(rawPage: Record<string, unknown>): string | null {
 /** Escape RegExp metacharacters in a literal string so it embeds safely in a pattern. */
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Drop the query string (and thus the expiring X-Amz-Signature) from an asset
+ * URL, keeping only origin + pathname.
+ *
+ * Hash-stability requirement: the content_hash is computed on the canonical
+ * markdown AFTER failed-asset neutralization. The failed-asset marker embeds
+ * this identifier, so it must NOT carry the signature — otherwise two syncs of
+ * the same failed asset differ only in the signed query string and the hash
+ * flaps on every sync, defeating change detection (and shipping an expiring
+ * URL inside canonical markdown, which the rehost design exists to prevent).
+ * Origin + pathname stay useful for debugging which asset failed. Falls back to
+ * a literal `?` split when the URL won't parse.
+ */
+export function stripUrlSignature(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.origin + u.pathname;
+  } catch {
+    const i = url.indexOf("?");
+    return i >= 0 ? url.slice(0, i) : url;
+  }
 }

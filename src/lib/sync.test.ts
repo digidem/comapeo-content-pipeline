@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { convertPageData } from "./sync.js";
+import { convertPageData, stripUrlSignature } from "./sync.js";
 import { contentHash } from "./hash.js";
 import { parseDoc } from "./frontmatter.js";
 import type { NotionBlockList } from "./notion-converter.js";
@@ -102,6 +102,22 @@ function stubFetch() {
   );
 }
 
+// Stub global fetch to fail every request (HTTP 502) → asset download fails →
+// rehostAsset throws (4xx, not retried) → the signed Notion URL is left in the
+// body, exercising the failed-asset neutralization path.
+function failingFetch() {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      () =>
+        new Response("Bad Gateway", {
+          status: 502,
+          statusText: "Bad Gateway",
+        }),
+    ),
+  );
+}
+
 describe("content_hash stability (signed asset URLs)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -154,5 +170,61 @@ describe("content_hash stability (signed asset URLs)", () => {
       usedSlugs: new Set<string>(),
     });
     expect(a.metadata.content_hash).not.toBe(b.metadata.content_hash);
+  });
+});
+
+describe("failed-asset marker signature stripping", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("yields identical content_hash and canonical markdown across two signatures", async () => {
+    failingFetch();
+    // Same page (same pageId); only the URL signature differs. Pre-fix the
+    // marker embedded the full signed URL → hash flapped. Now the marker is
+    // signature-stripped → both syncs converge.
+    const a = await convertPageData({
+      pageId: "page-fail",
+      rawPage: makeRawPage(),
+      rawBlocks: makeRawBlocks({ signature: "aaa" }),
+      usedSlugs: new Set<string>(),
+    });
+    const b = await convertPageData({
+      pageId: "page-fail",
+      rawPage: makeRawPage(),
+      rawBlocks: makeRawBlocks({ signature: "bbb" }),
+      usedSlugs: new Set<string>(),
+    });
+    expect(a.metadata.content_hash).toBe(b.metadata.content_hash);
+    expect(a.canoncialMd).toBe(b.canoncialMd);
+  });
+
+  it("strips the query string from the marker but keeps origin + pathname", async () => {
+    failingFetch();
+    const result = await convertPageData({
+      pageId: "page-fail-strip",
+      rawPage: makeRawPage(),
+      rawBlocks: makeRawBlocks({ signature: "deadbeef" }),
+      usedSlugs: new Set<string>(),
+    });
+    const { body } = parseDoc(result.canoncialMd);
+    // No expiring-signature / query-string remnant ships in the canonical body.
+    expect(body).not.toContain("X-Amz");
+    expect(body).not.toContain("Signature");
+    expect(body).not.toContain("?");
+    // Origin + pathname are preserved so the marker still names which asset failed.
+    expect(body).toContain(
+      "<!-- failed-asset: https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/img.png -->",
+    );
+  });
+
+  it("falls back to a literal `?` split for an unparseable URL", () => {
+    // Space in the host makes new URL() throw → fallback path strips from the
+    // first `?`, keeping the segment before it.
+    expect(stripUrlSignature("https://exa mple.com/path?sig=secret")).toBe(
+      "https://exa mple.com/path",
+    );
+    // No `?` at all → returned unchanged by the fallback path.
+    expect(stripUrlSignature("not-a-url")).toBe("not-a-url");
   });
 });
