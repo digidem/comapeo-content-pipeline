@@ -209,6 +209,24 @@ describe("generateChunks — spec §10.1 (min size + atomic tables)", () => {
     }
   });
 
+  it("overlap never exceeds 120 tokens (spec 80–120), even for a 140-token tail paragraph", async () => {
+    // Distinct letters: chunk 2's overlap prefix is whatever 'a'/'b' content
+    // precedes its own first paragraph (pC). The 140-token tail paragraph must
+    // not ride along whole — beyond target*1.2 it is sliced to ~100 tokens.
+    const pA = "a".repeat(600 * 4);
+    const pB = "b".repeat(140 * 4);
+    const pC = "c".repeat(500 * 4);
+    const markdown = ["## Overlap Bound", "", pA, "", pB, "", pC].join("\n");
+
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+
+    const second = chunks[1].text;
+    const overlapPrefix = second.slice(0, second.indexOf("c"));
+    expect(tokens(overlapPrefix)).toBeLessThanOrEqual(120);
+    expect(overlapPrefix.length).toBeGreaterThan(0);
+  });
+
   it("leaves a naturally tiny section as a single small chunk", async () => {
     const markdown = "## Tiny\n\nShort paragraph here, well under the minimum.";
     const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });

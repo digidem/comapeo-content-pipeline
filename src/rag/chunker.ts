@@ -354,9 +354,12 @@ function buildOverlap(paragraphs: string[], targetTokens: number): string {
   let tokens = 0;
   const overlap: string[] = [];
 
+  // Spec targets 80–120 overlap tokens: cap whole-paragraph accumulation at
+  // target * 1.2 (= 120 for the default 100) so no oversized paragraph rides
+  // along whole.
   for (let i = paragraphs.length - 1; i >= 0; i--) {
     const pt = estimateTokens(paragraphs[i]);
-    if (tokens + pt > targetTokens * 1.5) break;
+    if (tokens + pt > targetTokens * 1.2) break;
     overlap.unshift(paragraphs[i]);
     tokens += pt;
   }
