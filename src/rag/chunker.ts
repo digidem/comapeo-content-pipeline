@@ -37,7 +37,7 @@ function estimateTokens(text: string): number {
 export async function generateChunks(input: ChunkInput): Promise<RagChunk[]> {
   const { pageId, title, locale, slug, sourceUrl, docusaurusPath, contentHash, markdownBody } = input;
 
-  const sections = splitIntoSections(markdownBody);
+  const sections = coalesceSections(splitIntoSections(markdownBody));
   const chunks: RagChunk[] = [];
   let chunkIndex = 0;
 
@@ -76,6 +76,54 @@ interface Section {
 }
 
 /**
+ * Post-process raw sections into retrieval-worthy units (found on the real
+ * corpus: 314/1138 chunks under 50 tokens, including literal `---` remnants).
+ *
+ * 1. Drop noise: a section whose text has no letters or digits (stray
+ *    dividers, spacer markup) is worthless as a retrieval unit.
+ * 2. Coalesce: real Notion sections are mostly far below the 400-token
+ *    target, and a 30-token chunk retrieves poorly. Adjacent sections of the
+ *    same page merge while the accumulating section is still under 400 tokens
+ *    and the combination stays ≤ 800. The merged section keeps the FIRST
+ *    section's heading path — the constituent `##` heading lines remain
+ *    visible inside the text.
+ */
+function coalesceSections(sections: Section[]): Section[] {
+  const out: Section[] = [];
+  for (const s of sections) {
+    if (!/[\p{L}\p{N}]/u.test(s.text)) continue; // noise: no word characters
+
+    const last = out[out.length - 1];
+    if (
+      last &&
+      estimateTokens(last.text) < 400 &&
+      estimateTokens(last.text) + estimateTokens(s.text) <= 800
+    ) {
+      last.text = `${last.text}\n\n${s.text}`;
+      continue;
+    }
+    out.push({ headingPath: s.headingPath, text: s.text });
+  }
+  return out;
+}
+
+/**
+ * Strip inline markup from a heading title for use in heading_path metadata:
+ * inline HTML tags (falling back to an img's alt text when the tag is the
+ * whole title), emphasis/code markers, collapsed whitespace. The chunk TEXT
+ * keeps the raw heading line; only the metadata path is cleaned.
+ */
+function cleanHeadingTitle(raw: string): string {
+  const alt = raw.match(/alt="([^"]*)"/)?.[1] ?? "";
+  const cleaned = raw
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\*\*|`/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || alt;
+}
+
+/**
  * Split markdown into sections by headings.
  */
 function splitIntoSections(markdown: string): Section[] {
@@ -101,7 +149,7 @@ function splitIntoSections(markdown: string): Section[] {
       flushSection();
 
       const level = headingMatch[1].length;
-      const title = headingMatch[2].trim();
+      const title = cleanHeadingTitle(headingMatch[2].trim());
 
       // Update heading stack
       while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) {

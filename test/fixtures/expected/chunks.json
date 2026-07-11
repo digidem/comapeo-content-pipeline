@@ -8,30 +8,14 @@
     "heading_path": [
       "Overview"
     ],
-    "text": "## Overview\n\nCoMapeo lets teams map their territory offline, without relying on cloud services or persistent internet connectivity. This document describes how devices discover one another, exchange observations, and reconcile conflicting edits over time. The design prioritizes peer-to-peer synchronization so that field crews working in remote areas can collaborate continuously even when no central server is reachable.\n\nBecause field work happens in places where connectivity is unreliable by default, the system assumes from the outset that any device may disappear from the network at any moment and reappear hours or days later. Every primitive in the synchronization stack is built to tolerate that reality rather than fight it. There is no assumption of a coordinated handshake, no requirement that all participants be online simultaneously, and no single device that acts as a source of truth.",
+    "text": "## Overview\n\nCoMapeo lets teams map their territory offline, without relying on cloud services or persistent internet connectivity. This document describes how devices discover one another, exchange observations, and reconcile conflicting edits over time. The design prioritizes peer-to-peer synchronization so that field crews working in remote areas can collaborate continuously even when no central server is reachable.\n\nBecause field work happens in places where connectivity is unreliable by default, the system assumes from the outset that any device may disappear from the network at any moment and reappear hours or days later. Every primitive in the synchronization stack is built to tolerate that reality rather than fight it. There is no assumption of a coordinated handshake, no requirement that all participants be online simultaneously, and no single device that acts as a source of truth.\n\n### Design goals\n\nThe synchronization layer is built around three goals: eventual consistency, so that every device converges on the same data given enough time; tolerance for partition, so that work continues during network splits; and authorship preservation, so that the origin of every observation stays traceable even after edits.",
     "source_url": "https://notion.so/abc123",
     "docusaurus_path": "/sync",
     "content_hash": "sha256:abc",
     "status": "active"
   },
   {
-    "chunk_id": "sha256:47b3f2998922d1be4336b1cb88d4a23f84bc3f49ee5664efb4c1174b230d4d0f",
-    "page_id": "abc123",
-    "title": "CoMapeo Synchronization",
-    "locale": "en",
-    "slug": "sync",
-    "heading_path": [
-      "Overview",
-      "Design goals"
-    ],
-    "text": "### Design goals\n\nThe synchronization layer is built around three goals: eventual consistency, so that every device converges on the same data given enough time; tolerance for partition, so that work continues during network splits; and authorship preservation, so that the origin of every observation stays traceable even after edits.",
-    "source_url": "https://notion.so/abc123",
-    "docusaurus_path": "/sync",
-    "content_hash": "sha256:abc",
-    "status": "active"
-  },
-  {
-    "chunk_id": "sha256:73a7160c958cdf880eeea8f365bb8df399d495494719856c37b80be369b8d374",
+    "chunk_id": "sha256:3dabfd87d83547cdec7eaa17e2389588a3c6698270ba0d9e5ee8d0760f284515",
     "page_id": "abc123",
     "title": "CoMapeo Synchronization",
     "locale": "en",
@@ -46,7 +30,7 @@
     "status": "active"
   },
   {
-    "chunk_id": "sha256:7b9738b83e582a94707641d4fc4f1b8c4f53dcb09a8a01a8434b62850d2beb77",
+    "chunk_id": "sha256:3a9f449032d4e75e02ca9841f83fa9cf78507dc83ec54488d7d09ebfe7cfb80c",
     "page_id": "abc123",
     "title": "CoMapeo Synchronization",
     "locale": "en",
@@ -55,29 +39,14 @@
       "How synchronization works",
       "Performance characteristics"
     ],
-    "text": "### Performance characteristics\n\nThe amount of data transferred during a sync grows with the number of new entries since the last successful exchange, not with the total size of the database. A team that has recorded tens of thousands of observations can still complete a routine sync in seconds, because only the delta is transmitted. Attachments such as photos are negotiated separately and transferred lazily, on demand, so that a catalog can be synchronized quickly even when the media itself is large.\n\nMemory usage during a sync is bounded by the size of the summary structure plus a small working buffer for in-flight entries. The summary never exceeds a few kilobytes regardless of how large the underlying log has grown, which keeps the negotiation phase cheap even on low-end devices. Disk writes are sequential appends, avoiding the overhead of random access and keeping flash storage healthy over the lifetime of a device.",
+    "text": "### Performance characteristics\n\nThe amount of data transferred during a sync grows with the number of new entries since the last successful exchange, not with the total size of the database. A team that has recorded tens of thousands of observations can still complete a routine sync in seconds, because only the delta is transmitted. Attachments such as photos are negotiated separately and transferred lazily, on demand, so that a catalog can be synchronized quickly even when the media itself is large.\n\nMemory usage during a sync is bounded by the size of the summary structure plus a small working buffer for in-flight entries. The summary never exceeds a few kilobytes regardless of how large the underlying log has grown, which keeps the negotiation phase cheap even on low-end devices. Disk writes are sequential appends, avoiding the overhead of random access and keeping flash storage healthy over the lifetime of a device.\n\n## Peer discovery\n\nDevices find each other through a combination of local network broadcasting and manual invitation. On a local network, a device advertises its presence at a fixed interval and listens for advertisements from peers. When two devices hear each other, they exchange identity information and, if both belong to the same team project, begin the negotiation phase automatically.\n\nDiscovery can also be initiated manually. A team member can share an invitation that encodes the project identity and a temporary credential; a recipient who accepts the invitation joins the project and begins participating in sync immediately. Manual invitations are the primary way a new device is onboarded, since the first connection must establish trust before any data is exchanged.",
     "source_url": "https://notion.so/abc123",
     "docusaurus_path": "/sync",
     "content_hash": "sha256:abc",
     "status": "active"
   },
   {
-    "chunk_id": "sha256:a1b88a4c9628f3862147ebed0d5e96fceb0b0e3d794c2f8bb26bf8651f874119",
-    "page_id": "abc123",
-    "title": "CoMapeo Synchronization",
-    "locale": "en",
-    "slug": "sync",
-    "heading_path": [
-      "Peer discovery"
-    ],
-    "text": "## Peer discovery\n\nDevices find each other through a combination of local network broadcasting and manual invitation. On a local network, a device advertises its presence at a fixed interval and listens for advertisements from peers. When two devices hear each other, they exchange identity information and, if both belong to the same team project, begin the negotiation phase automatically.\n\nDiscovery can also be initiated manually. A team member can share an invitation that encodes the project identity and a temporary credential; a recipient who accepts the invitation joins the project and begins participating in sync immediately. Manual invitations are the primary way a new device is onboarded, since the first connection must establish trust before any data is exchanged.",
-    "source_url": "https://notion.so/abc123",
-    "docusaurus_path": "/sync",
-    "content_hash": "sha256:abc",
-    "status": "active"
-  },
-  {
-    "chunk_id": "sha256:57ebc49981036d1be94fbc82c90be831fc592b292cb6d7d7517149ab82b0c6f5",
+    "chunk_id": "sha256:ba8c4d155d8de8f9f3c17c977a06c21d64b183ea7938e1b027e6a591a23ee325",
     "page_id": "abc123",
     "title": "CoMapeo Synchronization",
     "locale": "en",
@@ -85,23 +54,7 @@
     "heading_path": [
       "Configuration"
     ],
-    "text": "## Configuration\n\nTeams can tune how aggressively devices search for peers and how much local storage is reserved for the log. The defaults are chosen to balance battery life against sync latency, but field conditions vary and the configuration is exposed through the same settings surface used by the rest of the application.\n\n```typescript\nconst syncConfig = {\n  discoveryIntervalMs: 30_000,\n  maxStorageMb: 512,\n  autoSync: true,\n  // When false, sync only runs when explicitly invoked by the user.\n  backgroundSync: true,\n};\n\napplySyncConfig(syncConfig);\n```",
-    "source_url": "https://notion.so/abc123",
-    "docusaurus_path": "/sync",
-    "content_hash": "sha256:abc",
-    "status": "active"
-  },
-  {
-    "chunk_id": "sha256:8223f06a1b0dda35f4b730f62a28321eaf50abbaf72c980ed8fe0c39230e3573",
-    "page_id": "abc123",
-    "title": "CoMapeo Synchronization",
-    "locale": "en",
-    "slug": "sync",
-    "heading_path": [
-      "Configuration",
-      "Error handling"
-    ],
-    "text": "### Error handling\n\nIf a sync attempt fails partway through, the partial state is preserved and the next attempt resumes from the last acknowledged entry. No entry is ever applied twice, and a failed transfer never corrupts the local log. Transient errors such as a peer disconnecting mid-exchange are retried automatically on the next discovery cycle. Permanent errors, such as a signature that fails verification, are logged and the offending entry is rejected without halting the rest of the sync.",
+    "text": "## Configuration\n\nTeams can tune how aggressively devices search for peers and how much local storage is reserved for the log. The defaults are chosen to balance battery life against sync latency, but field conditions vary and the configuration is exposed through the same settings surface used by the rest of the application.\n\n```typescript\nconst syncConfig = {\n  discoveryIntervalMs: 30_000,\n  maxStorageMb: 512,\n  autoSync: true,\n  // When false, sync only runs when explicitly invoked by the user.\n  backgroundSync: true,\n};\n\napplySyncConfig(syncConfig);\n```\n\n### Error handling\n\nIf a sync attempt fails partway through, the partial state is preserved and the next attempt resumes from the last acknowledged entry. No entry is ever applied twice, and a failed transfer never corrupts the local log. Transient errors such as a peer disconnecting mid-exchange are retried automatically on the next discovery cycle. Permanent errors, such as a signature that fails verification, are logged and the offending entry is rejected without halting the rest of the sync.",
     "source_url": "https://notion.so/abc123",
     "docusaurus_path": "/sync",
     "content_hash": "sha256:abc",

@@ -321,6 +321,79 @@ describe("generateChunks — repair pass (non-tail under-min pieces)", () => {
   });
 });
 
+describe("generateChunks — section coalescing + noise filtering (real-corpus audit)", () => {
+  const tokens = (text: string): number => Math.ceil(text.length / 4);
+
+  it("drops sections with no word characters (stray dividers, spacer remnants)", async () => {
+    const chunks = await generateChunks({ ...baseInput, markdownBody: "---" });
+    expect(chunks).toHaveLength(0);
+  });
+
+  it("coalesces adjacent small sections into one chunk keeping the first heading path", async () => {
+    const markdown = [
+      "## First",
+      "",
+      "w".repeat(100 * 4),
+      "",
+      "## Second",
+      "",
+      "w".repeat(100 * 4),
+      "",
+      "## Third",
+      "",
+      "w".repeat(100 * 4),
+    ].join("\n");
+
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].heading_path).toEqual(["First"]);
+    // Constituent headings stay visible inside the merged text.
+    expect(chunks[0].text).toContain("## Second");
+    expect(chunks[0].text).toContain("## Third");
+    expect(tokens(chunks[0].text)).toBeLessThanOrEqual(800);
+  });
+
+  it("does not coalesce past the 800-token cap or once the section reaches 400", async () => {
+    const markdown = [
+      "## Small",
+      "",
+      "w".repeat(100 * 4),
+      "",
+      "## Big",
+      "",
+      "w".repeat(780 * 4),
+    ].join("\n");
+
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+    // 100 + 780 > 800 → stays two chunks.
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0].heading_path).toEqual(["Small"]);
+    expect(chunks[1].heading_path).toEqual(["Big"]);
+  });
+
+  it("cleans heading_path metadata: emphasis markers and inline HTML stripped, img alt preserved", async () => {
+    // First section ≥ 400 tokens so coalescing keeps the two sections apart.
+    const markdown = [
+      "## **Testing new categories**",
+      "",
+      "w".repeat(450 * 4),
+      "",
+      '### <img src="assets/x.png" alt="app-icon-data-privacy" /> Data and privacy',
+      "",
+      "w".repeat(500 * 4),
+    ].join("\n");
+
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+    const paths = chunks.map((c) => c.heading_path.join(" > "));
+    expect(paths.some((p) => p.includes("Testing new categories"))).toBe(true);
+    expect(paths.every((p) => !p.includes("**"))).toBe(true);
+    expect(paths.every((p) => !p.includes("<img"))).toBe(true);
+    expect(paths.some((p) => p.includes("Data and privacy"))).toBe(true);
+    // Raw heading line remains in the chunk text.
+    expect(chunks.some((c) => c.text.includes("## **Testing new categories**"))).toBe(true);
+  });
+});
+
 describe("generateChunksManifest", () => {
   it("generates a valid manifest", async () => {
     const chunks = await generateChunks({
