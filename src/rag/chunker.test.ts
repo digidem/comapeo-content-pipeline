@@ -227,6 +227,28 @@ describe("generateChunks — spec §10.1 (min size + atomic tables)", () => {
     expect(overlapPrefix.length).toBeGreaterThan(0);
   });
 
+  it("overlap floor: a short tail paragraph is topped up to ≥ 80 tokens from prose", async () => {
+    // Chunk 1 ends [600-token 'a' paragraph, 30-token 'b' paragraph]. The 'b'
+    // tail alone is 30 tokens — below the spec's 80 floor — so the overlap is
+    // topped up with a trailing slice of the 'a' paragraph.
+    const pA = "a".repeat(600 * 4);
+    const pB = "b".repeat(30 * 4);
+    const pC = "c".repeat(500 * 4);
+    const markdown = ["## Overlap Floor", "", pA, "", pB, "", pC].join("\n");
+
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+
+    const second = chunks[1].text;
+    const overlapPrefix = second.slice(0, second.indexOf("c"));
+    const t = tokens(overlapPrefix);
+    expect(t).toBeGreaterThanOrEqual(80);
+    expect(t).toBeLessThanOrEqual(120);
+    // Top-up came from 'a' prose; the whole 'b' tail is present.
+    expect(overlapPrefix).toContain("b".repeat(30 * 4));
+    expect(overlapPrefix).toContain("aaaa");
+  });
+
   it("leaves a naturally tiny section as a single small chunk", async () => {
     const markdown = "## Tiny\n\nShort paragraph here, well under the minimum.";
     const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });

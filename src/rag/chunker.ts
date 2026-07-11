@@ -356,13 +356,16 @@ function buildOverlap(paragraphs: string[], targetTokens: number): string {
 
   // Spec targets 80–120 overlap tokens: cap whole-paragraph accumulation at
   // target * 1.2 (= 120 for the default 100) so no oversized paragraph rides
-  // along whole.
-  for (let i = paragraphs.length - 1; i >= 0; i--) {
-    const pt = estimateTokens(paragraphs[i]);
+  // along whole. `next` ends on the first (older) paragraph that did NOT fit.
+  let next = paragraphs.length - 1;
+  for (; next >= 0; next--) {
+    const pt = estimateTokens(paragraphs[next]);
     if (tokens + pt > targetTokens * 1.2) break;
-    overlap.unshift(paragraphs[i]);
+    overlap.unshift(paragraphs[next]);
     tokens += pt;
   }
+
+  const isAtomic = (p: string) => p.startsWith("```") || p.startsWith("|");
 
   if (overlap.length === 0) {
     // The tail paragraph alone exceeds the overlap budget (spec targets
@@ -371,8 +374,18 @@ function buildOverlap(paragraphs: string[], targetTokens: number): string {
     // characters of prose; NEVER tear an atomic unit (code fence / table) —
     // skip the overlap entirely instead.
     const tail = paragraphs[paragraphs.length - 1];
-    if (tail.startsWith("```") || tail.startsWith("|")) return "";
+    if (isAtomic(tail)) return "";
     return tail.slice(-targetTokens * 4);
+  }
+
+  // Floor (spec 80–120): a short tail paragraph alone (e.g. 30 tokens) would
+  // otherwise under-shoot the range. Top up with a trailing slice of the next
+  // older paragraph — prose only, never a torn atomic unit; when that
+  // paragraph is atomic (or none remains), the short overlap stands.
+  const floor = Math.floor(targetTokens * 0.8);
+  if (tokens < floor && next >= 0 && !isAtomic(paragraphs[next])) {
+    const need = targetTokens - tokens;
+    overlap.unshift(paragraphs[next].slice(-need * 4));
   }
 
   return overlap.join("\n\n");
