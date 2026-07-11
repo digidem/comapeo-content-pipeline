@@ -34,6 +34,7 @@ Static audit (2026-07-09) found these intentional/harmless deviations — record
 - Slug rule "prefer explicit Notion slug property" (§9.3 rule 1) unimplemented — the live database has no slug property; title-derived slugs only.
 - `NOTION_VERSION`, `MANIFEST_KEY`, `DEFAULT_STATUS_FILTER`, `filter_properties` (§8.3), and configurable retry max-attempts declared in spec but hardcoded in code.
 - CLI `docs:pull` emits `_category_.json` for sidebars (Docusaurus-native) instead of consuming `sidebars/{locale}.json`; Worker still writes the R2 sidebar artifact.
+- **The manifest is a full catalog, deliberately including deprecated/archived docs** (review round 4 pushback, 2026-07-11): dead statuses in `manifests/latest.json` are what let `docs:pull --clean-orphans` retire a dead page's published files; excluding them would break cleanup. Every consumer must gate on `isPublishableStatus` — both shipped consumers (docs:pull, rag:chunks) do.
 
 ### 6. Repo housekeeping
 - [ ] **Cosmetic markdownlint residuals** (optional): 13 heading-level jumps (MD001) and 5 list-indent inconsistencies (MD005) originate in Notion authoring structure. Harmless to rendering; fix in Notion or add a normalization pass only if they ever matter.

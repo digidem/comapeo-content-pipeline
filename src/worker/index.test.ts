@@ -665,7 +665,10 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     expect(enqueuedIds).not.toContain("old-page");
   });
 
-  it("dead pages: filter is present in the API request body", async () => {
+  it("dead-status transitions stay visible: cron query carries NO status guard", async () => {
+    // Inverted contract (review round 4): the cron must see pages whose Publish
+    // Status flipped to Remove/Unplublished so consumers can retire them. The
+    // dead-status exclusion applies only to full imports, never to the cron.
     fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
 
     await scheduledHandler({} as never, env, {} as never);
@@ -675,15 +678,30 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     expect(url).toContain(`data_sources/${DS_ID}/query`);
 
     const body = JSON.parse(init.body as string);
-    // The status guard filter should be present (not undefined/null)
+    // No stored watermark in this test → no since → no filter at all.
+    expect(body.filter).toBeUndefined();
+    const bodyStr = JSON.stringify(body);
+    expect(bodyStr).not.toContain("Publish Status");
+    expect(bodyStr).not.toContain("does_not_equal");
+    // Must not reference Parent item or Sub-item (v3 regression guard)
+    expect(bodyStr).not.toContain("Parent item");
+    expect(bodyStr).not.toContain("Sub-item");
+  });
+
+  it("with a stored watermark: cron filter is the time window only, no status clauses", async () => {
+    const db = env.DB as ReturnType<typeof mockD1Db>;
+    db.first.mockResolvedValueOnce({ value: "2026-06-01T00:10:00.000Z" }); // last_sync_watermark
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
     expect(body.filter).toBeDefined();
     const filterStr = JSON.stringify(body.filter);
-    // Should contain a does_not_equal for "Remove" (the dead-status filter)
-    expect(filterStr).toContain("does_not_equal");
-    expect(filterStr).toContain("Remove");
-    // Must not reference Parent item or Sub-item (v3 regression guard)
-    expect(filterStr).not.toContain("Parent item");
-    expect(filterStr).not.toContain("Sub-item");
+    expect(filterStr).toContain("last_edited_time");
+    expect(filterStr).not.toContain("Publish Status");
+    expect(filterStr).not.toContain("does_not_equal");
   });
 
   it("respects limit cap (MAX_PAGES_PER_CRON=50): stops after 50 pageIds", async () => {

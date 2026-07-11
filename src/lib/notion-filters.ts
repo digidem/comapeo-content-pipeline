@@ -13,9 +13,19 @@ import { NOTION_PROPERTIES, DEAD_STATUSES } from "./notion-properties.js";
  * Default behavior: exclude pages whose Publish Status is in DEAD_STATUSES,
  * while keeping all empty-status rows (container parents, untranslated children).
  *
- * @param options.includeAll - When true, returns undefined (no filter → fetch all rows).
- * @param options.since      - When provided, wraps the status guard with a
- *                             `last_edited_time.after` time window.
+ * @param options.includeAll  - When true, returns undefined (no filter → fetch all rows).
+ * @param options.since       - When provided, adds a `last_edited_time.after`
+ *                              time window to the filter.
+ * @param options.statusGuard - When true (default), apply the DEAD_STATUSES
+ *                              exclusion. When false, omit it: with a `since`
+ *                              the filter is just the time window, and without
+ *                              one it is undefined (fetch everything).
+ *                              The incremental (cron) path must pass false so
+ *                              dead-status transitions (Published →
+ *                              Remove/Unplublished) still match the query and
+ *                              consumers can retire the page; the full-import
+ *                              path keeps the guard (default true) so dead rows
+ *                              never enter the corpus.
  *
  * Implementation note: the status guard is exclusion-based (keep rows whose
  * status is empty OR not a dead value) rather than enumerating active values,
@@ -34,8 +44,22 @@ import { NOTION_PROPERTIES, DEAD_STATUSES } from "./notion-properties.js";
 export function buildQueryFilter(options?: {
   includeAll?: boolean;
   since?: string | null;
+  statusGuard?: boolean;
 }): Record<string, unknown> | undefined {
   if (options?.includeAll) return undefined;
+
+  // statusGuard:false drops the dead-status exclusion entirely. The cron needs
+  // this: a published page flipped to Remove/Unplublished would otherwise never
+  // match the query, leaving its live artifacts stranded. See option doc above.
+  if (options?.statusGuard === false) {
+    if (options?.since) {
+      return {
+        timestamp: "last_edited_time",
+        last_edited_time: { after: options.since },
+      };
+    }
+    return undefined;
+  }
 
   // One clause per dead value: keep the row if its status is empty or ≠ value.
   const statusGuards: Array<Record<string, unknown>> = DEAD_STATUSES.map((v) => ({

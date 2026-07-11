@@ -708,7 +708,12 @@ export async function queryChangedPages(
   const effectiveSince = applyLookback(since);
 
   const result = await client.queryDatabase({
-    filter: buildQueryFilter({ since: effectiveSince }),
+    // statusGuard:false — the cron must see dead-status transitions (Published →
+    // Remove/Unplublished) so consumers can retire the page. Downstream already
+    // handles dead pages: mapStatus maps Remove→deprecated / Unplublished→archived,
+    // the consumer writes the new status to D1 + metadata blob, the manifest is a
+    // full catalog, and docs:pull / rag:chunks gate on isPublishableStatus.
+    filter: buildQueryFilter({ since: effectiveSince, statusGuard: false }),
     // Oldest-first: lets us advance the watermark to the newest enqueued page
     // (the slice's last element) and is the precondition for the boundary-run
     // cap logic below.

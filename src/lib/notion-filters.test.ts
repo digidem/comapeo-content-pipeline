@@ -67,6 +67,26 @@ describe("buildQueryFilter", () => {
     expect(JSON.stringify(filter)).not.toContain("last_edited_time");
   });
 
+  it("statusGuard:false with since: filter is exactly the time window, no status clauses", () => {
+    const since = "2026-05-01T00:00:00.000Z";
+    const filter = buildQueryFilter({ since, statusGuard: false });
+    expect(filter).toEqual({
+      timestamp: "last_edited_time",
+      last_edited_time: { after: since },
+    });
+    expect(JSON.stringify(filter)).not.toContain(NOTION_PROPERTIES.PUBLISH_STATUS);
+  });
+
+  it("statusGuard:false without since: undefined (fetch everything)", () => {
+    expect(buildQueryFilter({ statusGuard: false })).toBeUndefined();
+    expect(buildQueryFilter({ statusGuard: false, since: null })).toBeUndefined();
+  });
+
+  it("statusGuard default (true) keeps the dead-status exclusion", () => {
+    const filter = buildQueryFilter() as { and: unknown[] };
+    expect(JSON.stringify(filter)).toContain(NOTION_PROPERTIES.PUBLISH_STATUS);
+  });
+
   // Regression (2026-07-09 prod bug): the Notion API rejects compound filters
   // nested more than two levels deep. The old `and[ts, or[empty, and[…]]]`
   // shape 400'd on every cron tick. Guard the maximum compound depth directly.
