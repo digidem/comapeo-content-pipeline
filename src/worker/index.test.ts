@@ -496,6 +496,47 @@ describe("queue consumer", () => {
     expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeDefined();
   });
 
+  it("sets manifest_dirty even when a later step (sidebar regen) fails", async () => {
+    // Ordering invariant (review round 5): once the source_pages hash is
+    // updated, a retry takes the hash-skip path and never sets the flag — so
+    // the flag write must directly follow the upsert, before any fallible
+    // step. Here the sidebar R2 put throws; the flag must still be set and the
+    // job recorded as failed.
+    const fixturePath = join(__dirname, "../../test/fixtures/notion/simple-page.json");
+    const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));
+    const pageResponse = {
+      id: "test-page-id",
+      last_edited_time: "2026-01-01T00:00:00.000Z",
+      properties: {
+        "Content elements": {
+          id: "title",
+          type: "title",
+          title: [{ type: "text", text: { content: "Welcome" }, plain_text: "Welcome", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+        },
+      },
+    };
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify(pageResponse), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ object: "list", results: fixtureBlocks.results, next_cursor: null, has_more: false }), { status: 200 }));
+    env.DB.first.mockResolvedValue(null);
+
+    // Sidebar writes go to sidebars/<locale>.json — make exactly those throw.
+    const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
+    const realPut = bucket.put.getMockImplementation()!;
+    bucket.put.mockImplementation(async (key: string, value: string) => {
+      if (key.startsWith("sidebars/")) throw new Error("sidebar write failed");
+      return realPut(key, value);
+    });
+
+    const batch = buildMessageBatch("test-page-id");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await queueHandler(batch as any, env, {} as any);
+
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeDefined();
+    expect(findPrepareCall(prepareMock, "'failed'")).toBeDefined();
+  });
+
   it("skips page when content_hash and status unchanged", async () => {
     const fixturePath = join(__dirname, "../../test/fixtures/notion/simple-page.json");
     const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));

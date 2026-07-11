@@ -363,6 +363,17 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         docKey,
       ).run();
 
+      // Mark the manifest dirty so the next cron tick rebuilds manifests/latest.json
+      // (spec §6.1; rebuilding inline would add latency to every page sync — the cron
+      // batches it). This MUST directly follow the source_pages upsert: once the D1
+      // hash is updated, any failure below (sidebar regen, job bookkeeping) makes the
+      // queue retry take the hash-skip path, which never sets the flag — the manifest
+      // would stay stale indefinitely. Only the changed path sets this; the
+      // unchanged-skip path does not.
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '1', datetime('now'))",
+      ).run();
+
       // Record emitted artifacts
       const artifactRows: Array<[string, string, string, string | null, number]> = [
         [metadataKey, "metadata", pageId, metadata.content_hash, JSON.stringify(metadata).length],
@@ -384,13 +395,6 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
       await env.DB.prepare(
         "UPDATE sync_jobs SET status = 'completed', finished_at = datetime('now') WHERE id = ?",
       ).bind(msg.id).run();
-
-      // Mark the manifest dirty so the next cron tick rebuilds manifests/latest.json
-      // (spec §6.1). Rebuilding inline would add latency to every page sync; the cron
-      // batches it. Only the changed path sets this — the unchanged-skip path does not.
-      await env.DB.prepare(
-        "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '1', datetime('now'))",
-      ).run();
 
     } catch (err) {
       console.error(`Failed to sync page ${pageId}:`, err);
