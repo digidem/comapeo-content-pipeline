@@ -191,6 +191,66 @@ describe("generateChunks — spec §10.1 (min size + atomic tables)", () => {
   });
 });
 
+// ── Repair pass (round 3): min-size must cover ALL split pieces ──
+
+describe("generateChunks — repair pass (non-tail under-min pieces)", () => {
+  // estimateTokens is ceil(len/4); para(n) is exactly n tokens.
+  const para = (tokenCount: number): string => "w".repeat(tokenCount * 4);
+  const tokens = (text: string): number => Math.ceil(text.length / 4);
+
+  it("merges a leading under-min piece with the next when it fits (reviewer case)", async () => {
+    // Heading + small para + big para. Greedy packing emits the heading and the
+    // small para as the FIRST piece (~152 tokens), then the big para forces a
+    // flush — so the under-min piece is at the START, which the old trailing-
+    // only merge never inspected. Repair folds it into the next (≤ 960).
+    const markdown = ["## A", "", para(150), "", para(650)].join("\n");
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+
+    // The two pieces merge into one; nothing falls below the 400 minimum.
+    expect(chunks).toHaveLength(1);
+    const t = tokens(chunks[0].text);
+    expect(t).toBeGreaterThanOrEqual(400);
+    expect(t).toBeLessThanOrEqual(960);
+  });
+
+  it("rebalances when merge would exceed the ceiling, yielding two ≥ min pieces", async () => {
+    // Packs to [~800 (multi-paragraph), ~350]. Merge would be ~1150 > 960, so
+    // repair rebalances: recombine the piece's paragraphs with the larger
+    // neighbor and re-split near even → both halves ≥ 400.
+    const markdown = ["## A", "", para(499), "", para(300), "", para(50)].join("\n");
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+
+    // Rebalance keeps two pieces (a merge would have collapsed to one); both
+    // must clear the minimum and stay under the ceiling.
+    expect(chunks).toHaveLength(2);
+    for (const c of chunks) {
+      const t = tokens(c.text);
+      expect(t).toBeGreaterThanOrEqual(400);
+      expect(t).toBeLessThanOrEqual(960);
+    }
+  });
+
+  it("leaves an under-min piece as-is when atomicity blocks both merge and rebalance (escape hatch)", async () => {
+    // Heading + tiny para + a single oversized fenced code block. Greedy packing
+    // emits [~50, ~950]. Merge would exceed 960, and rebalance cannot produce
+    // two ≥ 400 halves because the atomic code block cannot be subdivided — any
+    // split leaves one side below the minimum. The documented escape hatch
+    // fires: the small piece is emitted unchanged.
+    const codeBody = "x".repeat(900 * 4); // 900 tokens
+    const codeBlock = "```ts\n" + codeBody + "\n```";
+    const markdown = ["## A", "", para(49), "", codeBlock].join("\n");
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+
+    expect(chunks).toHaveLength(2);
+    // The exception: a sub-minimum chunk survives where atomicity makes the
+    // minimum impossible.
+    expect(tokens(chunks[0].text)).toBeLessThan(400);
+    // The atomic code block stays whole in the neighbor.
+    expect(chunks[1].text).toContain("```ts");
+    expect(chunks[1].text).toContain("```");
+  });
+});
+
 describe("generateChunksManifest", () => {
   it("generates a valid manifest", async () => {
     const chunks = await generateChunks({
