@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { generateManifest, generateSidebarJson, buildManifestFromStorage } from "./manifest.js";
+import { generateManifest, generateSidebarJson, buildManifestFromStorage, manifestElementType } from "./manifest.js";
 import type { ManifestStorage } from "./manifest.js";
+import { isStructuralPage } from "./notion-properties.js";
 import type { PageMetadata } from "../schemas/metadata.js";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -277,5 +278,45 @@ describe("buildManifestFromStorage", () => {
     });
     expect(manifest.docs).toEqual([]);
     expect(skipped).toEqual([]);
+  });
+});
+
+// ── manifestElementType ──
+
+describe("manifestElementType", () => {
+  it("returns a plain string element_type unchanged", () => {
+    expect(manifestElementType({ element_type: "Toggle" })).toBe("Toggle");
+    expect(manifestElementType({ element_type: "page" })).toBe("page");
+  });
+
+  it("unwraps the legacy raw Notion select object shape", () => {
+    expect(manifestElementType({ element_type: { select: { name: "Toggle" } } })).toBe("Toggle");
+    expect(manifestElementType({ element_type: { select: { name: "Title" } } })).toBe("Title");
+  });
+
+  it("unwraps the legacy bare-name object shape", () => {
+    expect(manifestElementType({ element_type: { name: "Page" } })).toBe("Page");
+  });
+
+  it("returns empty string for null, undefined, or non-string/object values", () => {
+    expect(manifestElementType({ element_type: null })).toBe("");
+    expect(manifestElementType({ element_type: undefined })).toBe("");
+    expect(manifestElementType({})).toBe("");
+    expect(manifestElementType({ element_type: 42 })).toBe("");
+  });
+
+  // Regression: rag:chunks filters structural pages via
+  // isStructuralPage(manifestElementType(doc)). Before the fix, rag:chunks
+  // still unwrapped element_type as the old object shape, so a plain-string
+  // "Toggle" yielded "" → isStructuralPage("") === false → Toggle/Title pages
+  // leaked into rag/chunks/ (the "0/62 structural pages leak" guarantee broke).
+  it("supports the rag:chunks structural-page filter on plain-string element_type", () => {
+    const toggle = { element_type: "Toggle" };
+    const title = { element_type: "Title" };
+    const page = { element_type: "Page" };
+
+    expect(isStructuralPage(manifestElementType(toggle))).toBe(true);
+    expect(isStructuralPage(manifestElementType(title))).toBe(true);
+    expect(isStructuralPage(manifestElementType(page))).toBe(false);
   });
 });

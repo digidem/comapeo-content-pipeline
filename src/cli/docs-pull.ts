@@ -21,6 +21,7 @@ import {
 import { slugify } from "../lib/slug.js";
 import { buildRouteMaps, resolveInternalLinks, type DocLite } from "../lib/links.js";
 import { rewriteRawImgSrcToStatic } from "../lib/img-rewrite.js";
+import { manifestElementType } from "../lib/manifest.js";
 
 /** Error thrown by docsPull for fatal-but-recoverable conditions (missing manifest, etc.). */
 export class DocsPullError extends Error {
@@ -28,21 +29,6 @@ export class DocsPullError extends Error {
     super(message);
     this.name = "DocsPullError";
   }
-}
-
-/**
- * Read a manifest doc's element_type. Conformant manifests (2026-07-09+) carry
- * a plain string; manifests generated before the fix carried the raw Notion
- * select object — keep unwrapping those so older manifests still pull.
- */
-function manifestElementType(doc: { element_type?: unknown }): string {
-  const et = doc.element_type;
-  if (typeof et === "string") return et;
-  if (et && typeof et === "object") {
-    const o = et as { select?: { name?: string } | null; name?: string };
-    return o.select?.name ?? o.name ?? "";
-  }
-  return "";
 }
 
 export async function docsPull(args: Record<string, string>): Promise<void> {

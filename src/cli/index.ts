@@ -20,7 +20,7 @@ import { buildQueryFilter } from "../lib/notion-filters.js";
 import { isPublishableStatus } from "../lib/status.js";
 import { isStructuralPage } from "../lib/notion-properties.js";
 import { syncPage } from "../lib/sync.js";
-import { generateManifest } from "../lib/manifest.js";
+import { generateManifest, manifestElementType } from "../lib/manifest.js";
 import { parseDoc } from "../lib/frontmatter.js";
 import { generateChunks, generateChunksManifest } from "../rag/chunker.js";
 import { ErrorRecorder } from "../lib/errors.js";
@@ -456,9 +456,9 @@ async function cmdRagChunks(args: Record<string, string>) {
   // are never chunked — they carry section labels, not content.
   const includeAll = args.all === "true";
   const activeDocs = (manifest.docs || []).filter(
-    (doc: { status: string; element_type?: { select?: { name?: string }; name?: string } }) => {
+    (doc: { status: string; element_type?: unknown }) => {
       if (!isPublishableStatus(doc.status, includeAll)) return false;
-      const et = doc.element_type?.select?.name ?? doc.element_type?.name ?? "";
+      const et = manifestElementType(doc);
       if (isStructuralPage(et)) return false;
       return true;
     },

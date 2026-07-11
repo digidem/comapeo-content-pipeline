@@ -66,6 +66,23 @@ export function generateManifest(input: ManifestInput): ContentManifest {
   return manifest;
 }
 
+// ── Manifest consumer helpers ──
+
+/**
+ * Read a manifest doc's element_type. Conformant manifests (2026-07-09+) carry
+ * a plain string; manifests generated before the fix carried the raw Notion
+ * select object — keep unwrapping those so older manifests still pull.
+ */
+export function manifestElementType(doc: { element_type?: unknown }): string {
+  const et = doc.element_type;
+  if (typeof et === "string") return et;
+  if (et && typeof et === "object") {
+    const o = et as { select?: { name?: string } | null; name?: string };
+    return o.select?.name ?? o.name ?? "";
+  }
+  return "";
+}
+
 // ── Key builders ──
 
 function buildR2DocKey(meta: PageMetadata): string {
