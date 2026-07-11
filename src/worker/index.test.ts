@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // We only import types and the default export (Hono app) + queue consumer.
 // The worker module has side effects (global type declarations) — fine.
-import { app, queueHandler, scheduledHandler } from "./index.js";
+import { app, queueHandler, scheduledHandler, queryChangedPages } from "./index.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -454,8 +454,8 @@ describe("queue consumer", () => {
     // Verify job marked complete
     expect(findPrepareCall(prepareMock, "completed")).toBeDefined();
 
-    // Verify watermark updated
-    expect(findPrepareCall(prepareMock, "last_sync_watermark")).toBeDefined();
+    // Consumer no longer advances last_sync_watermark — the cron owns it.
+    expect(findPrepareCall(prepareMock, "VALUES ('last_sync_watermark'")).toBeUndefined();
 
     // Changed path must mark the manifest dirty for cron rebuild (spec §6.1)
     expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeDefined();
@@ -509,7 +509,16 @@ describe("queue consumer", () => {
     const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
     expect(findPrepareCall(prepareMock, "skipped")).toBeDefined();
 
-    // Unchanged-skip path must NOT mark the manifest dirty
+    // Skip path records the observed Notion edit time so the cron can dedupe the
+    // boundary-minute re-query on the next tick (perpetual-re-enqueue fix).
+    expect(findPrepareCall(prepareMock, "UPDATE source_pages SET notion_last_edited_time")).toBeDefined();
+    const bindMock = env.DB.bind as ReturnType<typeof vi.fn>;
+    const bindCalls = bindMock.mock.calls as unknown[][];
+    // metadata.notion_last_edited_time comes from the page fixture's last_edited_time.
+    expect(bindCalls.some((c) => c.includes("2026-01-01T00:00:00.000Z"))).toBe(true);
+
+    // Skip path must NOT advance the watermark (cron owns it) NOR mark the manifest dirty
+    expect(findPrepareCall(prepareMock, "VALUES ('last_sync_watermark'")).toBeUndefined();
     expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeUndefined();
   });
 
@@ -597,26 +606,28 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     );
   });
 
-  it("watermark skip: pages older than since are not enqueued", async () => {
+  it("watermark + 60s lookback: skips older pages, keeps same-minute boundary", async () => {
     const since = "2026-06-01T00:00:00.000Z";
 
     // Provide a watermark via D1 mock
     (env.DB.first as ReturnType<typeof vi.fn>).mockResolvedValue({ value: since });
 
     const newPage   = makeSdkPageResult("new-page",  "2026-06-15T00:00:00.000Z");
-    const oldPage   = makeSdkPageResult("old-page",  "2026-05-31T00:00:00.000Z"); // older than watermark
+    const oldPage   = makeSdkPageResult("old-page",  "2026-05-31T00:00:00.000Z"); // before watermark-60s
     const equalPage = makeSdkPageResult("equal-page", since); // exactly equal to watermark
 
     fetchMock.mockResolvedValueOnce(sdkQueryResponse([newPage, oldPage, equalPage], null, false));
 
     await scheduledHandler({} as never, env, {} as never);
 
-    // Only new-page should be enqueued (old-page and equal-page fail the watermark check)
+    // new-page and equal-page are enqueued; old-page (before the 60s lookback
+    // window) is skipped. equal-page is kept because the lookback re-queries the
+    // watermark's own minute and the consumer hash-skips it.
     const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
     const enqueuedIds = queue.messages.map((m) => (m as { pageId: string }).pageId);
     expect(enqueuedIds).toContain("new-page");
+    expect(enqueuedIds).toContain("equal-page");
     expect(enqueuedIds).not.toContain("old-page");
-    expect(enqueuedIds).not.toContain("equal-page");
   });
 
   it("dead pages: filter is present in the API request body", async () => {
@@ -641,9 +652,10 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
   });
 
   it("respects limit cap (MAX_PAGES_PER_CRON=50): stops after 50 pageIds", async () => {
-    // Return 60 pages in a single API response (no pagination)
+    // Distinct ascending timestamps so the cap cuts cleanly at 50. (Same-minute
+    // runs now extend past the cap on purpose — covered by the boundary test below.)
     const pages = Array.from({ length: 60 }, (_, i) =>
-      makeSdkPageResult(`page-${i}`, "2026-06-01T00:00:00.000Z"),
+      makeSdkPageResult(`page-${i}`, `2026-06-01T00:${String(i).padStart(2, "0")}:00.000Z`),
     );
     fetchMock.mockResolvedValueOnce(sdkQueryResponse(pages, null, false));
 
@@ -652,6 +664,129 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     // scheduledHandler uses maxPages=50, so only 50 should be enqueued
     const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
     expect(queue.messages).toHaveLength(50);
+    // Watermark advanced to the 50th page's timestamp (minute 49); pages 50-59 deferred.
+    const bindMock = env.DB.bind as ReturnType<typeof vi.fn>;
+    const bindCalls = bindMock.mock.calls as unknown[][];
+    expect(bindCalls.some((c) => c.includes("2026-06-01T00:49:00.000Z"))).toBe(true);
+  });
+
+  // ── watermark advancement (cron owns the watermark) ──
+
+  it("advances watermark to the newest enqueued timestamp (not wall-clock)", async () => {
+    const p1 = makeSdkPageResult("p1", "2026-06-01T00:01:00.000Z");
+    const p2 = makeSdkPageResult("p2", "2026-06-01T00:02:00.000Z");
+    const p3 = makeSdkPageResult("p3", "2026-06-01T00:03:00.000Z");
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([p1, p2, p3], null, false));
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
+    expect(queue.messages).toHaveLength(3);
+
+    // Watermark written with the newest page's last_edited_time (ascending → last).
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "VALUES ('last_sync_watermark'")).toBeDefined();
+    const bindMock = env.DB.bind as ReturnType<typeof vi.fn>;
+    const bindCalls = bindMock.mock.calls as unknown[][];
+    expect(bindCalls.some((c) => c.includes("2026-06-01T00:03:00.000Z"))).toBe(true);
+  });
+
+  it("zero changed pages: leaves the watermark untouched", async () => {
+    (env.DB.first as ReturnType<typeof vi.fn>).mockResolvedValue({ value: "2026-06-01T00:30:00.000Z" });
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    // No pages → no enqueue, no watermark write (only the read happens).
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "VALUES ('last_sync_watermark'")).toBeUndefined();
+  });
+
+  it("cap extends the slice through a same-minute boundary run", async () => {
+    // limit=2; A(t1) B(t2) C(t2) D(t3) → A,B,C enqueued, watermark=t2, D deferred.
+    const A = makeSdkPageResult("A", "2026-06-01T00:01:00.000Z");
+    const B = makeSdkPageResult("B", "2026-06-01T00:02:00.000Z");
+    const C = makeSdkPageResult("C", "2026-06-01T00:02:00.000Z");
+    const D = makeSdkPageResult("D", "2026-06-01T00:03:00.000Z");
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([A, B, C, D], null, false));
+
+    const pages = await queryChangedPages(env, null, 2);
+
+    expect(pages.map((p) => p.id)).toEqual(["A", "B", "C"]);
+    expect(pages[pages.length - 1].last_edited_time).toBe("2026-06-01T00:02:00.000Z");
+  });
+
+  it("60s lookback: query filter uses watermark-60s and includes the same-minute page", async () => {
+    const w = "2026-06-01T00:30:00.000Z";
+    (env.DB.first as ReturnType<typeof vi.fn>).mockResolvedValue({ value: w });
+
+    // A page edited exactly at the watermark minute — missed without the lookback.
+    const boundary = makeSdkPageResult("boundary", w);
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([boundary], null, false));
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    // The API filter's last_edited_time.after = w - 60s.
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(JSON.stringify(body.filter)).toContain("2026-06-01T00:29:00.000Z");
+
+    // And the same-minute page is enqueued (hash-skipped later by the consumer).
+    const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
+    expect(queue.messages.map((m) => (m as { pageId: string }).pageId)).toContain("boundary");
+  });
+
+  // ── cron dedupe against D1 (perpetual boundary re-enqueue fix) ──
+
+  it("dedupes candidates already processed at their current edit time", async () => {
+    // p1 already processed (D1 edit time matches); p2 has no D1 row.
+    const p1 = makeSdkPageResult("p1", "2026-06-01T00:01:00.000Z");
+    const p2 = makeSdkPageResult("p2", "2026-06-01T00:02:00.000Z");
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([p1, p2], null, false));
+
+    // first() = watermark (null); all() = dedupe lookup returning p1's row only.
+    (env.DB.first as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (env.DB.all as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: [{ page_id: "p1", notion_last_edited_time: "2026-06-01T00:01:00.000Z" }],
+      success: true,
+    });
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    // Only p2 enqueued; p1 deduped.
+    const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
+    expect(queue.messages.map((m) => (m as { pageId: string }).pageId)).toEqual(["p2"]);
+
+    // Watermark still advanced to the newest candidate time (p2's), pre-dedupe.
+    const bindMock = env.DB.bind as ReturnType<typeof vi.fn>;
+    const bindCalls = bindMock.mock.calls as unknown[][];
+    expect(bindCalls.some((c) => c.includes("2026-06-01T00:02:00.000Z"))).toBe(true);
+  });
+
+  it("all candidates deduped: zero enqueues, watermark still advances", async () => {
+    const p1 = makeSdkPageResult("p1", "2026-06-01T00:01:00.000Z");
+    const p2 = makeSdkPageResult("p2", "2026-06-01T00:02:00.000Z");
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([p1, p2], null, false));
+
+    (env.DB.first as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    // Both candidates already processed at their current edit times.
+    (env.DB.all as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: [
+        { page_id: "p1", notion_last_edited_time: "2026-06-01T00:01:00.000Z" },
+        { page_id: "p2", notion_last_edited_time: "2026-06-01T00:02:00.000Z" },
+      ],
+      success: true,
+    });
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
+    expect(queue.messages).toHaveLength(0);
+
+    // Watermark still advances to newest candidate (p2) even with zero enqueues.
+    const bindMock = env.DB.bind as ReturnType<typeof vi.fn>;
+    const bindCalls = bindMock.mock.calls as unknown[][];
+    expect(bindCalls.some((c) => c.includes("2026-06-01T00:02:00.000Z"))).toBe(true);
   });
 
   // ── manifest_dirty rebuild (spec §6.1) ──

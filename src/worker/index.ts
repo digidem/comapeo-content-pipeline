@@ -225,10 +225,10 @@ app.post("/admin/sync/changed", async (c: Context) => {
   const pages = await queryChangedPages(env, since);
   let enqueued = 0;
 
-  for (const pageId of pages) {
+  for (const page of pages) {
     await env.SYNC_QUEUE.send({
       type: "sync_page",
-      pageId,
+      pageId: page.id,
       sourceId: env.NOTION_DATA_SOURCE_ID || env.NOTION_DATABASE_ID,
     });
     enqueued++;
@@ -300,10 +300,15 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         await env.DB.prepare(
           "UPDATE sync_jobs SET status = 'skipped', error = 'content unchanged', finished_at = datetime('now') WHERE id = ?",
         ).bind(msg.id).run();
-        // Still update watermark so cron doesn't re-enqueue
+        // Record the observed Notion edit time so the cron can dedupe this page on
+        // the next boundary-minute re-query. Without this, the 60s lookback would
+        // re-enqueue it every tick for a hash-skip — perpetual queue messages.
+        // A row always exists on this path — reaching it required a D1 hash match.
         await env.DB.prepare(
-          "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('last_sync_watermark', ?, datetime('now'))",
-        ).bind(new Date().toISOString()).run();
+          "UPDATE source_pages SET notion_last_edited_time = ?, last_synced_at = datetime('now'), updated_at = datetime('now') WHERE page_id = ?",
+        ).bind(metadata.notion_last_edited_time, pageId).run();
+        // The consumer never advances last_sync_watermark — the cron owns it and
+        // advances it at enqueue time. A re-enqueued boundary page is hash-skipped here.
         continue;
       }
 
@@ -373,11 +378,6 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         "UPDATE sync_jobs SET status = 'completed', finished_at = datetime('now') WHERE id = ?",
       ).bind(msg.id).run();
 
-      // Update watermark
-      await env.DB.prepare(
-        "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('last_sync_watermark', ?, datetime('now'))",
-      ).bind(new Date().toISOString()).run();
-
       // Mark the manifest dirty so the next cron tick rebuilds manifests/latest.json
       // (spec §6.1). Rebuilding inline would add latency to every page sync; the cron
       // batches it. Only the changed path sets this — the unchanged-skip path does not.
@@ -418,15 +418,34 @@ export async function scheduledHandler(
   const since = await getLastSyncWatermark(env.DB);
   const pages = await queryChangedPages(env, since, maxPages);
 
-  for (const pageId of pages) {
+  // Dedupe candidates already fully processed at their current Notion edit time
+  // (synced or hash-skipped). The 60s lookback re-includes the watermark's
+  // boundary minute every tick; without this dedupe those pages would be
+  // re-enqueued and hash-skipped forever — perpetual queue messages + full Notion
+  // fetches every 5 minutes for nothing.
+  const { kept, dropped } = await dedupeCandidates(env.DB, pages);
+
+  for (const page of kept) {
     await env.SYNC_QUEUE.send({
       type: "sync_page",
-      pageId,
+      pageId: page.id,
       sourceId: env.NOTION_DATA_SOURCE_ID || env.NOTION_DATABASE_ID,
     });
   }
 
-  console.log(`Cron: enqueued ${pages.length} changed pages since ${since}`);
+  // Advance the watermark to the newest candidate's last_edited_time (ascending
+  // sort → the last element) whenever there were any candidates — even if all
+  // were deduped, that proves they're already processed at that time. Written
+  // only after the enqueue loop succeeds: a mid-loop throw leaves the watermark
+  // untouched, so the next tick re-enqueues. Zero candidates → leave it untouched.
+  if (pages.length > 0) {
+    const newest = pages[pages.length - 1].last_edited_time;
+    await env.DB.prepare(
+      "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('last_sync_watermark', ?, datetime('now'))",
+    ).bind(newest).run();
+  }
+
+  console.log(`Cron: enqueued ${kept.length} changed pages (${dropped} deduped) since ${since}`);
 
   // ── Manifest regeneration (spec §6.1) ──
   // A page sync marks `manifest_dirty`; rebuild manifests/latest.json here so the
@@ -594,36 +613,101 @@ async function getLastSyncWatermark(db: D1Database): Promise<string | null> {
   }
 }
 
-async function queryChangedPages(
+/**
+ * Drop candidates already fully processed at their current Notion edit time
+ * (either synced, or hash-skipped via the queue consumer's skip path — both
+ * write `notion_last_edited_time`). Keep candidates with no D1 row or a
+ * different stored time.
+ *
+ * Queries D1 in chunks of 50 ids to stay clear of SQLite bind limits.
+ */
+async function dedupeCandidates(
+  db: D1Database,
+  candidates: Array<{ id: string; last_edited_time: string }>,
+): Promise<{ kept: Array<{ id: string; last_edited_time: string }>; dropped: number }> {
+  if (candidates.length === 0) return { kept: [], dropped: 0 };
+
+  // page_id → stored notion_last_edited_time (undefined = no row)
+  const stored = new Map<string, string | null>();
+  for (let i = 0; i < candidates.length; i += 50) {
+    const chunk = candidates.slice(i, i + 50);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const res = await db.prepare(
+      `SELECT page_id, notion_last_edited_time FROM source_pages WHERE page_id IN (${placeholders})`,
+    ).bind(...chunk.map((c) => c.id)).all<{ page_id: string; notion_last_edited_time: string | null }>();
+    for (const row of res.results) {
+      stored.set(row.page_id, row.notion_last_edited_time ?? null);
+    }
+  }
+
+  let dropped = 0;
+  const kept = candidates.filter((c) => {
+    const s = stored.get(c.id);
+    // Keep if no row, or the stored time differs from the Notion edit time.
+    if (s === undefined || s !== c.last_edited_time) return true;
+    dropped++;
+    return false;
+  });
+
+  return { kept, dropped };
+}
+
+export async function queryChangedPages(
   env: Env,
   since: string | null,
   limit = 50,
-): Promise<string[]> {
+): Promise<Array<{ id: string; last_edited_time: string }>> {
   const client = new NotionClient({
     token: env.NOTION_TOKEN,
     databaseId: env.NOTION_DATABASE_ID,
     dataSourceId: env.NOTION_DATA_SOURCE_ID || env.NOTION_DATABASE_ID,
   });
 
+  // Notion's last_edited_time is minute-granular and the cron filter uses `after`,
+  // so a page edited later within the watermark's minute would be permanently
+  // skipped. Subtract 60s from the stored watermark so that boundary minute is
+  // re-queried; re-enqueued pages are hash-skipped by the consumer, so the cost
+  // is bounded (at most one extra minute of pages per tick).
+  const effectiveSince = applyLookback(since);
+
   const result = await client.queryDatabase({
-    filter: buildQueryFilter({ since }),
+    filter: buildQueryFilter({ since: effectiveSince }),
+    // Oldest-first: lets us advance the watermark to the newest enqueued page
+    // (the slice's last element) and is the precondition for the boundary-run
+    // cap logic below.
+    sorts: [{ timestamp: "last_edited_time", direction: "ascending" }],
   });
 
-  const pageIds: string[] = [];
+  // Client-side guard mirrors the API filter as a defence against clock skew.
+  const filtered = result.results.filter(
+    (p) => !effectiveSince || p.last_edited_time > effectiveSince,
+  );
 
-  for (const page of result.results) {
-    // Safety-net watermark check: the API filter handles this via last_edited_time.after,
-    // but we keep the client-side guard as a defence against clock skew or filter gaps.
-    if (since && page.last_edited_time <= since) continue;
-
-    pageIds.push(page.id);
-
-    // Cap at the per-tick limit (MAX_PAGES_PER_CRON) — queryDatabase already fetched
-    // all matching pages via its internal pagination loop; we just slice here.
-    if (pageIds.length >= limit) break;
+  // Cap at the per-tick limit (MAX_PAGES_PER_CRON). queryDatabase already fetched
+  // all matching pages via its internal pagination loop; we slice client-side.
+  let end = Math.min(limit, filtered.length);
+  if (end > 0 && end < filtered.length) {
+    // If the page at the cut boundary shares its last_edited_time with the next
+    // page(s), extend the slice through the entire equal-timestamp run. Otherwise
+    // advancing the watermark past that minute would permanently skip the
+    // equal-timestamp remainder (the original data-loss bug). The slice may
+    // therefore slightly exceed `limit`.
+    const boundaryTime = filtered[end - 1].last_edited_time;
+    while (end < filtered.length && filtered[end].last_edited_time === boundaryTime) {
+      end++;
+    }
   }
 
-  return pageIds;
+  return filtered.slice(0, end).map((p) => ({ id: p.id, last_edited_time: p.last_edited_time }));
+}
+
+/**
+ * Subtract 60 seconds from an ISO watermark (or return null for a full query).
+ * See {@link queryChangedPages} for why the same-minute lookback is required.
+ */
+function applyLookback(since: string | null): string | null {
+  if (!since) return null;
+  return new Date(new Date(since).getTime() - 60_000).toISOString();
 }
 
 export default {
