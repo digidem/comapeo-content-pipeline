@@ -279,6 +279,75 @@ describe("buildManifestFromStorage", () => {
     expect(manifest.docs).toEqual([]);
     expect(skipped).toEqual([]);
   });
+
+  it("routes a transient storage.get throw to readErrors, not skipped", async () => {
+    const valid: PageMetadata = { ...basePage, page_id: "p1", status: "active" };
+    const storage = memStorage({
+      "pages/p1/metadata.json": JSON.stringify(valid),
+      "pages/p2/metadata.json": JSON.stringify({ ...basePage, page_id: "p2", status: "active" }),
+    });
+    // p2's get throws — a transient R2/network hiccup, not a corrupt blob.
+    const realGet = storage.get;
+    storage.get = async (key) => {
+      if (key === "pages/p2/metadata.json") throw new Error("R2 transient");
+      return realGet(key);
+    };
+
+    const { manifest, skipped, readErrors } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+
+    expect(manifest.docs).toHaveLength(1);
+    expect(manifest.docs[0].page_id).toBe("p1");
+    expect(readErrors).toEqual(["pages/p2/metadata.json"]);
+    // The transient key must not be confused with a permanent parse/schema failure.
+    expect(skipped).toEqual([]);
+  });
+
+  it("routes a vanished key (get returns null) to readErrors, not skipped", async () => {
+    const valid: PageMetadata = { ...basePage, page_id: "p1", status: "active" };
+    const storage = memStorage({
+      "pages/p1/metadata.json": JSON.stringify(valid),
+      "pages/p2/metadata.json": JSON.stringify({ ...basePage, page_id: "p2", status: "active" }),
+    });
+    // p2 vanished between list and get.
+    const realGet = storage.get;
+    storage.get = async (key) => {
+      if (key === "pages/p2/metadata.json") return null;
+      return realGet(key);
+    };
+
+    const { skipped, readErrors } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+
+    expect(readErrors).toEqual(["pages/p2/metadata.json"]);
+    expect(skipped).toEqual([]);
+  });
+
+  it("keeps corrupt-JSON blobs in skipped alongside a transient get throw in readErrors", async () => {
+    const valid: PageMetadata = { ...basePage, page_id: "p1", status: "active" };
+    const storage = memStorage({
+      "pages/p1/metadata.json": JSON.stringify(valid),
+      "pages/p2/metadata.json": "{not valid json", // permanent → skipped
+      "pages/p3/metadata.json": JSON.stringify({ ...basePage, page_id: "p3", status: "active" }),
+    });
+    const realGet = storage.get;
+    storage.get = async (key) => {
+      if (key === "pages/p3/metadata.json") throw new Error("R2 transient"); // transient → readErrors
+      return realGet(key);
+    };
+
+    const { skipped, readErrors } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+
+    expect(skipped).toEqual(["pages/p2/metadata.json"]);
+    expect(readErrors).toEqual(["pages/p3/metadata.json"]);
+  });
 });
 
 // ── manifestElementType ──

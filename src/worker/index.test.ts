@@ -352,6 +352,41 @@ describe("Worker HTTP routes", () => {
       expect(putKeys).not.toContain("manifests/latest.json");
       expect(putKeys.some((k) => k.startsWith("manifests/versions/"))).toBe(false);
     });
+
+    it("returns 503 and writes no manifest on transient storage read failures", async () => {
+      const objects = new Map([
+        ["pages/p1/metadata.json", JSON.stringify(validMetadata())],
+        ["pages/p2/metadata.json", JSON.stringify(validMetadata({ page_id: "p2", slug: "two", docusaurus_id: "docs/two" }))],
+      ]);
+      env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+      // One metadata key's get throws — transient R2 hiccup, distinct from a corrupt blob.
+      (env.CONTENT_BUCKET.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: string) => {
+        if (key === "pages/p2/metadata.json") throw new Error("R2 transient");
+        const val = objects.get(key);
+        if (!val) return null;
+        return {
+          key,
+          size: val.length,
+          body: null as unknown as ReadableStream,
+          arrayBuffer: async () => new TextEncoder().encode(val).buffer,
+          text: async () => val,
+        };
+      });
+
+      const res = await request(app, "/admin/manifest/regenerate", {
+        method: "POST",
+        headers: { Authorization: "Bearer test-admin-token" },
+      }, env);
+      expect(res.status).toBe(503);
+      const body = await res.json() as { error: string; read_errors: number };
+      expect(body.error).toMatch(/transient storage read failures/);
+      expect(body.read_errors).toBe(1);
+
+      // No manifest write occurred — the existing manifest is left intact.
+      const puts = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
+      expect(puts.find((c) => c[0] === "manifests/latest.json")).toBeUndefined();
+      expect(puts.some((c) => (c[0] as string)?.startsWith("manifests/versions/"))).toBe(false);
+    });
   });
 });
 
@@ -833,5 +868,98 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     // No manifest write.
     const puts = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
     expect(puts.find((c) => c[0] === "manifests/latest.json")).toBeUndefined();
+  });
+
+  it("manifest_dirty=1: clears the flag to 0 BEFORE the rebuild writes the manifest (call order)", async () => {
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+
+    (env.DB.first as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ value: "1" });
+
+    const objects = new Map([
+      ["pages/p1/metadata.json", JSON.stringify(validMetadata())],
+    ]);
+    env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    const putMock = env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>;
+
+    // The "clear to 0" prepare call.
+    const clearIdx = prepareMock.mock.calls.findIndex(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("'manifest_dirty', '0'"),
+    );
+    expect(clearIdx).toBeGreaterThanOrEqual(0);
+    // The latest.json put call.
+    const putIdx = putMock.mock.calls.findIndex((c) => c[0] === "manifests/latest.json");
+    expect(putIdx).toBeGreaterThanOrEqual(0);
+
+    // invocationCallOrder is a shared monotonic counter across all mocks.
+    const clearOrder = prepareMock.mock.invocationCallOrder[clearIdx];
+    const putOrder = putMock.mock.invocationCallOrder[putIdx];
+    // The clear MUST happen before the rebuild's manifest put.
+    expect(clearOrder).toBeLessThan(putOrder);
+  });
+
+  it("manifest_dirty=1: rebuild failure restores the flag to 1 (clear-then-restore)", async () => {
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+
+    (env.DB.first as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ value: "1" });
+
+    const objects = new Map([
+      ["pages/p1/metadata.json", JSON.stringify(validMetadata())],
+    ]);
+    env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+    // Make the manifest write fail → regenerateManifest throws → caught → flag restored.
+    (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("R2 write failed"));
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    // Flag was cleared first, then restored after the throw.
+    expect(findPrepareCall(prepareMock, "'manifest_dirty', '0'")).toBeDefined();
+    expect(findPrepareCall(prepareMock, "'manifest_dirty', '1'")).toBeDefined();
+  });
+
+  it("manifest_dirty=1: transient read errors restore the flag to 1 and write no manifest", async () => {
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+
+    (env.DB.first as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ value: "1" });
+
+    const objects = new Map([
+      ["pages/p1/metadata.json", JSON.stringify(validMetadata())],
+      ["pages/p2/metadata.json", JSON.stringify(validMetadata({ page_id: "p2", slug: "two", docusaurus_id: "docs/two" }))],
+    ]);
+    env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+    // One metadata key's get throws — transient read error → regenerateManifest returns read_errors.
+    (env.CONTENT_BUCKET.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: string) => {
+      if (key === "pages/p2/metadata.json") throw new Error("R2 transient");
+      const val = objects.get(key);
+      if (!val) return null;
+      return {
+        key,
+        size: val.length,
+        body: null as unknown as ReadableStream,
+        arrayBuffer: async () => new TextEncoder().encode(val).buffer,
+        text: async () => val,
+      };
+    });
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    // No manifest write — the old manifest is left intact.
+    const puts = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
+    expect(puts.find((c) => c[0] === "manifests/latest.json")).toBeUndefined();
+
+    // Flag cleared first, then restored after the read_errors status.
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "'manifest_dirty', '0'")).toBeDefined();
+    expect(findPrepareCall(prepareMock, "'manifest_dirty', '1'")).toBeDefined();
   });
 });

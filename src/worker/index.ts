@@ -255,6 +255,13 @@ app.post("/admin/manifest/regenerate", async (c: Context) => {
     return c.json({ error: "refusing to clobber non-empty manifest with 0-doc result" }, 409);
   }
 
+  if (result.status === "read_errors") {
+    return c.json(
+      { error: "transient storage read failures; manifest not regenerated", read_errors: result.readErrorsCount },
+      503,
+    );
+  }
+
   return c.json({
     regenerated: true,
     docs_count: result.docsCount,
@@ -455,22 +462,38 @@ export async function scheduledHandler(
   ).first<{ value: string }>();
 
   if (dirtyRow?.value === "1") {
+    // Clear the flag BEFORE rebuilding. A page sync that lands mid-rebuild writes its
+    // metadata blob and re-marks dirty="1"; clearing first means that "1" survives (the
+    // clear already happened) and the next tick rebuilds again. This inverts the old
+    // rebuild-then-clear order, where a mid-rebuild sync's "1" was overwritten by the
+    // clear — leaving manifests/latest.json stale indefinitely if no further edits ever
+    // arrived. On any rebuild failure (throw, clobber-refusal, or transient read errors)
+    // we restore "1" below so the next tick retries.
+    await env.DB.prepare(
+      "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '0', datetime('now'))",
+    ).run();
     try {
       const result = await regenerateManifest(env);
-      if (result.status === "clobbered") {
-        // Leave the flag dirty so the next tick retries; the existing manifest is preserved.
-        console.warn("Cron: refusing to clobber non-empty manifest with 0-doc result; leaving manifest_dirty set");
-      } else {
-        // Benign race: a sync landing mid-rebuild may be cleared along with this, but
-        // its change re-marks dirty — the 5-min cron provides eventual consistency.
-        await env.DB.prepare(
-          "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '0', datetime('now'))",
-        ).run();
+      if (result.status === "written") {
         console.log(`Cron: rebuilt manifest (${result.docsCount} docs, ${result.skippedCount} skipped)`);
+      } else {
+        // Clobber-refusal or read_errors: the existing manifest is left intact. Restore
+        // the flag so the next tick retries.
+        await env.DB.prepare(
+          "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '1', datetime('now'))",
+        ).run();
+        if (result.status === "clobbered") {
+          console.warn("Cron: refusing to clobber non-empty manifest with 0-doc result; restored manifest_dirty");
+        } else {
+          console.warn(`Cron: ${result.readErrorsCount} transient storage read failures; left old manifest, restored manifest_dirty`);
+        }
       }
     } catch (err) {
-      // Flag stays dirty (never cleared on failure) → retried next cron tick.
-      console.error("Cron: manifest rebuild failed; leaving manifest_dirty set:", err);
+      // Rebuild threw (R2/parse error): restore the flag so the next tick retries.
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '1', datetime('now'))",
+      ).run();
+      console.error("Cron: manifest rebuild failed; restored manifest_dirty:", err);
     }
   }
 }
@@ -502,9 +525,10 @@ function r2ManifestStorage(bucket: R2Bucket): ManifestStorage {
 }
 
 interface RegenResult {
-  status: "written" | "clobbered";
+  status: "written" | "clobbered" | "read_errors";
   docsCount: number;
   skippedCount: number;
+  readErrorsCount: number;
 }
 
 /**
@@ -516,10 +540,23 @@ interface RegenResult {
  */
 async function regenerateManifest(env: Env): Promise<RegenResult> {
   const storage = r2ManifestStorage(env.CONTENT_BUCKET);
-  const { manifest, skipped } = await buildManifestFromStorage(storage, {
+  const { manifest, skipped, readErrors } = await buildManifestFromStorage(storage, {
     databaseId: env.NOTION_DATABASE_ID,
     dataSourceId: env.NOTION_DATA_SOURCE_ID,
   });
+
+  // Transient storage read failures (a `get` threw or returned null): do NOT
+  // publish a partial manifest. A consumer running `docs:pull --clean-orphans`
+  // against a partial manifest would delete the unread-but-valid docs. Leave the
+  // existing manifest intact and let the caller retry next tick.
+  if (readErrors.length > 0) {
+    return {
+      status: "read_errors",
+      docsCount: manifest.docs.length,
+      skippedCount: skipped.length,
+      readErrorsCount: readErrors.length,
+    };
+  }
 
   const validated = ContentManifestSchema.parse(manifest);
 
@@ -530,7 +567,7 @@ async function regenerateManifest(env: Env): Promise<RegenResult> {
       try {
         const parsed = JSON.parse(await existing.text());
         if (Array.isArray(parsed.docs) && parsed.docs.length > 0) {
-          return { status: "clobbered", docsCount: 0, skippedCount: skipped.length };
+          return { status: "clobbered", docsCount: 0, skippedCount: skipped.length, readErrorsCount: 0 };
         }
       } catch { /* unparseable existing manifest — allow overwrite */ }
     }
@@ -543,7 +580,7 @@ async function regenerateManifest(env: Env): Promise<RegenResult> {
     env.CONTENT_BUCKET.put(R2_PATHS.manifestVersion(timestamp), body, { httpMetadata: { contentType: "application/json" } }),
   ]);
 
-  return { status: "written", docsCount: validated.docs.length, skippedCount: skipped.length };
+  return { status: "written", docsCount: validated.docs.length, skippedCount: skipped.length, readErrorsCount: 0 };
 }
 
 /**

@@ -180,8 +180,10 @@ export interface ManifestStorage {
 
 export interface BuildManifestResult {
   manifest: ContentManifest;
-  /** Keys of metadata blobs that failed to parse/validate (never throws). */
+  /** Keys of metadata blobs that failed to parse/validate — permanent; safe to skip. */
   skipped: string[];
+  /** Keys whose `storage.get` threw or returned null — transient; caller must NOT publish a partial manifest. */
+  readErrors: string[];
 }
 
 /**
@@ -203,17 +205,23 @@ export async function buildManifestFromStorage(
 
   const pages: PageMetadata[] = [];
   const skipped: string[] = [];
+  const readErrors: string[] = [];
 
   for (const key of metadataKeys) {
+    // A `storage.get` throw (network/R2 hiccup) is transient — distinct from a
+    // corrupt blob. A null return (key vanished between list and get) is treated
+    // conservatively as transient too. Both land in `readErrors` so the caller
+    // can refuse to publish a partial manifest; only parse/schema failures are
+    // permanent and land in `skipped`.
     let raw: string | null;
     try {
       raw = await storage.get(key);
     } catch {
-      skipped.push(key);
+      readErrors.push(key);
       continue;
     }
     if (raw == null) {
-      skipped.push(key);
+      readErrors.push(key);
       continue;
     }
 
@@ -239,5 +247,5 @@ export async function buildManifestFromStorage(
     pages,
   });
 
-  return { manifest, skipped };
+  return { manifest, skipped, readErrors };
 }
