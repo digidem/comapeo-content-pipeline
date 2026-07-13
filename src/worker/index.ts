@@ -821,14 +821,31 @@ function applyLookback(since: string | null): string | null {
 }
 
 /**
- * Canonical JSON of a metadata object minus the volatile edit timestamp, for
- * the queue consumer's unchanged-skip comparison. Both sides are produced by
- * the same convertPageData shape, so key order is stable; blobs written by an
- * older code shape simply fail the comparison and take the (idempotent) full
- * write path once.
+ * Canonical JSON of a metadata object minus its volatile fields, for the queue
+ * consumer's unchanged-skip comparison:
+ * - `notion_last_edited_time` bumps on every edit (that's what enqueued us);
+ * - `raw_hash` covers the raw page JSON, which embeds signed asset URLs and
+ *   the edit timestamp — it changes on every fetch;
+ * - `assets[].original_url` is a signed Notion URL whose signature rotates;
+ *   the content-addressed `r2_key`/`sha256` are the stable identity.
+ * Without these exclusions an asset page would NEVER match the gate and every
+ * redelivery would rewrite all artifacts (spec §16.2 requires unchanged pages
+ * to skip). Both sides are produced by the same convertPageData shape, so key
+ * order is stable; blobs written by an older code shape simply fail the
+ * comparison and take the (idempotent) full write path once.
  */
 function stableMetadataJson(m: Record<string, unknown>): string {
-  return JSON.stringify({ ...m, notion_last_edited_time: undefined });
+  const assets = Array.isArray(m.assets)
+    ? m.assets.map((a) =>
+        a && typeof a === "object" ? { ...(a as Record<string, unknown>), original_url: undefined } : a,
+      )
+    : m.assets;
+  return JSON.stringify({
+    ...m,
+    notion_last_edited_time: undefined,
+    raw_hash: undefined,
+    assets,
+  });
 }
 
 export default {

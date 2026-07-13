@@ -730,6 +730,71 @@ describe("queue consumer", () => {
     expect(findPrepareCall(prepareMock, "'failed'")).toBeDefined();
     expect(findPrepareCall(prepareMock, "INSERT OR REPLACE INTO source_pages")).toBeUndefined();
     expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeUndefined();
+    // The ClassifiedError(NETWORK) must reach the retry gate — the message is
+    // re-queued, not acked (a plain Error classifies unknown and is lost).
+    expect(batch.retryAll).toHaveBeenCalled();
+  });
+
+  it("asset pages still skip when only raw_hash and signed original_url rotated", async () => {
+    // Rotating signed Notion URLs change assets[].original_url and raw_hash on
+    // every fetch; the stable-metadata gate must ignore both or asset pages
+    // would rewrite artifacts on every redelivery (spec §16.2).
+    const fixturePath = join(__dirname, "../../test/fixtures/notion/images.json");
+    const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));
+
+    const armImagesFetch = () => {
+      const pageResponse = {
+        id: "test-page-id",
+        last_edited_time: "2026-01-01T00:00:00.000Z",
+        properties: {
+          "Content elements": {
+            id: "title", type: "title",
+            title: [{ type: "text", text: { content: "Pics" }, plain_text: "Pics", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+          },
+        },
+      };
+      fetchMock
+        .mockResolvedValueOnce(new Response(JSON.stringify(pageResponse), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ object: "list", results: fixtureBlocks.results, next_cursor: null, has_more: false }), { status: 200 }))
+        .mockResolvedValue(new Response(new Uint8Array([137, 80, 78, 71]), { status: 200, headers: { "content-type": "image/png" } }));
+    };
+
+    // Seed run writes the real blob (with assets).
+    armImagesFetch();
+    env.DB.first.mockResolvedValue(null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await queueHandler(buildMessageBatch("test-page-id", "job-seed-assets") as any, env, {} as any);
+
+    // Simulate the rotation: stored blob carries a DIFFERENT raw_hash and
+    // original_url than the fresh extraction will produce.
+    const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
+    const stored = await bucket.get("pages/test-page-id/metadata.json");
+    const blob = JSON.parse(await stored!.text());
+    expect(Array.isArray(blob.assets) && blob.assets.length > 0).toBe(true);
+    blob.raw_hash = "sha256:rotated-raw";
+    blob.assets = blob.assets.map((a: Record<string, unknown>) => ({ ...a, original_url: "https://notion.example/rotated?sig=zzz" }));
+    await bucket.put("pages/test-page-id/metadata.json", JSON.stringify(blob));
+
+    // D1 row built from the blob's own stable fields → row pre-filter passes.
+    (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mockClear();
+    (env.DB.prepare as ReturnType<typeof vi.fn>).mockClear();
+    armImagesFetch();
+    env.DB.first.mockResolvedValue({
+      content_hash: blob.content_hash,
+      status: blob.status,
+      title: blob.title,
+      locale: blob.locale,
+      section: blob.section,
+      section_order: blob.section_order,
+      slug: blob.slug,
+      r2_doc_key: `docs/${blob.locale}/docs/${blob.slug}.md`,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await queueHandler(buildMessageBatch("test-page-id", "job-rotated") as any, env, {} as any);
+
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "skipped")).toBeDefined();
+    expect((env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 
   it("records failure when Notion API errors", async () => {
