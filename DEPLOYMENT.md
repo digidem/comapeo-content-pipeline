@@ -42,10 +42,12 @@ Pulls every page from Notion into `./output` (canonical Markdown, per-page metad
 ## Step 2 — Materialize + verify locally
 
 ```bash
-bash scripts/sync-to-comapeo-docs.sh
+DOCS_DIR="$COMAPEO_DOCS" bash scripts/sync-to-comapeo-docs.sh
 ```
 
-This one script does `docs:pull --all --clean-orphans`, rsyncs the result into `../comapeo-docs/{docs,i18n,static/images/notion}` (scoped deletes — it never touches hand-maintained files outside those trees), and runs a full local Docusaurus production build. **Do not proceed past a failed build here.**
+The script reads `$DOCS_DIR` (not `$COMAPEO_DOCS`) and defaults it to `../comapeo-docs` relative to this repo — pass it explicitly as shown above so it always targets the checkout you set in Prerequisites, regardless of where it's actually cloned.
+
+This one script does `docs:pull --all --clean-orphans`, rsyncs the result into `../comapeo-docs/{docs,i18n,static/images/notion}` (scoped deletes — it never touches hand-maintained files outside those trees), and runs a local Docusaurus build (`npx docusaurus build`, not the `IS_PRODUCTION=true` build Step 4 does — good enough to catch MDX/asset errors early, not a substitute for Step 4). **Do not proceed past a failed build here.**
 
 Serve and spot-check it before continuing:
 
@@ -126,6 +128,8 @@ git add -f docs/ i18n/ static/images/notion/
 git commit -m "content: regenerate docs/i18n/static from comapeo-content-pipeline ($(date +%F))"
 git push origin HEAD:content --force-with-lease
 ```
+
+This rewrites history on a shared branch — `--force-with-lease` blocks it if someone else pushed to `content` since your `git fetch` above, rather than clobbering them. If it's rejected, re-fetch, re-check Gotcha 1 (the live SHA may have moved too), and redo Step 3 on top of the new tip before retrying — don't reach for plain `--force`.
 
 ## Step 6 — Trigger the production deploy
 
