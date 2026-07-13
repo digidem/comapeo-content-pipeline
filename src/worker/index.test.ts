@@ -682,13 +682,19 @@ describe("queue consumer", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await queueHandler(batch as any, env, {} as any);
 
-    // Full path: artifacts written, manifest marked dirty, old doc key deleted.
+    // Full path: artifacts written, manifest marked dirty.
     const putKeys = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
     expect(putKeys).toContain("docs/en/docs/welcome.md");
     const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
     expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeDefined();
-    const deleteCalls = (env.CONTENT_BUCKET.delete as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
-    expect(deleteCalls).toContain("docs/en/docs/Old Section/welcome.md");
+
+    // The old doc is NOT deleted inline — the manifest still references it
+    // until the cron rebuild. It is queued as a stale_doc sync_state row.
+    const deleteCalls = (env.CONTENT_BUCKET.delete as ReturnType<typeof vi.fn>).mock.calls;
+    expect(deleteCalls.length).toBe(0);
+    const bindMock = env.DB.bind as ReturnType<typeof vi.fn>;
+    const bindCalls = bindMock.mock.calls as unknown[][];
+    expect(bindCalls.some((c) => c.includes("stale_doc:docs/en/docs/Old Section/welcome.md"))).toBe(true);
   });
 
   it("asset upload failure fails the job: no source_pages upsert, no manifest_dirty", async () => {
@@ -1083,6 +1089,35 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
   });
 
   // ── manifest_dirty rebuild (spec §6.1) ──
+
+  it("cron sweeps queued stale_doc keys only after a successful manifest write", async () => {
+    const db = env.DB as ReturnType<typeof mockD1Db>;
+    // Watermark read (null), then manifest_dirty read ("1").
+    db.first
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ value: "1" });
+    // Cron query returns no changed pages.
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+    // A valid metadata blob so the rebuild writes a non-empty manifest, plus a
+    // queued stale_doc row surfaced by the LIKE select.
+    const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
+    await bucket.put("pages/p1/metadata.json", JSON.stringify(validMetadata()));
+    db.all.mockImplementation(async () => ({
+      results: [{ key: "stale_doc:docs/en/docs/Old Section/welcome.md" }],
+      success: true,
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await scheduledHandler({} as never, env, {} as any);
+
+    const deleteCalls = (env.CONTENT_BUCKET.delete as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
+    expect(deleteCalls).toContain("docs/en/docs/Old Section/welcome.md");
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    // Manifest written before the sweep, and the queued row is removed.
+    expect(findPrepareCall(prepareMock, "DELETE FROM sync_state WHERE key = ?")).toBeDefined();
+    const putKeys = (bucket.put as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
+    expect(putKeys).toContain("manifests/latest.json");
+  });
 
   it("manifest_dirty=1: cron rebuilds manifest and resets flag to 0", async () => {
     // No changed pages from Notion.

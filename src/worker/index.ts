@@ -359,15 +359,16 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         continue;
       }
 
-      // A section/slug move changes the doc key — clean up the old object so a
-      // moved page doesn't leave a stale doc behind. Non-fatal: the manifest
-      // never references the old key, so this is hygiene, not correctness.
+      // A section/slug move changes the doc key. The old object must NOT be
+      // deleted here: manifests/latest.json still references it until the
+      // cron's dirty-flag rebuild, so an immediate delete would 404 manifest
+      // consumers for up to one cron interval. Queue it instead (one
+      // sync_state row per key — no read-modify-write race); the cron deletes
+      // queued keys only AFTER a successful manifest write.
       if (existing?.r2_doc_key && existing.r2_doc_key !== docKey) {
-        try {
-          await env.CONTENT_BUCKET.delete(existing.r2_doc_key);
-        } catch (err) {
-          console.warn(`Failed to delete moved doc ${existing.r2_doc_key}:`, err);
-        }
+        await env.DB.prepare(
+          "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES (?, '1', datetime('now'))",
+        ).bind(`stale_doc:${existing.r2_doc_key}`).run();
       }
 
       // Write all artifacts to R2 in parallel
@@ -544,6 +545,22 @@ export async function scheduledHandler(
       const result = await regenerateManifest(env);
       if (result.status === "written") {
         console.log(`Cron: rebuilt manifest (${result.docsCount} docs, ${result.skippedCount} skipped)`);
+        // The fresh manifest no longer references moved-away doc keys — sweep
+        // the deletions the queue consumer deferred. Per-key rows: a failure
+        // leaves the row queued for the next tick; a success removes only its
+        // own row, so concurrent consumer appends are never lost.
+        const staleRows = await env.DB.prepare(
+          "SELECT key FROM sync_state WHERE key LIKE 'stale_doc:%'",
+        ).all<{ key: string }>();
+        for (const row of staleRows.results ?? []) {
+          const docKey = row.key.slice("stale_doc:".length);
+          try {
+            await env.CONTENT_BUCKET.delete(docKey);
+            await env.DB.prepare("DELETE FROM sync_state WHERE key = ?").bind(row.key).run();
+          } catch (err) {
+            console.warn(`Cron: failed to delete stale doc ${docKey}; will retry next tick:`, err);
+          }
+        }
       } else {
         // Clobber-refusal or read_errors: the existing manifest is left intact. Restore
         // the flag so the next tick retries.

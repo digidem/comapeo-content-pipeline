@@ -110,6 +110,29 @@ export class NotionClient {
     this.lastRequestTime = Date.now();
   }
 
+  /**
+   * Retry wrapper for @notionhq/client SDK calls, mirroring the raw-fetch
+   * path's policy (the SDK itself never retries): 429 waits ~1s per attempt
+   * (the SDK error does not surface Retry-After), 5xx/529 backs off
+   * exponentially capped at 30s, anything else rethrows immediately.
+   */
+  private async withSdkRetry<T>(fn: () => Promise<T>, retries = 4): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        const status = (err as { status?: number }).status;
+        const retryable = status === 429 || status === 529 || (typeof status === "number" && status >= 500);
+        if (!retryable || attempt >= retries) throw err;
+        const waitMs =
+          status === 429 ? 1000 * (attempt + 1) : Math.min(1000 * Math.pow(2, attempt), 30000);
+        console.warn(`Notion SDK ${status}; retrying in ${waitMs}ms (attempt ${attempt + 1}/${retries})`);
+        await sleep(waitMs);
+        await this.throttle();
+      }
+    }
+  }
+
   // ── HTTP wrapper with retry ──
 
   private async request<T>(
@@ -259,14 +282,18 @@ export class NotionClient {
       await this.throttle();
 
       // The SDK filter type is a strict union; we cast to satisfy TypeScript while the
-      // actual shape is validated by Notion's API at runtime.
-      const resp = await sdkClient.dataSources.query({
-        data_source_id: dataSourceId,
-        ...(params.filter ? { filter: params.filter as never } : {}),
-        sorts: (params.sorts ?? defaultSorts) as never,
-        ...(cursor ? { start_cursor: cursor } : {}),
-        page_size: params.pageSize ?? NOTION_API.DEFAULT_PAGE_SIZE,
-      });
+      // actual shape is validated by Notion's API at runtime. The SDK does not retry,
+      // so the call is wrapped with the same 429/5xx backoff policy the raw-fetch
+      // path uses (spec §8.5 / §16.4 — back off instead of aborting the sync).
+      const resp = await this.withSdkRetry(() =>
+        sdkClient.dataSources.query({
+          data_source_id: dataSourceId,
+          ...(params.filter ? { filter: params.filter as never } : {}),
+          sorts: (params.sorts ?? defaultSorts) as never,
+          ...(cursor ? { start_cursor: cursor } : {}),
+          page_size: params.pageSize ?? NOTION_API.DEFAULT_PAGE_SIZE,
+        }),
+      );
 
       for (const item of resp.results) {
         if (item.object === "page") {
