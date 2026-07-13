@@ -297,12 +297,29 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
       const converted = await convertPageData({ pageId, rawPage: page, rawBlocks });
       const { metadata, canoncialMd, hash } = converted;
 
-      // Skip logic: compare content_hash + status with stored row (spec §8.2)
+      // Skip logic (spec §8.2): the content hash covers only the markdown BODY,
+      // so a title/locale/section/order/slug edit leaves it unchanged while the
+      // frontmatter, R2 doc key, and manifest entry all need rewriting. Skip
+      // only when every artifact-affecting field matches the stored row.
       const existing = await env.DB.prepare(
-        "SELECT content_hash, status FROM source_pages WHERE page_id = ?",
-      ).bind(pageId).first<{ content_hash: string; status: string }>();
+        "SELECT content_hash, status, title, locale, section, section_order, slug, r2_doc_key FROM source_pages WHERE page_id = ?",
+      ).bind(pageId).first<{
+        content_hash: string; status: string; title: string; locale: string | null;
+        section: string | null; section_order: number | null; slug: string | null;
+        r2_doc_key: string | null;
+      }>();
 
-      if (existing && existing.content_hash === metadata.content_hash && existing.status === metadata.status) {
+      const unchanged =
+        existing &&
+        existing.content_hash === metadata.content_hash &&
+        existing.status === metadata.status &&
+        existing.title === metadata.title &&
+        existing.locale === metadata.locale &&
+        existing.section === metadata.section &&
+        existing.section_order === metadata.section_order &&
+        existing.slug === metadata.slug;
+
+      if (unchanged) {
         console.log(`Skipping page ${pageId}: content unchanged`);
         await env.DB.prepare(
           "UPDATE sync_jobs SET status = 'skipped', error = 'content unchanged', finished_at = datetime('now') WHERE id = ?",
@@ -322,6 +339,17 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
       const metadataKey = R2_PATHS.metadata(pageId);
       const docKey = R2_PATHS.doc(metadata.locale, metadata.section, metadata.slug);
 
+      // A section/slug move changes the doc key — clean up the old object so a
+      // moved page doesn't leave a stale doc behind. Non-fatal: the manifest
+      // never references the old key, so this is hygiene, not correctness.
+      if (existing?.r2_doc_key && existing.r2_doc_key !== docKey) {
+        try {
+          await env.CONTENT_BUCKET.delete(existing.r2_doc_key);
+        } catch (err) {
+          console.warn(`Failed to delete moved doc ${existing.r2_doc_key}:`, err);
+        }
+      }
+
       // Write all artifacts to R2 in parallel
       await Promise.all([
         env.CONTENT_BUCKET.put(metadataKey, JSON.stringify(metadata, null, 2), { httpMetadata: { contentType: "application/json" } }),
@@ -330,13 +358,23 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         env.CONTENT_BUCKET.put(R2_PATHS.rawBlocks(pageId), JSON.stringify(rawBlocks, null, 2), { httpMetadata: { contentType: "application/json" } }),
       ]);
 
-      // Upload rehosted asset binaries to R2 (non-fatal on failure)
+      // Upload rehosted asset binaries to R2. Failures FAIL the job: the doc's
+      // markdown references assets/<sha256> paths, and the D1 upsert below
+      // records the (stable) content hash — swallowing a transient upload
+      // failure would make every future sync hash-skip, leaving the image
+      // missing in R2 permanently. Throwing lets the queue retry; the artifact
+      // writes above are idempotent.
+      const failedAssets: string[] = [];
       for (const asset of converted.assetBinaries) {
         try {
           await env.CONTENT_BUCKET.put(asset.r2Key, asset.data.buffer as ArrayBuffer, { httpMetadata: { contentType: asset.contentType } });
         } catch (err) {
           console.warn(`Failed to upload asset ${asset.r2Key}:`, err);
+          failedAssets.push(asset.r2Key);
         }
+      }
+      if (failedAssets.length > 0) {
+        throw new Error(`asset upload failed for ${failedAssets.length} object(s): ${failedAssets.join(", ")}`);
       }
 
       // Upsert source_pages row

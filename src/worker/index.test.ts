@@ -565,11 +565,17 @@ describe("queue consumer", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(pageResponse), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(blocksResponse), { status: 200 }));
 
-    // D1 returns matching content_hash and status → should skip
+    // D1 returns a row matching EVERY artifact-affecting field → should skip
     // (status will be "draft" since fixture has no Publish Status property)
     env.DB.first.mockResolvedValue({
       content_hash: expectedHash,
       status: "draft",
+      title: "Welcome",
+      locale: "en",
+      section: null,
+      section_order: null,
+      slug: "welcome",
+      r2_doc_key: "docs/en/docs/welcome.md",
     });
 
     const batch = buildMessageBatch("test-page-id", "job-skip");
@@ -595,6 +601,93 @@ describe("queue consumer", () => {
 
     // Skip path must NOT advance the watermark (cron owns it) NOR mark the manifest dirty
     expect(findPrepareCall(prepareMock, "VALUES ('last_sync_watermark'")).toBeUndefined();
+    expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeUndefined();
+  });
+
+  it("metadata-only change (same hash+status, different section) takes the full path and deletes the moved doc", async () => {
+    const fixturePath = join(__dirname, "../../test/fixtures/notion/simple-page.json");
+    const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));
+    const rawMarkdown = convertBlocks(fixtureBlocks as NotionBlockList);
+    const markdownBody = postProcessMarkdown(rawMarkdown, "Welcome");
+    const expectedHash = await contentHash(markdownBody);
+
+    const pageResponse = {
+      id: "test-page-id",
+      last_edited_time: "2026-01-01T00:00:00.000Z",
+      properties: {
+        "Content elements": {
+          id: "title", type: "title",
+          title: [{ type: "text", text: { content: "Welcome" }, plain_text: "Welcome", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+        },
+      },
+    };
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify(pageResponse), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ object: "list", results: fixtureBlocks.results, next_cursor: null, has_more: false }), { status: 200 }));
+
+    // Same hash + status, but the stored row carries an OLD section → doc key moved.
+    env.DB.first.mockResolvedValue({
+      content_hash: expectedHash,
+      status: "draft",
+      title: "Welcome",
+      locale: "en",
+      section: "Old Section",
+      section_order: 3,
+      slug: "welcome",
+      r2_doc_key: "docs/en/docs/Old Section/welcome.md",
+    });
+
+    const batch = buildMessageBatch("test-page-id", "job-meta-change");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await queueHandler(batch as any, env, {} as any);
+
+    // Full path: artifacts written, manifest marked dirty, old doc key deleted.
+    const putKeys = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
+    expect(putKeys).toContain("docs/en/docs/welcome.md");
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeDefined();
+    const deleteCalls = (env.CONTENT_BUCKET.delete as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
+    expect(deleteCalls).toContain("docs/en/docs/Old Section/welcome.md");
+  });
+
+  it("asset upload failure fails the job: no source_pages upsert, no manifest_dirty", async () => {
+    // images.json fixture carries an image block → convertPageData downloads and
+    // rehosts it, producing assetBinaries whose R2 put we make throw.
+    const fixturePath = join(__dirname, "../../test/fixtures/notion/images.json");
+    const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));
+
+    const pageResponse = {
+      id: "test-page-id",
+      last_edited_time: "2026-01-01T00:00:00.000Z",
+      properties: {
+        "Content elements": {
+          id: "title", type: "title",
+          title: [{ type: "text", text: { content: "Pics" }, plain_text: "Pics", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+        },
+      },
+    };
+    // Fetch order: getPage, getBlockChildren, then asset download(s).
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify(pageResponse), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ object: "list", results: fixtureBlocks.results, next_cursor: null, has_more: false }), { status: 200 }))
+      .mockResolvedValue(new Response(new Uint8Array([137, 80, 78, 71]), { status: 200, headers: { "content-type": "image/png" } }));
+
+    env.DB.first.mockResolvedValue(null); // no existing row → full path
+
+    const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
+    const realPut = bucket.put.getMockImplementation()!;
+    bucket.put.mockImplementation(async (key: string, value: never) => {
+      if (key.startsWith("assets/")) throw new Error("R2 hiccup");
+      return realPut(key, value);
+    });
+
+    const batch = buildMessageBatch("test-page-id", "job-asset-fail");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await queueHandler(batch as any, env, {} as any);
+
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "'failed'")).toBeDefined();
+    expect(findPrepareCall(prepareMock, "INSERT OR REPLACE INTO source_pages")).toBeUndefined();
     expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeUndefined();
   });
 
