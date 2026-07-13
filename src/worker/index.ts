@@ -549,16 +549,26 @@ export async function scheduledHandler(
         // the deletions the queue consumer deferred. Per-key rows: a failure
         // leaves the row queued for the next tick; a success removes only its
         // own row, so concurrent consumer appends are never lost.
+        //
+        // Round-trip guard: a page moved A→B and back B→A queues BOTH keys;
+        // A is current again. Never delete a key some page currently lives at
+        // (source_pages.r2_doc_key is the authoritative current key) — just
+        // drop its queue row.
         const staleRows = await env.DB.prepare(
           "SELECT key FROM sync_state WHERE key LIKE 'stale_doc:%'",
         ).all<{ key: string }>();
         for (const row of staleRows.results ?? []) {
           const docKey = row.key.slice("stale_doc:".length);
           try {
-            await env.CONTENT_BUCKET.delete(docKey);
+            const current = await env.DB.prepare(
+              "SELECT 1 AS one FROM source_pages WHERE r2_doc_key = ?",
+            ).bind(docKey).first<{ one: number }>();
+            if (!current) {
+              await env.CONTENT_BUCKET.delete(docKey);
+            }
             await env.DB.prepare("DELETE FROM sync_state WHERE key = ?").bind(row.key).run();
           } catch (err) {
-            console.warn(`Cron: failed to delete stale doc ${docKey}; will retry next tick:`, err);
+            console.warn(`Cron: failed to sweep stale doc ${docKey}; will retry next tick:`, err);
           }
         }
       } else {

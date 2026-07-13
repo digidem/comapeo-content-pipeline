@@ -1119,6 +1119,32 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     expect(putKeys).toContain("manifests/latest.json");
   });
 
+  it("round-trip guard: a queued stale key that is current again is dequeued but NOT deleted", async () => {
+    const db = env.DB as ReturnType<typeof mockD1Db>;
+    // Watermark (null), manifest_dirty ("1"), then the sweep's current-key
+    // check returns a row → the key is a page's live doc again (A→B→A move).
+    db.first
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ value: "1" })
+      .mockResolvedValueOnce({ one: 1 });
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+    const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
+    await bucket.put("pages/p1/metadata.json", JSON.stringify(validMetadata()));
+    db.all.mockImplementation(async () => ({
+      results: [{ key: "stale_doc:docs/en/docs/intro.md" }],
+      success: true,
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await scheduledHandler({} as never, env, {} as any);
+
+    const deleteCalls = (bucket.delete as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
+    expect(deleteCalls).not.toContain("docs/en/docs/intro.md");
+    // The queue row is still removed — nothing left to retry.
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "DELETE FROM sync_state WHERE key = ?")).toBeDefined();
+  });
+
   it("manifest_dirty=1: cron rebuilds manifest and resets flag to 0", async () => {
     // No changed pages from Notion.
     fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));

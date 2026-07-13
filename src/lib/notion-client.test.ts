@@ -362,3 +362,67 @@ describe("queryDatabase (plan 5.3)", () => {
     expect(url).toContain("data_sources/db-fallback/query");
   });
 });
+
+describe("withSdkRetry (SDK 429/5xx retry policy)", () => {
+  // The SDK path (dataSources.query) never retries on its own; withSdkRetry
+  // mirrors the raw-fetch policy. Tested directly with fake timers so the
+  // backoff waits don't slow the suite.
+  type Retryable = { withSdkRetry<T>(fn: () => Promise<T>, retries?: number): Promise<T> };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("retries 429 twice then succeeds", async () => {
+    vi.useFakeTimers();
+    const client = new NotionClient({ token: "tok", databaseId: "db", maxRps: 999 }) as unknown as Retryable;
+    let calls = 0;
+    const fn = vi.fn().mockImplementation(async () => {
+      calls++;
+      if (calls < 3) throw Object.assign(new Error("rate limited"), { status: 429 });
+      return "ok";
+    });
+
+    const p = client.withSdkRetry(fn);
+    // 429 backoff: 1000ms after attempt 0, 2000ms after attempt 1 (+ throttle ~1ms).
+    await vi.advanceTimersByTimeAsync(1010);
+    await vi.advanceTimersByTimeAsync(2010);
+    await expect(p).resolves.toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries 529 with exponential backoff then succeeds", async () => {
+    vi.useFakeTimers();
+    const client = new NotionClient({ token: "tok", databaseId: "db", maxRps: 999 }) as unknown as Retryable;
+    let calls = 0;
+    const fn = vi.fn().mockImplementation(async () => {
+      calls++;
+      if (calls < 2) throw Object.assign(new Error("overloaded"), { status: 529 });
+      return "ok";
+    });
+
+    const p = client.withSdkRetry(fn);
+    await vi.advanceTimersByTimeAsync(1010); // 2^0 * 1000 + throttle
+    await expect(p).resolves.toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("non-retryable status throws immediately without retry", async () => {
+    const client = new NotionClient({ token: "tok", databaseId: "db", maxRps: 999 }) as unknown as Retryable;
+    const fn = vi.fn().mockRejectedValue(Object.assign(new Error("bad filter"), { status: 400 }));
+    await expect(client.withSdkRetry(fn)).rejects.toThrow("bad filter");
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives up after the retry budget and rethrows", async () => {
+    vi.useFakeTimers();
+    const client = new NotionClient({ token: "tok", databaseId: "db", maxRps: 999 }) as unknown as Retryable;
+    const fn = vi.fn().mockRejectedValue(Object.assign(new Error("still down"), { status: 529 }));
+    const p = client.withSdkRetry(fn, 2);
+    p.catch(() => { /* asserted below; prevents unhandled rejection while timers advance */ });
+    await vi.advanceTimersByTimeAsync(1010);
+    await vi.advanceTimersByTimeAsync(2010);
+    await expect(p).rejects.toThrow("still down");
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+});
