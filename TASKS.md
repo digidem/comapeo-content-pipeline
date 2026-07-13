@@ -27,7 +27,8 @@ Full-output production build (2026-07-02): **46 broken links + 182 broken anchor
 - [x] ~~RAG chunk minimum size + tables split across chunks~~ — done 2026-07-10: merge-up rule folds sub-400-token split remainders into the previous chunk (≤ 960 ceiling); tables are atomic units like code fences. Golden chunks.json unchanged (existing corpus unaffected).
 - [x] ~~`validate` / `diff` CLI commands — no tests~~ — done 2026-07-10: extracted to `src/cli/validate-diff.ts` (docs-pull pattern, injected page fetcher), 13 hermetic tests.
 
-### 5. Recorded spec deviations (won't-fix unless a consumer needs them)
+### 5. Recorded spec deviations & accepted residuals (won't-fix unless a consumer needs them)
+- **Same-second stale-doc row (review round 15, non-blocking):** D1 timestamps are second-granular, so a `stale_doc:` row queued in the same second the last manifest rebuild started fails the strict `updated_at < manifest_rebuilt_at` eligibility until the next rebuild advances the marker. Consequence: an obsolete R2 doc object lingers a little longer; the live manifest never references it. Self-resolves at the next content change.
 Static audit (2026-07-09) found these intentional/harmless deviations — recorded so they stop resurfacing:
 - No `pages/{id}/canonical.{locale}.md(.mdx)` artifact; canonical markdown lives only at `docs/{locale}/docs/{section}/{slug}.md`. No `.mdx` emitted anywhere.
 - No `sync:changed` / `publish` CLI commands (Worker cron covers changed-page sync; nothing needs `publish`).
