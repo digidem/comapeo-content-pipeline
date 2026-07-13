@@ -394,6 +394,54 @@ describe("generateChunks — section coalescing + noise filtering (real-corpus a
   });
 });
 
+describe("generateChunks — fence-aware section splitting", () => {
+  it("headings inside fenced code are content, not sections", async () => {
+    const markdown = [
+      "## Real Heading",
+      "",
+      "Intro paragraph about markdown syntax.",
+      "",
+      "```markdown",
+      "## Fake Heading Inside Fence",
+      "Some example body.",
+      "### Another Fake One",
+      "```",
+      "",
+      "Closing remark after the example.",
+    ].join("\n");
+
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].heading_path).toEqual(["Real Heading"]);
+    // Fence stays balanced and the fake heading remains verbatim inside it.
+    const fenceLines = chunks[0].text.split("\n").filter((l) => l.startsWith("```"));
+    expect(fenceLines.length % 2).toBe(0);
+    expect(chunks[0].text).toContain("## Fake Heading Inside Fence");
+  });
+
+  it("a real heading after the closing fence still starts a new section", async () => {
+    const markdown = [
+      "## First",
+      "",
+      "w".repeat(450 * 4),
+      "",
+      "```md",
+      "## Fenced Fake",
+      "```",
+      "",
+      "## Second",
+      "",
+      "w".repeat(450 * 4),
+    ].join("\n");
+
+    const chunks = await generateChunks({ ...baseInput, markdownBody: markdown });
+    const paths = chunks.map((c) => c.heading_path.join(">"));
+    expect(paths.some((p) => p === "First")).toBe(true);
+    expect(paths.some((p) => p === "Second")).toBe(true);
+    expect(paths.some((p) => p.includes("Fenced Fake"))).toBe(false);
+  });
+});
+
 describe("generateChunksManifest", () => {
   it("generates a valid manifest", async () => {
     const chunks = await generateChunks({

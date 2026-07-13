@@ -143,7 +143,22 @@ function splitIntoSections(markdown: string): Section[] {
     currentLines = [];
   }
 
+  // Fence tracking: a `## …` line INSIDE a fenced code block (markdown examples
+  // in the docs) is content, not a document heading — treating it as one tears
+  // the fence across sections and fabricates heading_path entries.
+  let inFence = false;
+
   for (const line of lines) {
+    if (line.startsWith("```")) {
+      inFence = !inFence;
+      currentLines.push(line);
+      continue;
+    }
+    if (inFence) {
+      currentLines.push(line);
+      continue;
+    }
+
     const headingMatch = line.match(/^(#{1,6})\s+(.+)/);
     if (headingMatch) {
       flushSection();
