@@ -359,18 +359,6 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         continue;
       }
 
-      // A section/slug move changes the doc key. The old object must NOT be
-      // deleted here: manifests/latest.json still references it until the
-      // cron's dirty-flag rebuild, so an immediate delete would 404 manifest
-      // consumers for up to one cron interval. Queue it instead (one
-      // sync_state row per key — no read-modify-write race); the cron deletes
-      // queued keys only AFTER a successful manifest write.
-      if (existing?.r2_doc_key && existing.r2_doc_key !== docKey) {
-        await env.DB.prepare(
-          "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES (?, '1', datetime('now'))",
-        ).bind(`stale_doc:${existing.r2_doc_key}`).run();
-      }
-
       // Write order matters: the metadata blob is the COMMIT MARKER — manifest
       // rebuilds read pages/{id}/metadata.json, so it must land only after
       // every artifact it references. Assets first, then doc + raws, metadata
@@ -411,6 +399,18 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
       // 3. Metadata blob last — the commit marker.
       await env.CONTENT_BUCKET.put(metadataKey, JSON.stringify(metadata, null, 2), { httpMetadata: { contentType: "application/json" } });
 
+      // A section/slug move changes the doc key. The old object must NOT be
+      // deleted here: manifests/latest.json references it until the next
+      // rebuild. Queue it (one sync_state row per key) — queued AFTER the
+      // metadata commit above, so the sweep's eligibility rule ("row older
+      // than the last rebuild start") guarantees that rebuild read the
+      // post-move blob and the manifest no longer references the old key.
+      if (existing?.r2_doc_key && existing.r2_doc_key !== docKey) {
+        await env.DB.prepare(
+          "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES (?, 'queued', datetime('now'))",
+        ).bind(`stale_doc:${existing.r2_doc_key}`).run();
+      }
+
       // Upsert source_pages row
       await env.DB.prepare(`
         INSERT OR REPLACE INTO source_pages
@@ -435,22 +435,28 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         docKey,
       ).run();
 
-      // This page's doc key is current again — cancel any pending stale-doc
-      // deletion queued for it by an earlier move (A→B→A round trip), closing
-      // the window in which the sweep could target a live key.
-      await env.DB.prepare("DELETE FROM sync_state WHERE key = ?")
-        .bind(`stale_doc:${docKey}`).run();
-
       // Mark the manifest dirty so the next cron tick rebuilds manifests/latest.json
       // (spec §6.1; rebuilding inline would add latency to every page sync — the cron
       // batches it). This MUST directly follow the source_pages upsert: once the D1
-      // hash is updated, any failure below (sidebar regen, job bookkeeping) makes the
-      // queue retry take the hash-skip path, which never sets the flag — the manifest
-      // would stay stale indefinitely. Only the changed path sets this; the
-      // unchanged-skip path does not.
+      // hash is updated, any failure below (row cancellation, sidebar regen, job
+      // bookkeeping) makes the queue retry take the hash-skip path, which never sets
+      // the flag — the manifest would stay stale indefinitely. Only the changed path
+      // sets this; the unchanged-skip path does not.
       await env.DB.prepare(
         "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '1', datetime('now'))",
       ).run();
+
+      // Best-effort: this page's doc key is current again — cancel any pending
+      // stale-doc deletion queued for it by an earlier move (A→B→A round
+      // trip). Non-fatal: the sweep's ownership pre-check and its two-phase
+      // swept-confirmation are the correctness layers; this only narrows the
+      // window, so a failure here must not fail an already-committed sync.
+      try {
+        await env.DB.prepare("DELETE FROM sync_state WHERE key = ?")
+          .bind(`stale_doc:${docKey}`).run();
+      } catch (err) {
+        console.warn(`Failed to cancel stale_doc row for ${docKey}:`, err);
+      }
 
       // Record emitted artifacts
       const artifactRows: Array<[string, string, string, string | null, number]> = [
@@ -554,13 +560,21 @@ export async function scheduledHandler(
     await env.DB.prepare(
       "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '0', datetime('now'))",
     ).run();
+    // Capture the rebuild START time (D1 clock, same format as row updated_at).
+    // Recorded as manifest_rebuilt_at only on success: a stale_doc row queued
+    // BEFORE this moment was queued after its move's metadata commit (consumer
+    // write order), so a rebuild starting now reads the post-move blob — the
+    // manifest provably no longer references that row's key.
+    const rebuildStart = await env.DB.prepare("SELECT datetime('now') AS t").first<{ t: string }>();
     try {
       const result = await regenerateManifest(env);
       if (result.status === "written") {
         console.log(`Cron: rebuilt manifest (${result.docsCount} docs, ${result.skippedCount} skipped)`);
-        // The fresh manifest no longer references moved-away doc keys — sweep
-        // the deletions the queue consumer deferred.
-        await sweepStaleDocs(env);
+        if (rebuildStart?.t) {
+          await env.DB.prepare(
+            "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_rebuilt_at', ?, datetime('now'))",
+          ).bind(rebuildStart.t).run();
+        }
       } else {
         // Clobber-refusal or read_errors: the existing manifest is left intact. Restore
         // the flag so the next tick retries.
@@ -580,36 +594,45 @@ export async function scheduledHandler(
       ).run();
       console.error("Cron: manifest rebuild failed; restored manifest_dirty:", err);
     }
-  } else {
-    // Clean tick (dirty != "1"): every consumer change — including whichever
-    // move queued a stale row — was incorporated by an earlier rebuild, so the
-    // live manifest references none of the queued keys and sweeping is safe.
-    // Without this, a deletion that failed in the dirty tick would wait for
-    // the NEXT content change, which may never come.
-    await sweepStaleDocs(env);
   }
+
+  // The sweep runs EVERY tick: eligibility is decided per row by the SQL age
+  // filter (row older than the last successful rebuild start), not by the
+  // dirty flag — reading the flag once and sweeping later raced concurrent
+  // consumer moves.
+  await sweepStaleDocs(env);
 }
 
 /**
  * Delete R2 doc objects whose deletions the queue consumer deferred (moved
- * pages). Only called when the live manifest is known not to reference the
- * queued keys (right after a successful rebuild, or on a clean tick).
+ * pages). Correctness layers:
  *
- * Per-key sync_state rows: a failed delete stays queued for the next sweep; a
- * success removes only its own row, so concurrent consumer appends are never
- * lost.
+ * 1. Eligibility (SQL): only rows with `updated_at < manifest_rebuilt_at`.
+ *    The consumer queues a row AFTER its metadata commit, so any rebuild that
+ *    started after the row was queued read the post-move blob — the live
+ *    manifest provably does not reference the row's key. No rebuild recorded
+ *    yet → nothing is eligible.
+ * 2. Ownership pre-check: a key some page currently lives at
+ *    (source_pages.r2_doc_key — e.g. an A→B→A round trip) is dequeued without
+ *    deleting. The consumer also best-effort cancels the row for its own new
+ *    key at write time.
+ * 3. Two-phase confirmation: deleting marks the row `swept` instead of
+ *    removing it. The NEXT tick confirms: if an owner has appeared (a consumer
+ *    write raced the deletion — its D1 upsert can land after our post-check),
+ *    the victim page is re-enqueued so its doc is rewritten; otherwise the row
+ *    is dropped. A racing job would have to span a full cron interval to
+ *    escape, which Workers cannot.
  *
- * Round-trip guard (A→B→A): a queued key that is some page's CURRENT doc
- * (source_pages.r2_doc_key) is dequeued without deleting. The consumer also
- * cancels the row for its own new key at write time; the residual TOCTOU
- * (consumer makes the key current between our ownership check and the R2
- * delete) is closed by re-checking ownership AFTER the delete and re-enqueuing
- * a sync for the victim page — the consumer then rewrites the doc.
+ * Per-key rows: a failure leaves the row for the next tick; a success removes
+ * only its own row, so concurrent appends are never lost.
  */
 async function sweepStaleDocs(env: Env): Promise<void> {
   const staleRows = await env.DB.prepare(
-    "SELECT key FROM sync_state WHERE key LIKE 'stale_doc:%'",
-  ).all<{ key: string }>();
+    `SELECT key, value FROM sync_state
+     WHERE key LIKE 'stale_doc:%'
+       AND (value = 'swept'
+            OR updated_at < (SELECT value FROM sync_state WHERE key = 'manifest_rebuilt_at'))`,
+  ).all<{ key: string; value: string }>();
 
   for (const row of staleRows.results ?? []) {
     if (typeof row.key !== "string" || !row.key.startsWith("stale_doc:")) continue;
@@ -618,24 +641,31 @@ async function sweepStaleDocs(env: Env): Promise<void> {
       const owner = await env.DB.prepare(
         "SELECT page_id FROM source_pages WHERE r2_doc_key = ?",
       ).bind(docKey).first<{ page_id: string }>();
-      if (!owner) {
-        await env.CONTENT_BUCKET.delete(docKey);
-        // Self-heal the check-then-delete race: if a concurrent consumer made
-        // this key current between the check and the delete, resync that page
-        // so its doc is rewritten.
-        const lateOwner = await env.DB.prepare(
-          "SELECT page_id FROM source_pages WHERE r2_doc_key = ?",
-        ).bind(docKey).first<{ page_id: string }>();
-        if (lateOwner) {
-          console.warn(`Cron: stale-doc sweep raced a live write on ${docKey}; re-enqueueing ${lateOwner.page_id}`);
+
+      if (row.value === "swept") {
+        // Phase 2 (a tick after the delete): confirm or heal.
+        if (owner) {
+          console.warn(`Cron: stale-doc sweep raced a live write on ${docKey}; re-enqueueing ${owner.page_id}`);
           await env.SYNC_QUEUE.send({
             type: "sync_page",
-            pageId: lateOwner.page_id,
+            pageId: owner.page_id,
             sourceId: env.NOTION_DATA_SOURCE_ID || env.NOTION_DATABASE_ID,
           });
         }
+        await env.DB.prepare("DELETE FROM sync_state WHERE key = ?").bind(row.key).run();
+        continue;
       }
-      await env.DB.prepare("DELETE FROM sync_state WHERE key = ?").bind(row.key).run();
+
+      // Phase 1: current-again keys are dequeued untouched; abandoned keys are
+      // deleted and marked for next-tick confirmation.
+      if (owner) {
+        await env.DB.prepare("DELETE FROM sync_state WHERE key = ?").bind(row.key).run();
+        continue;
+      }
+      await env.CONTENT_BUCKET.delete(docKey);
+      await env.DB.prepare(
+        "UPDATE sync_state SET value = 'swept', updated_at = datetime('now') WHERE key = ?",
+      ).bind(row.key).run();
     } catch (err) {
       console.warn(`Cron: failed to sweep stale doc ${docKey}; will retry next tick:`, err);
     }

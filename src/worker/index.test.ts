@@ -1100,20 +1100,22 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
 
   // ── manifest_dirty rebuild (spec §6.1) ──
 
-  it("cron sweeps queued stale_doc keys only after a successful manifest write", async () => {
+  it("cron sweeps an eligible stale_doc key: object deleted, row marked swept, rebuilt_at recorded", async () => {
     const db = env.DB as ReturnType<typeof mockD1Db>;
-    // Watermark read (null), then manifest_dirty read ("1").
+    // Watermark (null), manifest_dirty ("1"), rebuildStart time, sweep owner check (null).
     db.first
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ value: "1" });
+      .mockResolvedValueOnce({ value: "1" })
+      .mockResolvedValueOnce({ t: "2026-07-13 12:00:00" })
+      .mockResolvedValueOnce(null);
     // Cron query returns no changed pages.
     fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
     // A valid metadata blob so the rebuild writes a non-empty manifest, plus a
-    // queued stale_doc row surfaced by the LIKE select.
+    // queued (eligible) stale_doc row surfaced by the sweep's select.
     const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
     await bucket.put("pages/p1/metadata.json", JSON.stringify(validMetadata()));
     db.all.mockImplementation(async () => ({
-      results: [{ key: "stale_doc:docs/en/docs/Old Section/welcome.md" }],
+      results: [{ key: "stale_doc:docs/en/docs/Old Section/welcome.md", value: "queued" }],
       success: true,
     }));
 
@@ -1123,8 +1125,12 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     const deleteCalls = (env.CONTENT_BUCKET.delete as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
     expect(deleteCalls).toContain("docs/en/docs/Old Section/welcome.md");
     const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
-    // Manifest written before the sweep, and the queued row is removed.
-    expect(findPrepareCall(prepareMock, "DELETE FROM sync_state WHERE key = ?")).toBeDefined();
+    // Two-phase: the row is marked swept (confirmed next tick), not removed yet.
+    expect(findPrepareCall(prepareMock, "SET value = 'swept'")).toBeDefined();
+    // The rebuild start time is recorded for the eligibility filter.
+    expect(findPrepareCall(prepareMock, "'manifest_rebuilt_at'")).toBeDefined();
+    // The eligibility filter itself lives in the sweep's SQL.
+    expect(findPrepareCall(prepareMock, "updated_at < (SELECT value FROM sync_state WHERE key = 'manifest_rebuilt_at')")).toBeDefined();
     const putKeys = (bucket.put as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
     expect(putKeys).toContain("manifests/latest.json");
   });
@@ -1154,16 +1160,15 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     expect(putKeys).not.toContain("manifests/latest.json");
   });
 
-  it("self-heal: a live write racing the sweep re-enqueues the victim page", async () => {
+  it("swept-row confirmation: an owner that appeared re-enqueues the victim page (self-heal)", async () => {
     const db = env.DB as ReturnType<typeof mockD1Db>;
     db.first
-      .mockResolvedValueOnce(null)               // watermark
-      .mockResolvedValueOnce(null)               // dirty absent → clean tick
-      .mockResolvedValueOnce(null)               // ownership pre-check: no owner
-      .mockResolvedValueOnce({ page_id: "p-victim" }); // post-delete re-check: owner appeared
+      .mockResolvedValueOnce(null)                     // watermark
+      .mockResolvedValueOnce(null)                     // dirty absent → no rebuild
+      .mockResolvedValueOnce({ page_id: "p-victim" }); // swept-row owner check: owner appeared
     fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
     db.all.mockImplementation(async () => ({
-      results: [{ key: "stale_doc:docs/en/docs/raced.md" }],
+      results: [{ key: "stale_doc:docs/en/docs/raced.md", value: "swept" }],
       success: true,
     }));
 
@@ -1173,21 +1178,49 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
     const enqueued = queue.messages as Array<{ pageId?: string }>;
     expect(enqueued.some((m) => m.pageId === "p-victim")).toBe(true);
+    // The swept row is dropped either way; the object is not deleted again.
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "DELETE FROM sync_state WHERE key = ?")).toBeDefined();
+    const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
+    expect((bucket.delete as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it("swept-row confirmation with no owner: row dropped silently", async () => {
+    const db = env.DB as ReturnType<typeof mockD1Db>;
+    db.first
+      .mockResolvedValueOnce(null)  // watermark
+      .mockResolvedValueOnce(null)  // dirty absent
+      .mockResolvedValueOnce(null); // swept-row owner check: still nobody
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+    db.all.mockImplementation(async () => ({
+      results: [{ key: "stale_doc:docs/en/docs/gone.md", value: "swept" }],
+      success: true,
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await scheduledHandler({} as never, env, {} as any);
+
+    const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
+    expect((queue.messages as unknown[]).length).toBe(0);
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "DELETE FROM sync_state WHERE key = ?")).toBeDefined();
   });
 
   it("round-trip guard: a queued stale key that is current again is dequeued but NOT deleted", async () => {
     const db = env.DB as ReturnType<typeof mockD1Db>;
-    // Watermark (null), manifest_dirty ("1"), then the sweep's current-key
-    // check returns a row → the key is a page's live doc again (A→B→A move).
+    // Watermark (null), manifest_dirty ("1"), rebuildStart, then the sweep's
+    // current-key check returns a row → the key is a page's live doc again
+    // (A→B→A move).
     db.first
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({ value: "1" })
-      .mockResolvedValueOnce({ one: 1 });
+      .mockResolvedValueOnce({ t: "2026-07-13 12:00:00" })
+      .mockResolvedValueOnce({ page_id: "p1" });
     fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
     const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
     await bucket.put("pages/p1/metadata.json", JSON.stringify(validMetadata()));
     db.all.mockImplementation(async () => ({
-      results: [{ key: "stale_doc:docs/en/docs/intro.md" }],
+      results: [{ key: "stale_doc:docs/en/docs/intro.md", value: "queued" }],
       success: true,
     }));
 
