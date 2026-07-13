@@ -21,6 +21,7 @@ Full-output production build (2026-07-02): **46 broken links + 182 broken anchor
 
 ### 3. Worker path parity — residual
 - [ ] **Worker RAG chunk generation (spec §6.1 "optionally")**: decided 2026-07-09 to keep RAG chunks CLI-only for now (no consumer needs sub-daily chunk freshness; avoids free-plan CPU risk). Revisit only if the RAG bot needs fresher chunks; then implement behind the manifest dirty-flag cron step.
+- [ ] **`buildManifestFromStorage` reads R2 metadata blobs sequentially** (found in PR #1 local review, 2026-07-13): `src/lib/manifest.ts`'s rebuild loop does one `await storage.get(key)` per page with no batching, serializing ~280 R2 round-trips on every `/admin/manifest/regenerate` call and every dirty-flag cron rebuild. Not urgent at current corpus size, but worth a bounded-concurrency batch (e.g. `Promise.all` in chunks of ~20) if corpus size or regen frequency grows — relevant given the free-plan CPU-time sensitivity noted above.
 
 ### 4. Recorded spec deviations & accepted residuals (won't-fix unless a consumer needs them)
 Static audit (2026-07-09) found these intentional/harmless deviations — recorded so they stop resurfacing:
