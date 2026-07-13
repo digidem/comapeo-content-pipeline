@@ -537,51 +537,56 @@ describe("queue consumer", () => {
     expect(findPrepareCall(prepareMock, "'failed'")).toBeDefined();
   });
 
-  it("skips page when content_hash and status unchanged", async () => {
-    const fixturePath = join(__dirname, "../../test/fixtures/notion/simple-page.json");
-    const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));
-
-    // Compute expected hash from the fixture — same as convertPageData would compute
-    const rawMarkdown = convertBlocks(fixtureBlocks as NotionBlockList);
-    const markdownBody = postProcessMarkdown(rawMarkdown, "Welcome");
-    const expectedHash = await contentHash(markdownBody);
-
+  /** Arm fetchMock with the page + blocks responses for one queueHandler run. */
+  function armPageFetch(fixtureBlocks: { results: unknown[] }, title = "Welcome") {
     const pageResponse = {
       id: "test-page-id",
       last_edited_time: "2026-01-01T00:00:00.000Z",
       properties: {
         "Content elements": {
           id: "title", type: "title",
-          title: [{ type: "text", text: { content: "Welcome" }, plain_text: "Welcome", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+          title: [{ type: "text", text: { content: title }, plain_text: title, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
         },
       },
     };
-
-    const blocksResponse = {
-      object: "list", results: fixtureBlocks.results, next_cursor: null, has_more: false,
-    };
-
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify(pageResponse), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(blocksResponse), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ object: "list", results: fixtureBlocks.results, next_cursor: null, has_more: false }), { status: 200 }));
+  }
 
-    // D1 returns a row matching EVERY artifact-affecting field → should skip
-    // (status will be "draft" since fixture has no Publish Status property)
-    env.DB.first.mockResolvedValue({
-      content_hash: expectedHash,
-      status: "draft",
-      title: "Welcome",
-      locale: "en",
-      section: null,
-      section_order: null,
-      slug: "welcome",
-      r2_doc_key: "docs/en/docs/welcome.md",
-    });
+  const matchingRow = (expectedHash: string) => ({
+    content_hash: expectedHash,
+    status: "draft",
+    title: "Welcome",
+    locale: "en",
+    section: null,
+    section_order: null,
+    slug: "welcome",
+    r2_doc_key: "docs/en/docs/welcome.md",
+  });
 
-    const batch = buildMessageBatch("test-page-id", "job-skip");
+  it("skips a second sync of an identical page (D1 row AND stored metadata blob match)", async () => {
+    const fixturePath = join(__dirname, "../../test/fixtures/notion/simple-page.json");
+    const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));
+    const rawMarkdown = convertBlocks(fixtureBlocks as NotionBlockList);
+    const markdownBody = postProcessMarkdown(rawMarkdown, "Welcome");
+    const expectedHash = await contentHash(markdownBody);
 
+    // First run: no existing row → full path writes the metadata blob into the
+    // mock bucket. That blob is the authoritative skip gate for run two.
+    armPageFetch(fixtureBlocks);
+    env.DB.first.mockResolvedValue(null);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await queueHandler(batch as any, env, {} as any);
+    await queueHandler(buildMessageBatch("test-page-id", "job-first") as any, env, {} as any);
+
+    // Second run: D1 row matches every artifact-affecting field and the stored
+    // blob equals the fresh extraction → skip.
+    (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mockClear();
+    (env.DB.prepare as ReturnType<typeof vi.fn>).mockClear();
+    armPageFetch(fixtureBlocks);
+    env.DB.first.mockResolvedValue(matchingRow(expectedHash));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await queueHandler(buildMessageBatch("test-page-id", "job-skip") as any, env, {} as any);
 
     // Verify R2 was NOT written (skip happened)
     const putCalls = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls;
@@ -602,6 +607,42 @@ describe("queue consumer", () => {
     // Skip path must NOT advance the watermark (cron owns it) NOR mark the manifest dirty
     expect(findPrepareCall(prepareMock, "VALUES ('last_sync_watermark'")).toBeUndefined();
     expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeUndefined();
+  });
+
+  it("blob-only change (e.g. element_type flip) defeats the skip even when the D1 row matches", async () => {
+    const fixturePath = join(__dirname, "../../test/fixtures/notion/simple-page.json");
+    const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));
+    const rawMarkdown = convertBlocks(fixtureBlocks as NotionBlockList);
+    const markdownBody = postProcessMarkdown(rawMarkdown, "Welcome");
+    const expectedHash = await contentHash(markdownBody);
+
+    // First run writes the real blob.
+    armPageFetch(fixtureBlocks);
+    env.DB.first.mockResolvedValue(null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await queueHandler(buildMessageBatch("test-page-id", "job-seed") as any, env, {} as any);
+
+    // Corrupt the stored blob's element_type — D1 doesn't store that field, so
+    // only the blob comparison can catch the difference.
+    const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
+    const stored = await bucket.get("pages/test-page-id/metadata.json");
+    const blob = JSON.parse(await stored!.text());
+    blob.element_type = "Toggle";
+    await bucket.put("pages/test-page-id/metadata.json", JSON.stringify(blob));
+
+    (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mockClear();
+    (env.DB.prepare as ReturnType<typeof vi.fn>).mockClear();
+    armPageFetch(fixtureBlocks);
+    env.DB.first.mockResolvedValue(matchingRow(expectedHash));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await queueHandler(buildMessageBatch("test-page-id", "job-blob-diff") as any, env, {} as any);
+
+    // Full path: artifacts rewritten, manifest marked dirty.
+    const putKeys = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
+    expect(putKeys).toContain("pages/test-page-id/metadata.json");
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeDefined();
+    expect(findPrepareCall(prepareMock, "skipped")).toBeUndefined();
   });
 
   it("metadata-only change (same hash+status, different section) takes the full path and deletes the moved doc", async () => {

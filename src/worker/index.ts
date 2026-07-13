@@ -17,7 +17,7 @@ import { convertPageData } from "../lib/sync.js";
 import type { NotionBlock } from "../lib/notion-converter.js";
 import { NotionClient } from "../lib/notion-client.js";
 import { buildQueryFilter } from "../lib/notion-filters.js";
-import { classifyError, ErrorCategory } from "../lib/errors.js";
+import { classifyError, ClassifiedError, ErrorCategory } from "../lib/errors.js";
 import { R2_PATHS } from "../persistence/r2.js";
 import { buildManifestFromStorage } from "../lib/manifest.js";
 import type { ManifestStorage } from "../lib/manifest.js";
@@ -309,7 +309,10 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         r2_doc_key: string | null;
       }>();
 
-      const unchanged =
+      const metadataKey = R2_PATHS.metadata(pageId);
+      const docKey = R2_PATHS.doc(metadata.locale, metadata.section, metadata.slug);
+
+      const rowUnchanged =
         existing &&
         existing.content_hash === metadata.content_hash &&
         existing.status === metadata.status &&
@@ -318,6 +321,26 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         existing.section === metadata.section &&
         existing.section_order === metadata.section_order &&
         existing.slug === metadata.slug;
+
+      // Authoritative gate: D1 stores only a subset of artifact-affecting
+      // fields — element_type, drafting_status, sub_items, keywords, tags, icon
+      // live only in the R2 metadata blob and feed the manifest + frontmatter.
+      // Skip only when the freshly extracted metadata equals the stored blob
+      // (ignoring the volatile edit timestamp); a missing or unreadable blob
+      // takes the full path (conservative — the rewrite is idempotent).
+      let unchanged = false;
+      if (rowUnchanged) {
+        try {
+          const storedBlob = await env.CONTENT_BUCKET.get(metadataKey);
+          if (storedBlob) {
+            unchanged =
+              stableMetadataJson(JSON.parse(await storedBlob.text())) ===
+              stableMetadataJson(metadata as unknown as Record<string, unknown>);
+          }
+        } catch {
+          unchanged = false;
+        }
+      }
 
       if (unchanged) {
         console.log(`Skipping page ${pageId}: content unchanged`);
@@ -335,9 +358,6 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         // advances it at enqueue time. A re-enqueued boundary page is hash-skipped here.
         continue;
       }
-
-      const metadataKey = R2_PATHS.metadata(pageId);
-      const docKey = R2_PATHS.doc(metadata.locale, metadata.section, metadata.slug);
 
       // A section/slug move changes the doc key — clean up the old object so a
       // moved page doesn't leave a stale doc behind. Non-fatal: the manifest
@@ -374,7 +394,13 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         }
       }
       if (failedAssets.length > 0) {
-        throw new Error(`asset upload failed for ${failedAssets.length} object(s): ${failedAssets.join(", ")}`);
+        // ClassifiedError(NETWORK) so the catch's retry gate re-queues the
+        // message — a plain Error classifies as `unknown`, which is acked
+        // without retry and would leave the asset missing until the next edit.
+        throw new ClassifiedError(
+          `asset upload failed for ${failedAssets.length} object(s): ${failedAssets.join(", ")}`,
+          ErrorCategory.NETWORK,
+        );
       }
 
       // Upsert source_pages row
@@ -792,6 +818,17 @@ export async function queryChangedPages(
 function applyLookback(since: string | null): string | null {
   if (!since) return null;
   return new Date(new Date(since).getTime() - 60_000).toISOString();
+}
+
+/**
+ * Canonical JSON of a metadata object minus the volatile edit timestamp, for
+ * the queue consumer's unchanged-skip comparison. Both sides are produced by
+ * the same convertPageData shape, so key order is stable; blobs written by an
+ * older code shape simply fail the comparison and take the (idempotent) full
+ * write path once.
+ */
+function stableMetadataJson(m: Record<string, unknown>): string {
+  return JSON.stringify({ ...m, notion_last_edited_time: undefined });
 }
 
 export default {
