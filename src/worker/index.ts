@@ -371,20 +371,19 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         ).bind(`stale_doc:${existing.r2_doc_key}`).run();
       }
 
-      // Write all artifacts to R2 in parallel
-      await Promise.all([
-        env.CONTENT_BUCKET.put(metadataKey, JSON.stringify(metadata, null, 2), { httpMetadata: { contentType: "application/json" } }),
-        env.CONTENT_BUCKET.put(docKey, canoncialMd, { httpMetadata: { contentType: "text/markdown" } }),
-        env.CONTENT_BUCKET.put(R2_PATHS.rawPage(pageId), JSON.stringify(page, null, 2), { httpMetadata: { contentType: "application/json" } }),
-        env.CONTENT_BUCKET.put(R2_PATHS.rawBlocks(pageId), JSON.stringify(rawBlocks, null, 2), { httpMetadata: { contentType: "application/json" } }),
-      ]);
+      // Write order matters: the metadata blob is the COMMIT MARKER — manifest
+      // rebuilds read pages/{id}/metadata.json, so it must land only after
+      // every artifact it references. Assets first, then doc + raws, metadata
+      // last; a mid-sequence failure leaves the old blob in place and an
+      // unrelated manifest rebuild never publishes a partial page.
 
-      // Upload rehosted asset binaries to R2. Failures FAIL the job: the doc's
-      // markdown references assets/<sha256> paths, and the D1 upsert below
-      // records the (stable) content hash — swallowing a transient upload
-      // failure would make every future sync hash-skip, leaving the image
-      // missing in R2 permanently. Throwing lets the queue retry; the artifact
-      // writes above are idempotent.
+      // 1. Rehosted asset binaries. Failures FAIL the job: the doc's markdown
+      // references assets/<sha256> paths, and the D1 upsert below records the
+      // (stable) content hash — swallowing a transient upload failure would
+      // make every future sync hash-skip, leaving the image missing in R2
+      // permanently. ClassifiedError(NETWORK) so the catch's retry gate
+      // re-queues the message (a plain Error classifies as `unknown`, which is
+      // acked without retry). The writes are idempotent.
       const failedAssets: string[] = [];
       for (const asset of converted.assetBinaries) {
         try {
@@ -395,14 +394,22 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         }
       }
       if (failedAssets.length > 0) {
-        // ClassifiedError(NETWORK) so the catch's retry gate re-queues the
-        // message — a plain Error classifies as `unknown`, which is acked
-        // without retry and would leave the asset missing until the next edit.
         throw new ClassifiedError(
           `asset upload failed for ${failedAssets.length} object(s): ${failedAssets.join(", ")}`,
           ErrorCategory.NETWORK,
         );
       }
+
+      // 2. Document + raw snapshots (not referenced by the manifest — order
+      // among these three is irrelevant).
+      await Promise.all([
+        env.CONTENT_BUCKET.put(docKey, canoncialMd, { httpMetadata: { contentType: "text/markdown" } }),
+        env.CONTENT_BUCKET.put(R2_PATHS.rawPage(pageId), JSON.stringify(page, null, 2), { httpMetadata: { contentType: "application/json" } }),
+        env.CONTENT_BUCKET.put(R2_PATHS.rawBlocks(pageId), JSON.stringify(rawBlocks, null, 2), { httpMetadata: { contentType: "application/json" } }),
+      ]);
+
+      // 3. Metadata blob last — the commit marker.
+      await env.CONTENT_BUCKET.put(metadataKey, JSON.stringify(metadata, null, 2), { httpMetadata: { contentType: "application/json" } });
 
       // Upsert source_pages row
       await env.DB.prepare(`
@@ -427,6 +434,12 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         metadataKey,
         docKey,
       ).run();
+
+      // This page's doc key is current again — cancel any pending stale-doc
+      // deletion queued for it by an earlier move (A→B→A round trip), closing
+      // the window in which the sweep could target a live key.
+      await env.DB.prepare("DELETE FROM sync_state WHERE key = ?")
+        .bind(`stale_doc:${docKey}`).run();
 
       // Mark the manifest dirty so the next cron tick rebuilds manifests/latest.json
       // (spec §6.1; rebuilding inline would add latency to every page sync — the cron
@@ -546,31 +559,8 @@ export async function scheduledHandler(
       if (result.status === "written") {
         console.log(`Cron: rebuilt manifest (${result.docsCount} docs, ${result.skippedCount} skipped)`);
         // The fresh manifest no longer references moved-away doc keys — sweep
-        // the deletions the queue consumer deferred. Per-key rows: a failure
-        // leaves the row queued for the next tick; a success removes only its
-        // own row, so concurrent consumer appends are never lost.
-        //
-        // Round-trip guard: a page moved A→B and back B→A queues BOTH keys;
-        // A is current again. Never delete a key some page currently lives at
-        // (source_pages.r2_doc_key is the authoritative current key) — just
-        // drop its queue row.
-        const staleRows = await env.DB.prepare(
-          "SELECT key FROM sync_state WHERE key LIKE 'stale_doc:%'",
-        ).all<{ key: string }>();
-        for (const row of staleRows.results ?? []) {
-          const docKey = row.key.slice("stale_doc:".length);
-          try {
-            const current = await env.DB.prepare(
-              "SELECT 1 AS one FROM source_pages WHERE r2_doc_key = ?",
-            ).bind(docKey).first<{ one: number }>();
-            if (!current) {
-              await env.CONTENT_BUCKET.delete(docKey);
-            }
-            await env.DB.prepare("DELETE FROM sync_state WHERE key = ?").bind(row.key).run();
-          } catch (err) {
-            console.warn(`Cron: failed to sweep stale doc ${docKey}; will retry next tick:`, err);
-          }
-        }
+        // the deletions the queue consumer deferred.
+        await sweepStaleDocs(env);
       } else {
         // Clobber-refusal or read_errors: the existing manifest is left intact. Restore
         // the flag so the next tick retries.
@@ -589,6 +579,65 @@ export async function scheduledHandler(
         "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '1', datetime('now'))",
       ).run();
       console.error("Cron: manifest rebuild failed; restored manifest_dirty:", err);
+    }
+  } else {
+    // Clean tick (dirty != "1"): every consumer change — including whichever
+    // move queued a stale row — was incorporated by an earlier rebuild, so the
+    // live manifest references none of the queued keys and sweeping is safe.
+    // Without this, a deletion that failed in the dirty tick would wait for
+    // the NEXT content change, which may never come.
+    await sweepStaleDocs(env);
+  }
+}
+
+/**
+ * Delete R2 doc objects whose deletions the queue consumer deferred (moved
+ * pages). Only called when the live manifest is known not to reference the
+ * queued keys (right after a successful rebuild, or on a clean tick).
+ *
+ * Per-key sync_state rows: a failed delete stays queued for the next sweep; a
+ * success removes only its own row, so concurrent consumer appends are never
+ * lost.
+ *
+ * Round-trip guard (A→B→A): a queued key that is some page's CURRENT doc
+ * (source_pages.r2_doc_key) is dequeued without deleting. The consumer also
+ * cancels the row for its own new key at write time; the residual TOCTOU
+ * (consumer makes the key current between our ownership check and the R2
+ * delete) is closed by re-checking ownership AFTER the delete and re-enqueuing
+ * a sync for the victim page — the consumer then rewrites the doc.
+ */
+async function sweepStaleDocs(env: Env): Promise<void> {
+  const staleRows = await env.DB.prepare(
+    "SELECT key FROM sync_state WHERE key LIKE 'stale_doc:%'",
+  ).all<{ key: string }>();
+
+  for (const row of staleRows.results ?? []) {
+    if (typeof row.key !== "string" || !row.key.startsWith("stale_doc:")) continue;
+    const docKey = row.key.slice("stale_doc:".length);
+    try {
+      const owner = await env.DB.prepare(
+        "SELECT page_id FROM source_pages WHERE r2_doc_key = ?",
+      ).bind(docKey).first<{ page_id: string }>();
+      if (!owner) {
+        await env.CONTENT_BUCKET.delete(docKey);
+        // Self-heal the check-then-delete race: if a concurrent consumer made
+        // this key current between the check and the delete, resync that page
+        // so its doc is rewritten.
+        const lateOwner = await env.DB.prepare(
+          "SELECT page_id FROM source_pages WHERE r2_doc_key = ?",
+        ).bind(docKey).first<{ page_id: string }>();
+        if (lateOwner) {
+          console.warn(`Cron: stale-doc sweep raced a live write on ${docKey}; re-enqueueing ${lateOwner.page_id}`);
+          await env.SYNC_QUEUE.send({
+            type: "sync_page",
+            pageId: lateOwner.page_id,
+            sourceId: env.NOTION_DATA_SOURCE_ID || env.NOTION_DATABASE_ID,
+          });
+        }
+      }
+      await env.DB.prepare("DELETE FROM sync_state WHERE key = ?").bind(row.key).run();
+    } catch (err) {
+      console.warn(`Cron: failed to sweep stale doc ${docKey}; will retry next tick:`, err);
     }
   }
 }

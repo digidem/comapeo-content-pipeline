@@ -482,6 +482,16 @@ describe("queue consumer", () => {
     expect(putKeys).toContain("pages/test-page-id/raw-page.json");
     expect(putKeys).toContain("pages/test-page-id/raw-blocks.json");
 
+    // Commit-marker ordering: the metadata blob (which manifest rebuilds read)
+    // must be the LAST artifact written, after the doc.
+    expect(putKeys.indexOf("pages/test-page-id/metadata.json")).toBeGreaterThan(
+      putKeys.indexOf("docs/en/docs/welcome.md"),
+    );
+
+    // The consumer cancels any queued stale-doc row for its now-current key.
+    const bindCallsE2e = (env.DB.bind as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
+    expect(bindCallsE2e.some((c) => c.includes("stale_doc:docs/en/docs/welcome.md"))).toBe(true);
+
     // Verify D1 upsert (INSERT OR REPLACE into source_pages)
     const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
     expect(findPrepareCall(prepareMock, "INSERT OR REPLACE INTO source_pages")).toBeDefined();
@@ -1117,6 +1127,52 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     expect(findPrepareCall(prepareMock, "DELETE FROM sync_state WHERE key = ?")).toBeDefined();
     const putKeys = (bucket.put as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
     expect(putKeys).toContain("manifests/latest.json");
+  });
+
+  it("clean tick (dirty != 1): queued stale keys are still swept", async () => {
+    // A deletion that failed during the dirty tick must not wait for the next
+    // content change — on a clean tick the manifest already reflects every
+    // move, so sweeping is safe.
+    const db = env.DB as ReturnType<typeof mockD1Db>;
+    db.first
+      .mockResolvedValueOnce(null)  // watermark
+      .mockResolvedValueOnce(null); // manifest_dirty absent → clean tick
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+    db.all.mockImplementation(async () => ({
+      results: [{ key: "stale_doc:docs/en/docs/orphaned.md" }],
+      success: true,
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await scheduledHandler({} as never, env, {} as any);
+
+    const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
+    const deleteCalls = (bucket.delete as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
+    expect(deleteCalls).toContain("docs/en/docs/orphaned.md");
+    // No manifest rebuild on a clean tick.
+    const putKeys = (bucket.put as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
+    expect(putKeys).not.toContain("manifests/latest.json");
+  });
+
+  it("self-heal: a live write racing the sweep re-enqueues the victim page", async () => {
+    const db = env.DB as ReturnType<typeof mockD1Db>;
+    db.first
+      .mockResolvedValueOnce(null)               // watermark
+      .mockResolvedValueOnce(null)               // dirty absent → clean tick
+      .mockResolvedValueOnce(null)               // ownership pre-check: no owner
+      .mockResolvedValueOnce({ page_id: "p-victim" }); // post-delete re-check: owner appeared
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+    db.all.mockImplementation(async () => ({
+      results: [{ key: "stale_doc:docs/en/docs/raced.md" }],
+      success: true,
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await scheduledHandler({} as never, env, {} as any);
+
+    const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
+    const enqueued = queue.messages as Array<{ pageId?: string }>;
+    expect(enqueued.some((m) => m.pageId === "p-victim")).toBe(true);
   });
 
   it("round-trip guard: a queued stale key that is current again is dequeued but NOT deleted", async () => {
