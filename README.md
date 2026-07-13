@@ -55,6 +55,10 @@ NOTION_VERSION=2025-09-03
 ADMIN_TOKEN=            # Bearer token for admin routes
 ```
 
+## Deploying to production
+
+See [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the full, reproducible path from a Notion edit to live content on docs.comapeo.app — generating content here, getting it into `comapeo-docs`'s `content` branch safely, and triggering the production deploy.
+
 ## Integration with comapeo-docs
 
 `comapeo-docs` should add a prebuild step:
