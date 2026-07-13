@@ -12,7 +12,6 @@ import { join } from "node:path";
 import { isPublishableStatus } from "../lib/status.js";
 import {
   isContentPage,
-  isStructuralPage,
   normalizeLocale,
   NOTION_ELEMENT_TYPES,
   SECTION_NAMES,
@@ -160,6 +159,12 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
   // Inline <img> asset filenames referenced via /images/notion/ site-root paths;
   // copied to <out>/static/images/notion/ after all docs are written.
   const inlineStaticAssets = new Set<string>();
+  // Absolute paths of every .md actually written this run. docs:pull is a full
+  // materialization, so this set IS the publishable corpus — orphan cleanup
+  // keeps exactly these, inheriting every emit-loop gate (status, structural,
+  // internal/test/container exclusions, dedupe) instead of re-deriving a
+  // partial approximation from the manifest.
+  const writtenDocPaths = new Set<string>();
 
   // Deduplicate pages with the same slug in the same locale
   // (e.g. test pages that share a slug like "test-guia-de-instalacao" in PT)
@@ -309,6 +314,7 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
     content = rewritten.content;
     for (const assetFile of rewritten.assets) inlineStaticAssets.add(assetFile);
     writeFileSync(finalPath, content);
+    writtenDocPaths.add(finalPath);
     writtenSectionDirs.add(join(finalPath, ".."));
     count++;
 
@@ -450,21 +456,11 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
 
   // Remove orphaned files (pages deleted from Notion but still on disk)
   if (args["clean-orphans"] === "true") {
-    const expectedPaths = new Set<string>();
-    for (const doc of manifest.docs) {
-      if (!isPublishableStatus(doc.status, args.all === "true")) continue;
-      const et = manifestElementType(doc);
-      if (isStructuralPage(et)) continue;
-      const orphanTranslation = translationMap.get(doc.page_id);
-      const sRaw = orphanTranslation?.section ?? (doc.section || SECTION_NAMES.UNCATEGORIZED);
-      const sDir = toSectionDir(sRaw);
-      const nLoc = normalizeLocale(doc.locale);
-      const orphanSlug = orphanTranslation?.slug ?? doc.slug;
-      const expectedPath = nLoc === "en"
-        ? join(outDir, "docs", ...(sDir ? [sDir] : []), `${orphanSlug}.md`)
-        : join(outDir, "i18n", nLoc, "docusaurus-plugin-content-docs", "current", ...(sDir ? [sDir] : []), `${orphanSlug}.md`);
-      expectedPaths.add(expectedPath);
-    }
+    // Expected = exactly what this run wrote. Recomputing publishability from
+    // the manifest here re-derived only SOME of the emit-loop's gates (it
+    // missed the internal/test/container exclusions), so a formerly published
+    // staging child's stale file survived cleanup and kept rendering.
+    const expectedPaths = writtenDocPaths;
     let removed = 0;
     const removeOrphans = (dir: string) => {
       if (!existsSync(dir)) return;

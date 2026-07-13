@@ -193,6 +193,51 @@ describe("docsPull", () => {
     expect(existsSync(join(out, "docs", "getting-started", "getting-started.md"))).toBe(true);
   });
 
+  it("--clean-orphans removes the stale file of a manifest doc excluded by an internal gate", async () => {
+    // Regression (review round 10): expected paths were re-derived from the
+    // manifest with only the status/structural gates, so a doc the emit loop
+    // excludes for OTHER reasons (internal staging annotation, test pages,
+    // container parents) kept its previously published file forever. Expected
+    // is now exactly the set of files this run wrote.
+    const { inputDir, manifestPath } = buildFixture();
+    const out = freshOut();
+
+    // Add a manifest doc whose title carries an internal staging annotation —
+    // active status, Page element, but the emit loop must skip it.
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.docs.push({
+      page_id: "en-staging",
+      title: "Old Guide (translating for public page)",
+      locale: "en",
+      section: "10-Getting Started",
+      section_order: 11,
+      element_type: "Page",
+      drafting_status: null,
+      slug: "old-guide",
+      docusaurus_id: "old-guide",
+      docusaurus_path: "/old-guide",
+      r2_doc_key: "docs/en/docs/10-Getting Started/old-guide.md",
+      r2_metadata_key: "pages/en-staging/metadata.json",
+      source_url: "https://notion.so/enstaging",
+      notion_last_edited_time: "2026-01-01T00:00:00.000Z",
+      content_hash: "sha256:staging",
+      status: "active",
+      sub_items: [],
+    });
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    writeFileSync(join(inputDir, "en-staging.md"), sourceMd("Old Guide (translating for public page)", "old-guide", 11, "Internal staging content."));
+
+    // Its previously published file sits on disk from an earlier run.
+    mkdirSync(join(out, "docs", "getting-started"), { recursive: true });
+    const stalePath = join(out, "docs", "getting-started", "old-guide.md");
+    writeFileSync(stalePath, "previously published staging page");
+
+    await docsPull({ input: manifestPath, "input-dir": inputDir, out, all: "true", "clean-orphans": "true" });
+
+    // The emit loop skipped it AND cleanup removed the stale file.
+    expect(existsSync(stalePath)).toBe(false);
+  });
+
   it("throws DocsPullError (not process.exit) when the manifest path does not exist", async () => {
     const { inputDir } = buildFixture();
     const out = freshOut();
