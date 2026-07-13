@@ -625,6 +625,40 @@ describe("queue consumer", () => {
     expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeUndefined();
   });
 
+  it("existence backstop: an unchanged page whose doc object is missing gets rewritten", async () => {
+    const fixturePath = join(__dirname, "../../test/fixtures/notion/simple-page.json");
+    const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));
+    const rawMarkdown = convertBlocks(fixtureBlocks as NotionBlockList);
+    const markdownBody = postProcessMarkdown(rawMarkdown, "Welcome");
+    const expectedHash = await contentHash(markdownBody);
+
+    // Seed run writes everything, including the doc object.
+    armPageFetch(fixtureBlocks);
+    env.DB.first.mockResolvedValue(null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await queueHandler(buildMessageBatch("test-page-id", "job-seed-doc") as any, env, {} as any);
+
+    // Second run: D1 row and blob match (would skip) — but the doc object has
+    // gone missing (e.g. a sweep raced a move). head() reports absent.
+    const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
+    bucket.head.mockImplementation(async (key: string) =>
+      key === "docs/en/docs/welcome.md" ? null : { key, size: 1 },
+    );
+    (bucket.put as ReturnType<typeof vi.fn>).mockClear();
+    (env.DB.prepare as ReturnType<typeof vi.fn>).mockClear();
+    armPageFetch(fixtureBlocks);
+    env.DB.first.mockResolvedValue(matchingRow(expectedHash));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await queueHandler(buildMessageBatch("test-page-id", "job-missing-doc") as any, env, {} as any);
+
+    // Full path: doc rewritten, manifest marked dirty, NOT skipped.
+    const putKeys = (bucket.put as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
+    expect(putKeys).toContain("docs/en/docs/welcome.md");
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeDefined();
+    expect(findPrepareCall(prepareMock, "skipped")).toBeUndefined();
+  });
+
   it("blob-only change (e.g. element_type flip) defeats the skip even when the D1 row matches", async () => {
     const fixturePath = join(__dirname, "../../test/fixtures/notion/simple-page.json");
     const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));
@@ -1189,6 +1223,30 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     expect(findPrepareCall(prepareMock, "DELETE FROM sync_state WHERE key = ?")).toBeDefined();
     const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
     expect((bucket.delete as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it("lost swept marker (UPDATE hit 0 rows): sweep re-checks owner and re-enqueues", async () => {
+    const db = env.DB as ReturnType<typeof mockD1Db>;
+    db.first
+      .mockResolvedValueOnce(null)                     // watermark
+      .mockResolvedValueOnce(null)                     // dirty absent
+      .mockResolvedValueOnce(null)                     // phase-1 ownership pre-check: none
+      .mockResolvedValueOnce({ page_id: "p-return" }); // post-UPDATE owner re-check
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+    // The UPDATE-to-swept affects 0 rows: a returning consumer cancelled the
+    // 'queued' row mid-phase.
+    db.run.mockResolvedValue({ success: true, meta: { changes: 0 } });
+    db.all.mockImplementation(async () => ({
+      results: [{ key: "stale_doc:docs/en/docs/back-again.md", value: "queued" }],
+      success: true,
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await scheduledHandler({} as never, env, {} as any);
+
+    const queue = env.SYNC_QUEUE as ReturnType<typeof mockQueue>;
+    const enqueued = queue.messages as Array<{ pageId?: string }>;
+    expect(enqueued.some((m) => m.pageId === "p-return")).toBe(true);
   });
 
   it("swept-row confirmation with no owner: row dropped silently", async () => {

@@ -337,6 +337,19 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
               stableMetadataJson(JSON.parse(await storedBlob.text())) ===
               stableMetadataJson(metadata as unknown as Record<string, unknown>);
           }
+          // Existence backstop: skipping requires the doc object to actually
+          // be there. Any state where the doc went missing (e.g. a stale-doc
+          // sweep racing a concurrent move) self-heals on the page's next
+          // sync — without this, a re-enqueued heal would hash-skip and the
+          // 404 would persist. One HEAD per skip candidate; the skip path is
+          // rare (boundary re-enqueues), so the cost is negligible.
+          if (unchanged) {
+            const docExists = await env.CONTENT_BUCKET.head(docKey);
+            if (!docExists) {
+              console.warn(`Doc object missing for unchanged page ${pageId} (${docKey}); rewriting`);
+              unchanged = false;
+            }
+          }
         } catch {
           unchanged = false;
         }
@@ -667,9 +680,29 @@ async function sweepStaleDocs(env: Env): Promise<void> {
         continue;
       }
       await env.CONTENT_BUCKET.delete(docKey);
-      await env.DB.prepare(
+      const marked = await env.DB.prepare(
         "UPDATE sync_state SET value = 'swept', updated_at = datetime('now') WHERE key = ?",
       ).bind(row.key).run();
+      // If the row vanished mid-phase (a returning consumer cancelled its
+      // still-'queued' row between our select and this UPDATE), the deletion
+      // above may have hit that consumer's freshly written doc and no 'swept'
+      // marker survives for phase 2. Re-check ownership now and re-enqueue the
+      // owner — its resync rewrites the doc (the skip gate's existence
+      // backstop guarantees no hash-skip while the object is missing).
+      const changes = (marked as { meta?: { changes?: number } }).meta?.changes;
+      if (changes === 0) {
+        const lateOwner = await env.DB.prepare(
+          "SELECT page_id FROM source_pages WHERE r2_doc_key = ?",
+        ).bind(docKey).first<{ page_id: string }>();
+        if (lateOwner) {
+          console.warn(`Cron: sweep raced a returning consumer on ${docKey}; re-enqueueing ${lateOwner.page_id}`);
+          await env.SYNC_QUEUE.send({
+            type: "sync_page",
+            pageId: lateOwner.page_id,
+            sourceId: env.NOTION_DATA_SOURCE_ID || env.NOTION_DATABASE_ID,
+          });
+        }
+      }
     } catch (err) {
       console.warn(`Cron: failed to sweep stale doc ${docKey}; will retry next tick:`, err);
     }
