@@ -488,9 +488,15 @@ describe("queue consumer", () => {
       putKeys.indexOf("docs/en/docs/welcome.md"),
     );
 
-    // The consumer cancels any queued stale-doc row for its now-current key.
+    // The consumer cancels a stale-doc row for its now-current key — but ONLY
+    // one still in 'queued' state: a 'swept' row must survive to the sweep's
+    // phase-2 confirmation (which re-enqueues this page), or a raced deletion
+    // would leave the manifest on a missing object with no heal path.
     const bindCallsE2e = (env.DB.bind as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
     expect(bindCallsE2e.some((c) => c.includes("stale_doc:docs/en/docs/welcome.md"))).toBe(true);
+    expect(
+      findPrepareCall(env.DB.prepare as ReturnType<typeof vi.fn>, "DELETE FROM sync_state WHERE key = ? AND value = 'queued'"),
+    ).toBeDefined();
 
     // Verify D1 upsert (INSERT OR REPLACE into source_pages)
     const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;

@@ -448,11 +448,15 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
 
       // Best-effort: this page's doc key is current again — cancel any pending
       // stale-doc deletion queued for it by an earlier move (A→B→A round
-      // trip). Non-fatal: the sweep's ownership pre-check and its two-phase
-      // swept-confirmation are the correctness layers; this only narrows the
-      // window, so a failure here must not fail an already-committed sync.
+      // trip). ONLY rows still in 'queued' state: a 'swept' row means the
+      // sweep already deleted the object (possibly racing our doc write) and
+      // must survive to its phase-2 confirmation, which finds this page as
+      // owner and re-enqueues it — erasing the marker here would orphan a
+      // manifest entry on a missing object with no heal path. Non-fatal: the
+      // sweep's layers are the correctness guarantee; a failure here must not
+      // fail an already-committed sync.
       try {
-        await env.DB.prepare("DELETE FROM sync_state WHERE key = ?")
+        await env.DB.prepare("DELETE FROM sync_state WHERE key = ? AND value = 'queued'")
           .bind(`stale_doc:${docKey}`).run();
       } catch (err) {
         console.warn(`Failed to cancel stale_doc row for ${docKey}:`, err);
