@@ -1,184 +1,72 @@
-# Phase 2: Match reference output from comapeo-docs ✅ COMPLETE
+# CoMapeo Content Pipeline — Tasks & Backlog
 
-Goal: our pipeline's markdown output matches `../comapeo-docs/docs/` quality.
-Reference converter: `../comapeo-docs/scripts/notion-fetch/generateBlocks.ts`.
-Reference uses `notion-to-md` (n2m) library + custom transformers + post-processing.
-Our pipeline uses hand-rolled `notion-converter.ts`. Gap analysis done — fix in priority order.
-
-**Status 2026-06-09:** All 8 items complete. 180 tests pass, typecheck clean.
-Output verified with `sync:full --limit 5`.
+This file is the single source of truth for all pending and resolved tasks in the CoMapeo Notion-to-Markdown content pipeline. Detailed history of resolved work lives in the git log (see the condensed changelog at the bottom).
 
 ---
 
-## 1. ✅ Callout → Docusaurus admonition conversion
+## Pending Tasks
 
-**Symptom:** Our pipeline outputs `> [!NOTE]` (Obsidian blockquote style).
-Reference outputs `:::note\n...\n:::` (Docusaurus admonition syntax).
+### 1. Notion editorial cleanup (content-state broken refs — not pipeline bugs)
+Full-output production build (2026-07-02): **46 broken links + 182 broken anchor refs across 35 pages** (warnings only; build succeeds). Every sampled case traces to content state in Notion. Needs an editor with Notion access:
+- [ ] **Fill or unlink placeholder pages**: `troubleshooting-mapping-with-collaborators` (and other troubleshooting pages) are "Content coming soon" in Notion, yet 9+ pages link into their anchors (`#exchange-problems` ×9, `#custom-category-set-problems` ×9, `#solution-check-app-permissions` ×5). Either write the content or remove the links until it exists.
+- [ ] **Fix stale localized-slug links**: ES pages link to localized routes that don't exist (`/es/docs/entiende-como-funciona-el-intercambio` ×8, `/es/docs/seleccion-de-roles-y-equipos-de-dispositivos` ×7, `/es/docs/comprende-las-bases-sobre-proyectos` ×5, ~15 more) — pages were renamed or never published; translations publish under the English slug. Update the links in Notion to the English slugs (or the pipeline's anchor-localization work below can absorb some of this).
+- [ ] **Fix authoring errors**: a nested markdown link (`[Deleting Observations & Tracks](/docs/editing…) /docs/deleting…`), a `/doc/` (missing "s") typo, and same-page `#adding-photos`/`#deleting-audio` anchors that actually belong to a different page.
+- [ ] **Mislabeled row**: the EN `troubleshooting-mapping-with-collaborators` page carries a Spanish title ("Solución de Problemas: Mapeo con Colaboradores"); the EN introduction contains a Spanish heading ("Sitio web de CoMapeo").
+- [ ] **Cosmetic**: give the `Video: @document_4997224092760278339_trimmed.mp4` Drive link on creating-a-new-observation (EN+ES) a human-readable label.
+- [ ] **Duplicate EN Toggle rows** (found 2026-07-09): section "40-Managing Data and Privacy" has two EN Toggles — "Managing Data Privacy and Security" and "Managing Data Privacy & Security". The sidebar label picker takes the first by manifest order, so the label flips between "&" and "and" depending on which command generated the manifest. Delete one of the duplicates in Notion.
+- [ ] **Status vocabulary catch-up**: only 36 pages carry an active Publish Status ("Draft published") while the site publishes ~100 docs — consumers must keep using `docs:pull --all` until editors set real statuses. Once statuses are trustworthy, flip the default publish gate to active-only and retire `--all` from the sync script.
 
-**Reference:** `../comapeo-docs/scripts/notion-fetch/calloutProcessor.ts`
-Maps Notion callout colors → admonition types:
-- `blue_background` → `info`, `yellow_background` → `warning`
-- `red_background` → `danger`, `green_background` → `tip`
-- `gray_background`/`default` → `note`, `orange_background` → `caution`
+### 2. Anchor localization (optional pipeline feature — the one residual the pipeline could eliminate)
+- [ ] Translated pages linking to headings break when the fragment language doesn't match the target page's heading language (e.g. `/pt/docs/creating-a-new-observation#deleting-audio` vs the PT heading "Excluindo áudio"; `#configuracion-de-intercambio` on a page whose ES translation fell back to English content). Design: build an EN↔translated heading-anchor map per page group during `docs:pull` (headings are positionally parallel across a group's language children) and rewrite link fragments to the target page's actual heading ids, falling back to the English anchor when the target fell back to English content. Extends `src/lib/links.ts`. Only worth doing if editorial can't keep anchors consistent (see task 1).
 
-Also: extracts **bold title** from callout content, strips emoji icons as title prefix,
-handles nested children blocks.
+### 3. Worker path parity — residual
+- [ ] **Worker RAG chunk generation (spec §6.1 "optionally")**: decided 2026-07-09 to keep RAG chunks CLI-only for now (no consumer needs sub-daily chunk freshness; avoids free-plan CPU risk). Revisit only if the RAG bot needs fresher chunks; then implement behind the manifest dirty-flag cron step.
+- [ ] **`buildManifestFromStorage` reads R2 metadata blobs sequentially** (found in PR #1 local review, 2026-07-13): `src/lib/manifest.ts`'s rebuild loop does one `await storage.get(key)` per page with no batching, serializing ~280 R2 round-trips on every `/admin/manifest/regenerate` call and every dirty-flag cron rebuild. Not urgent at current corpus size, but worth a bounded-concurrency batch (e.g. `Promise.all` in chunks of ~20) if corpus size or regen frequency grows — relevant given the free-plan CPU-time sensitivity noted above.
 
-**Fix:**
-- Rewrite `convertCallout()` in `src/lib/notion-converter.ts` to emit `:::` syntax
-- Map Notion callout colors to admonition types (not just `[!NOTE]`)
-- Extract bold title from first line of callout content
-- Strip emoji prefix from title (use as icon)
-- Handle nested children inside callouts
-- Write golden fixture test with all color variants
+### 4. Recorded spec deviations & accepted residuals (won't-fix unless a consumer needs them)
+Static audit (2026-07-09) found these intentional/harmless deviations — recorded so they stop resurfacing:
+- No `pages/{id}/canonical.{locale}.md(.mdx)` artifact; canonical markdown lives only at `docs/{locale}/docs/{section}/{slug}.md`. No `.mdx` emitted anywhere.
+- No `sync:changed` / `publish` CLI commands (Worker cron covers changed-page sync; nothing needs `publish`).
+- Slug rule "prefer explicit Notion slug property" (§9.3 rule 1) unimplemented — the live database has no slug property; title-derived slugs only.
+- `NOTION_VERSION`, `MANIFEST_KEY`, `DEFAULT_STATUS_FILTER`, `filter_properties` (§8.3), and configurable retry max-attempts declared in spec but hardcoded in code.
+- CLI `docs:pull` emits `_category_.json` for sidebars (Docusaurus-native) instead of consuming `sidebars/{locale}.json`; Worker still writes the R2 sidebar artifact.
+- **The manifest is a full catalog, deliberately including deprecated/archived docs** (review round 4 pushback, 2026-07-11): dead statuses in `manifests/latest.json` are what let `docs:pull --clean-orphans` retire a dead page's published files; excluding them would break cleanup. Every consumer must gate on `isPublishableStatus` — both shipped consumers (docs:pull, rag:chunks) do.
+- **Same-second stale-doc row** (review round 15, non-blocking, 2026-07-13): D1 timestamps are second-granular, so a `stale_doc:` row queued in the same second the last manifest rebuild started fails the strict `updated_at < manifest_rebuilt_at` eligibility until the next rebuild advances the marker. Consequence: an obsolete R2 doc object lingers a little longer; the live manifest never references it. Self-resolves at the next content change.
 
-**Files:** `src/lib/notion-converter.ts`, `test/fixtures/notion/`, `test/fixtures/expected/`
-
----
-
-## 2. ✅ Unsupported block type handling
-
-**Symptom:** Output contains `> [!NOTE]\n> Unsupported Notion block: \`unsupported\``.
-The Notion API returns blocks with `type: "unsupported"` when the integration lacks
-access to that block's content type. These should be silently skipped or minimally rendered.
-
-**Fix:**
-- Add `"unsupported"` to `SUPPORTED_BLOCKS` set
-- In `convertSingleBlock()`, handle `unsupported` by returning empty string (skip)
-- Alternatively: emit an HTML comment `<!-- unsupported block: {type} -->` for debugging
-- Update golden fixture: add unsupported block → expect empty/minimal output
-
-**Files:** `src/lib/notion-converter.ts`, `test/fixtures/`
+### 5. Repo housekeeping
+- [ ] **Cosmetic markdownlint residuals** (optional): 13 heading-level jumps (MD001) and 5 list-indent inconsistencies (MD005) originate in Notion authoring structure. Harmless to rendering; fix in Notion or add a normalization pass only if they ever matter.
+- [ ] **`comapeo-docs` PR #183 (`fix/deploy-pathspec-img`, open, unmerged)** flips the deploy checkout from `static/images/` → `static/img/`. Our pipeline still publishes to `static/images/notion/` (matches `main`'s current, live-verified expectation — see `DEPLOYMENT.md` Gotcha 1). Merging #183 as-is would break the next production deploy unless paired with a matching change on our side. Tracked as [comapeo-docs#186](https://github.com/digidem/comapeo-docs/issues/186).
+- [ ] **`comapeo-docs`'s "Update Notion status to Published" deploy step is broken** (found 2026-07-13, first live production deploy of this pipeline's output): it tries to move pages from a `"Staging"` select option that no longer exists in the live Publish Status vocabulary (our own `mapStatus` realignment, 2026-07-01, is why it changed — see Done changelog). It fails after recording 0 status changes, so it's harmless but fires on every deploy. Fix lives in `comapeo-docs`. Tracked as [comapeo-docs#185](https://github.com/digidem/comapeo-docs/issues/185).
+- [ ] **Decide the fate of `comapeo-docs`'s legacy Notion-fetch `api-server`** (found 2026-07-13): dormant ~4 months (last real content-bot commit 2026-03-19), and this pipeline now owns content generation/deploy end-to-end. Not our call to make unilaterally — tracked as [comapeo-docs#187](https://github.com/digidem/comapeo-docs/issues/187) for whoever owns that repo's roadmap.
 
 ---
 
-## 3. ✅ Content post-processing pipeline
+## Done (condensed changelog — details in git log)
 
-**Symptom:** Reference applies several post-processing passes that our pipeline lacks.
+**First live production deploy + deployment runbook (2026-07-13):** deployed this pipeline's output to docs.comapeo.app for the first time — build, Cloudflare Pages push, and `content-lock.sha` promotion all succeeded; live-verified EN/ES/PT pages and a previously-broken image asset. Two real issues hit and fixed before the deploy stuck: an unanchored `assets/` rule in `comapeo-docs`'s `content`-branch `.gitignore` silently drops per-section image folders from `git add` (caught via a local production build before pushing, not by trusting CI); and the `content` branch's tip can diverge from what's actually locked/live (`content-lock.sha`), so a new commit must be based on the live SHA, not the branch tip. Both documented in the new `DEPLOYMENT.md` (this repo) with a link from `comapeo-docs`'s `context/workflows/PRODUCTION_DEPLOYMENT.md` and `README.md`. A third, unrelated, already-broken step in that workflow (Notion status write-back using a stale select option) is tracked above under Repo housekeeping.
 
-**Reference files:**
-- `contentSanitizer.ts` — heading hierarchy fix, curly-brace stripping, malformed HTML fix
-- `contentWriter.ts` — `removeDuplicateTitle()` strips H1 matching page title
-- `markdownTransform.ts` — `ensureBlankLineAfterStandaloneBold()`
+**Spec §15 test-coverage gaps closed (2026-07-10):** golden `manifest.json`/`chunks.json` fixtures (`test/fixtures/golden/`, deep-equal tests, only `generated_at` normalized); RAG chunk minimum-size enforcement (merge-up rule, ≤960 ceiling) + tables made atomic like code fences; `validate`/`diff` CLI commands extracted to `src/cli/validate-diff.ts` with 13 hermetic tests (docs-pull extraction pattern, injected page fetcher).
 
-**Fix:**
-- Build a `postProcessMarkdown(content, pageTitle)` function in `src/lib/notion-converter.ts`
-  (or a new `src/lib/post-process.ts`)
-- Phase 1: `removeDuplicateTitle(content, pageTitle)` — strip leading H1 if it matches title
-- Phase 2: `ensureBlankLineAfterStandaloneBold(content)` — add blank line after `**Heading**` lines
-- Phase 3: `sanitizeMarkdownContent(content)` — strip curly-brace expressions (Notion formula artifacts),
-  fix heading hierarchy (only one H1, demote subsequent H1s to H2s), fix malformed HTML/JSX tags
-- Wire into `convertPageData()` after `convertBlocks()` before `contentHash()`
-- Write tests for each transform
+**Adversarial PR-readiness review loop, 16 rounds (2026-07-11..13):** GPT-5.5-high (Codex) reviewed PR #1 repeatedly; 32 blocking findings fixed across the rounds (each in its own commit with the finding in the message), 2 pushbacks recorded as deliberate contracts, 1 leaked credential rotated. Highlights: cron watermark ownership + D1 dedupe; blob-equality skip gate (rotating fields excluded, doc-existence backstop); commit-marker artifact ordering; deferred moved-doc deletion with rebuild-time SQL eligibility, two-phase swept confirmation, and lost-marker detection; SDK 429/5xx retry; chunker fence-awareness/coalescing/overlap-range/noise-drop (real corpus: 1138 chunks median 109 tokens → 507 median 424); clean-orphans keeps exactly the written set; asset-name traversal guard. Suite grew 388 → 477 tests. Note: the sweep race class (rounds 12-16) lives entirely in the Worker→R2 manifest-consumer path, which has no production consumer yet (docs ship via CLI rsync; RAG chunks are CLI-generated) — and the skip gate's existence backstop now makes any missing-doc state self-heal on the page's next sync by construction.
 
-**Files:** `src/lib/notion-converter.ts` (or new `src/lib/post-process.ts`), `src/lib/sync.ts`
+**Two production bugs found by live verification & fixed (2026-07-09, after deploy of the work below):** (1) **Worker cron broken in prod** — `buildQueryFilter({since})` produced `and[ts, or[empty, and[…]]]`, three compound levels; the Notion API allows two, so every 5-min cron tick 400'd. Fixed by distributing the OR over the AND (`(empty OR ¬A) AND (empty OR ¬B)`), max two levels; regression test asserts compound depth ≤ 2. (2) **Schema-invalid manifests everywhere** — `generateManifest` cast raw Notion select objects from `meta.properties` into `element_type`/`drafting_status`, so both the CLI's `output/manifest.json` and any Worker manifest carried objects where the schema requires strings; nothing validated the CLI manifest so it shipped silently, and `docs:pull` had quietly adapted by unwrapping the object shape. Fixed to use the extracted top-level `meta.element_type`/`meta.drafting_status`; `docs:pull` now reads strings (still tolerates old-shape manifests). Equivalence proven: docs:pull output with old manifest + new code is byte-identical to the pre-fix baseline. Redeployed; `/admin/manifest/regenerate` returns 200 and the live R2 manifest passes schema (52 Worker-synced docs, string element_type, 3-locale sidebars). Side finding for task 1: duplicate EN Toggle rows make the "Managing Data Privacy" sidebar label order-dependent.
 
----
+**Worker manifest conformance + docs:pull testability (2026-07-09, same day as the audit below):** (1) new runtime-agnostic `buildManifestFromStorage` in `src/lib/manifest.ts` rebuilds the manifest from R2 `pages/{id}/metadata.json` blobs (Zod-validates each, skips corrupt); `/admin/manifest/regenerate` now uses it (was hand-built from D1 rows missing `element_type`/`drafting_status`/`sub_items`), validates with `ContentManifestSchema`, applies the CLI's no-clobber guard (409), and writes latest + versioned keys; queue consumer sets a `manifest_dirty` flag on changed pages and cron rebuilds when dirty (cleared only on successful write — spec §6.1 closed). (2) `docs:pull` extracted from the CLI monolith into `src/cli/docs-pull.ts` (throws `DocsPullError` instead of `process.exit`; pure move — output tree verified byte-identical on all text files) with the §15.3-required integration test (publish gate, `--all`, i18n paths, `_category_.json`, orphan cleanup, missing-manifest error). Tests 388 → 400; typecheck/lint clean. Note: asset `optimizeAssets` output is nondeterministic run-to-run (binary-only variance, pre-existing, harmless — markdown is the determinism contract).
 
-## 4. ✅ Frontmatter enrichment for Docusaurus
+**Full goal re-verification, senior/junior audit (2026-07-09):** typecheck + 388/388 tests green; fresh `sync:full` against live Notion (280 pages, 4 dead rows API-excluded); docs:pull → rsync → production Docusaurus build green (181 broken-ref warnings ≈ known 182 content-state baseline, zero new); visual check EN/ES/PT in Chrome (images, icons, translated TOCs, zero console errors); determinism proven — fresh sync byte-identical to committed comapeo-docs content (zero git drift). Static spec audit (GLM junior, senior-verified) found no contradicted claims; residual gaps filed as pending tasks 3–5 above.
 
-**Symptom:** Our frontmatter missing fields that reference expects:
-`sidebar_label`, `pagination_label`, `custom_edit_url`, `keywords` (separate from tags),
-`last_update` block with date + author.
+**End-to-end verification + 2 bugs found & fixed (2026-07-07):** full pipeline re-run against live Notion (280 pages), docs:pull → rsync → production Docusaurus build (same 182 known content-state broken refs as the 2026-07-02 baseline, zero new), visual check EN/ES/PT in Chrome (images, inline icons, callouts, zero console errors). Bugs caught and fixed with tests: (1) **`--all` dead-page leak** — `sync:full --all` bypasses the API exclusion filter (contrary to the old help text), and `docs:pull --all`/`rag:chunks --all` would then have published the 4 dead pages; new `isPublishableStatus` gate never publishes deprecated/archived even under `--all`. (2) **content_hash flap** — hash was computed on pre-rehost markdown containing signed (expiring) Notion S3 URLs, so all 67 asset pages changed hash on every sync, defeating Worker change detection; now hashed on the canonical (post-rehost) markdown, verified 291/291 on-disk files consistent.
 
-**Reference:** `../comapeo-docs/scripts/notion-fetch/frontmatterBuilder.ts`
+**ESLint flat-config migration (2026-07-07):** `eslint.config.js` added (ESLint 10 + typescript-eslint 8 recommended, flat config); `lint` script is now check-only (`lint:fix` autofixes); lint step re-enabled in CI; all 23 pre-existing violations fixed (dead code removed, unnecessary regex escapes dropped, invisible whitespace in the callout separator regex converted to `\uXXXX` escapes — semantics preserved, locked by the existing golden-fixture tests).
 
-**Fix:**
-- Update `buildFrontmatter()` in `src/lib/frontmatter.ts` to include:
-  - `sidebar_label: {title}` and `pagination_label: {title}`
-  - `custom_edit_url: https://github.com/digidem/comapeo-docs/edit/main/docs/{path}`
-  - `keywords:` from Notion `Keywords` multi_select property (extract in `sync.ts`)
-  - `last_update: date: ... author: ...` — from `Date Published` property or `last_edited_time`
-- Extract `Tags` multi_select property in `sync.ts` for `tags:` frontmatter
-- Extract `Icon` rich_text property for `sidebar_custom_props`
-- Update schema if needed
+**Markdown quality audit + renderer verification (2026-07-02, commits `8e4f156`…`4acad60`):** audited all 99 emitted files with markdownlint, `findMdxHazards`, a full production Docusaurus build, and visual inspection in Chrome across EN/ES/PT. Fixed in the converter/docs:pull, each locked with tests: emphasis whitespace hoisting (814 literal-asterisk hits → 0), punctuation-only emphasis (42 → 0), table-cell newlines (35 split-row hits → 0), nested-admonition fence depth (orphan `:::` gone), divider-as-setext, padded headings, bold+italic callout titles, and inline emoji/icon 404s (assets now published to `static/images/notion/` with site-root srcs — the consumer's `ideal-image` plugin breaks webpack-import alternatives).
 
-**Files:** `src/lib/frontmatter.ts`, `src/lib/sync.ts`, `src/schemas/metadata.ts`
+**Follow-up fixes (2026-07-02, `ca83616`, `8afe6cb`, `a39d786`):** `manifest:generate` made safe (sync emits `.metadata.json` blobs; no-clobber guards); `normalizeLocale` case-insensitive for the live `"ES - automated"`/`"PT - automated"` values; `mapStatus` realigned to the live 13-option Publish Status vocabulary (active = Ready to publish / Adding to staging site / Draft published / Published; Remove → deprecated; Unplublished → archived), backed by an investigation of the old system's pull/write-back semantics.
 
----
+**Notion API-level status filtering, plan v4 all phases (2026-07-01, `addec89`, `5ccd605`):** constants consolidated and the Publish Status property read fixed (previously every page classified draft); SDK v5 `dataSources.query` with exclusion filter replaces the `/v1/search` workaround in CLI + Worker cron (fixes >50-page cron truncation; live-verified: 284 rows → 280 kept, exactly the 4 dead rows excluded); worker deployed and validated end-to-end (queue → convert → R2, `status: active` in prod). Plan archived at `plans/2026-06-27-notion-api-status-filtering-4.0.md`.
 
-## 5. ✅ Hyperlinked image support
+**Content hygiene (2026-07-01, `41b1cd5`, `39f800e`):** standalone `[Image: <url>]` author-note lines stripped; internal staging containers (and their sub-item children) excluded from publishing by title annotation.
 
-**Symptom:** Our pipeline outputs `![alt](url)` for images.
-Reference detects when images have hyperlinks in Notion and wraps them:
-`[![alt](img-url)](link-url)`.
+**Worker & RAG validation (2026-07-01):** queue consumer verified live in production; all RAG chunks + manifest validate against the zod schemas; 0/62 structural pages leak into chunks.
 
-**Reference:** `../comapeo-docs/scripts/notionClient.ts` — custom image transformer (lines 346-441)
-Checks caption rich_text for link annotations, plain text URLs, and dedicated link properties.
-
-**Fix:**
-- Update `convertImage()` in `src/lib/notion-converter.ts`
-- Check image caption for link URLs (in `annotations` or plain text URL patterns)
-- If link found in caption, wrap output: `[![alt](img-url)](link-url)`
-- Write golden fixture test with linked and unlinked images
-
-**Files:** `src/lib/notion-converter.ts`, `test/fixtures/`
-
----
-
-## 6. ✅ Empty paragraph handling
-
-**Symptom:** Reference outputs `<div class="notion-spacer">` for empty paragraphs (visual layout).
-Our pipeline outputs empty text (no visible difference but less structured).
-
-**Fix:**
-- In `convertParagraph()`, detect completely empty rich_text (no content)
-- Output `<div class="notion-spacer" aria-hidden="true" role="presentation"></div>`
-  for empty paragraphs (matching reference behavior)
-- Write test
-
-**Files:** `src/lib/notion-converter.ts`
-
----
-
-## 7. ✅ Sidebar position assignment
-
-**Symptom:** Our pipeline sets `sidebar_position` to `undefined` when Notion `Order` property
-is null. Reference has fallback logic: preserve existing position from cache, generate
-sequential positions for pages without explicit order.
-
-**Reference:** `../comapeo-docs/scripts/notion-fetch/generateBlocks.ts` lines 1019-1043
-
-**Fix:**
-- In `convertPageData()` / `syncPage()`, implement position assignment logic:
-  1. Use `Order` property if set
-  2. Fall back to stored position (from D1 / metadata cache)
-  3. Generate sequential position after max known position
-- CLI should read existing metadata files to preserve positions
-
-**Files:** `src/lib/sync.ts`, `src/cli/index.ts`, `src/worker/index.ts`
-
----
-
-## 8. ✅ Table block output verification
-
-**Symptom:** Reference uses `n2m` library for table rendering. Our hand-rolled table converter
-may produce different formatting. Need to compare output on real table-heavy pages.
-
-**Fix:**
-- Find a Notion page with a table, compare our output vs reference
-- Verify table alignment, empty cells, multi-line cell content
-- Fix discrepancies in `convertTable()` / `convertTableRow()`
-- Add/adjust golden fixture tests
-
-**Files:** `src/lib/notion-converter.ts`, `test/fixtures/`
-
----
-
-## Summary
-
-| # | Issue | Impact | Complexity | Status |
-|---|-------|--------|------------|--------|
-| 1 | Callout → `:::` admonition | High — wrong syntax for Docusaurus | Medium | ✅ |
-| 2 | Unsupported block spam | Medium — noise in output | Low | ✅ |
-| 3 | Content post-processing | High — MDX errors, TOC quality | Medium | ✅ |
-| 4 | Frontmatter enrichment | High — Docusaurus metadata missing | Medium | ✅ |
-| 5 | Hyperlinked image support | Low — rare but useful | Low | ✅ |
-| 6 | Empty paragraph spacing | Low — visual only | Low | ✅ |
-| 7 | Sidebar position assignment | Medium — ToC ordering | Medium | ✅ |
-| 8 | Table output verification | Low — verify existing code | Low | ✅ |
-
-**Definition of done: ✅** Pick any 3 pages from `sync:full --limit 5`, compare output
-side-by-side with `../comapeo-docs/docs/` equivalents. No `Unsupported Notion block`
-messages. Callouts render as `:::` admonitions. Frontmatter has all required fields.
-Content passes Docusaurus MDX compilation.
+**June 2026 (pre-dating this cycle):** reference-output gap mitigation (admonitions, post-processing sanitizer, frontmatter enrichment, spacers, sidebar fallback), dangling-asterisk fix, internal link/anchor resolution via `links.ts` + github-slugger, JSX style preservation, CI typecheck/test gate, clean 3-locale re-sync.

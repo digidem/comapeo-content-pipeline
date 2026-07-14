@@ -1,6 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { generateManifest, generateSidebarJson } from "./manifest.js";
+import { generateManifest, generateSidebarJson, buildManifestFromStorage, manifestElementType } from "./manifest.js";
+import type { ManifestStorage } from "./manifest.js";
+import { isStructuralPage } from "./notion-properties.js";
 import type { PageMetadata } from "../schemas/metadata.js";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const fixturesDir = join(__dirname, "../../test/fixtures");
 
 const basePage: PageMetadata = {
   page_id: "abc123",
@@ -93,6 +101,37 @@ describe("generateManifest", () => {
   });
 });
 
+// ── Golden fixture (spec §15.2) ──
+
+describe("generateManifest — golden fixture", () => {
+  it("deep-equals test/fixtures/expected/manifest.json", () => {
+    // Deterministic input: 3 hand-written PageMetadata (EN sectioned, ES
+    // translation, EN unsectioned). properties carry the raw Notion property
+    // objects for Element Type / Publish Status, but the manifest must read the
+    // extracted top-level element_type / drafting_status fields.
+    const pages = JSON.parse(
+      readFileSync(join(fixturesDir, "golden", "golden-pages.json"), "utf8"),
+    ) as PageMetadata[];
+
+    const manifest = generateManifest({
+      databaseId: "db-golden",
+      dataSourceId: "ds-golden",
+      pages,
+    });
+
+    // generated_at is the only volatile field — normalize to a literal.
+    (manifest as { generated_at: string }).generated_at = "<GENERATED_AT>";
+
+    const expected = JSON.parse(
+      readFileSync(join(fixturesDir, "expected", "manifest.json"), "utf8"),
+    );
+
+    // Round-trip both sides through JSON so key order / undefined handling is
+    // identical, then deep-equal against the frozen golden file.
+    expect(JSON.parse(JSON.stringify(manifest))).toEqual(expected);
+  });
+});
+
 describe("generateSidebarJson", () => {
   it("groups pages by section into categories", () => {
     const pages: PageMetadata[] = [
@@ -135,5 +174,218 @@ describe("generateSidebarJson", () => {
 
     const sidebar = generateSidebarJson(pages);
     expect(sidebar).toEqual(["doc-b", "doc-a"]);
+  });
+});
+
+// ── buildManifestFromStorage ──
+
+/** In-memory ManifestStorage stub backed by a key→body map. */
+function memStorage(entries: Record<string, string>): ManifestStorage {
+  const map = new Map(Object.entries(entries));
+  return {
+    get: async (key) => map.get(key) ?? null,
+    list: async (prefix) =>
+      [...map.entries()]
+        .filter(([k]) => k.startsWith(prefix))
+        .map(([k, v]) => ({ key: k, size: v.length })),
+  };
+}
+
+describe("buildManifestFromStorage", () => {
+  it("builds manifest from valid blobs, skips corrupt ones, populates required doc fields", async () => {
+    const one: PageMetadata = {
+      ...basePage,
+      page_id: "p1",
+      slug: "page-one",
+      section: "intro",
+      section_order: 1,
+      status: "active",
+      element_type: "page",
+      drafting_status: "Draft published",
+      // Raw Notion property objects, as sync actually stores them — the manifest
+      // must read the extracted top-level fields above, never these (regression:
+      // casting these to string shipped objects inside element_type).
+      properties: {
+        "Element Type": { id: "nqRr", type: "select", select: { name: "Page" } },
+        "Publish Status": { id: "BQMv", type: "select", select: { name: "Draft published" } },
+      },
+      sub_items: ["p2"],
+    };
+    const two: PageMetadata = {
+      ...basePage,
+      page_id: "p2",
+      slug: "page-two",
+      section: null,
+      section_order: null,
+      status: "active",
+    };
+
+    const storage = memStorage({
+      "pages/p1/metadata.json": JSON.stringify(one),
+      "pages/p2/metadata.json": JSON.stringify(two),
+      "pages/p3/metadata.json": "{not valid json",
+      // Non-metadata blobs under pages/ must be ignored by the filter.
+      "pages/p1/raw-page.json": "{}",
+      "pages/p1/raw-blocks.json": "[]",
+    });
+
+    const { manifest, skipped } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+
+    expect(manifest.docs).toHaveLength(2);
+
+    const d1 = manifest.docs.find((d) => d.page_id === "p1");
+    expect(d1).toBeDefined();
+    // Required fields that D1 rows omit — now sourced from the metadata blobs.
+    expect(d1!.element_type).toBe("page");
+    expect(d1!.drafting_status).toBe("Draft published");
+    expect(d1!.sub_items).toEqual(["p2"]);
+
+    // sidebars must be populated (not {}), built from the active pages.
+    expect(Object.keys(manifest.sidebars)).toContain("en");
+    expect(manifest.sidebars.en.length).toBeGreaterThan(0);
+
+    expect(skipped).toEqual(["pages/p3/metadata.json"]);
+  });
+
+  it("skips blobs that fail PageMetadataSchema validation", async () => {
+    const valid: PageMetadata = { ...basePage, page_id: "p1", status: "active" };
+    // Missing required fields (no content_hash, no status) → schema rejects.
+    const invalid = { page_id: "p2", title: "No hash" };
+
+    const storage = memStorage({
+      "pages/p1/metadata.json": JSON.stringify(valid),
+      "pages/p2/metadata.json": JSON.stringify(invalid),
+    });
+
+    const { manifest, skipped } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+
+    expect(manifest.docs).toHaveLength(1);
+    expect(manifest.docs[0].page_id).toBe("p1");
+    expect(skipped).toEqual(["pages/p2/metadata.json"]);
+  });
+
+  it("returns an empty doc set when no metadata blobs exist", async () => {
+    const storage = memStorage({});
+    const { manifest, skipped } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+    expect(manifest.docs).toEqual([]);
+    expect(skipped).toEqual([]);
+  });
+
+  it("routes a transient storage.get throw to readErrors, not skipped", async () => {
+    const valid: PageMetadata = { ...basePage, page_id: "p1", status: "active" };
+    const storage = memStorage({
+      "pages/p1/metadata.json": JSON.stringify(valid),
+      "pages/p2/metadata.json": JSON.stringify({ ...basePage, page_id: "p2", status: "active" }),
+    });
+    // p2's get throws — a transient R2/network hiccup, not a corrupt blob.
+    const realGet = storage.get;
+    storage.get = async (key) => {
+      if (key === "pages/p2/metadata.json") throw new Error("R2 transient");
+      return realGet(key);
+    };
+
+    const { manifest, skipped, readErrors } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+
+    expect(manifest.docs).toHaveLength(1);
+    expect(manifest.docs[0].page_id).toBe("p1");
+    expect(readErrors).toEqual(["pages/p2/metadata.json"]);
+    // The transient key must not be confused with a permanent parse/schema failure.
+    expect(skipped).toEqual([]);
+  });
+
+  it("routes a vanished key (get returns null) to readErrors, not skipped", async () => {
+    const valid: PageMetadata = { ...basePage, page_id: "p1", status: "active" };
+    const storage = memStorage({
+      "pages/p1/metadata.json": JSON.stringify(valid),
+      "pages/p2/metadata.json": JSON.stringify({ ...basePage, page_id: "p2", status: "active" }),
+    });
+    // p2 vanished between list and get.
+    const realGet = storage.get;
+    storage.get = async (key) => {
+      if (key === "pages/p2/metadata.json") return null;
+      return realGet(key);
+    };
+
+    const { skipped, readErrors } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+
+    expect(readErrors).toEqual(["pages/p2/metadata.json"]);
+    expect(skipped).toEqual([]);
+  });
+
+  it("keeps corrupt-JSON blobs in skipped alongside a transient get throw in readErrors", async () => {
+    const valid: PageMetadata = { ...basePage, page_id: "p1", status: "active" };
+    const storage = memStorage({
+      "pages/p1/metadata.json": JSON.stringify(valid),
+      "pages/p2/metadata.json": "{not valid json", // permanent → skipped
+      "pages/p3/metadata.json": JSON.stringify({ ...basePage, page_id: "p3", status: "active" }),
+    });
+    const realGet = storage.get;
+    storage.get = async (key) => {
+      if (key === "pages/p3/metadata.json") throw new Error("R2 transient"); // transient → readErrors
+      return realGet(key);
+    };
+
+    const { skipped, readErrors } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+
+    expect(skipped).toEqual(["pages/p2/metadata.json"]);
+    expect(readErrors).toEqual(["pages/p3/metadata.json"]);
+  });
+});
+
+// ── manifestElementType ──
+
+describe("manifestElementType", () => {
+  it("returns a plain string element_type unchanged", () => {
+    expect(manifestElementType({ element_type: "Toggle" })).toBe("Toggle");
+    expect(manifestElementType({ element_type: "page" })).toBe("page");
+  });
+
+  it("unwraps the legacy raw Notion select object shape", () => {
+    expect(manifestElementType({ element_type: { select: { name: "Toggle" } } })).toBe("Toggle");
+    expect(manifestElementType({ element_type: { select: { name: "Title" } } })).toBe("Title");
+  });
+
+  it("unwraps the legacy bare-name object shape", () => {
+    expect(manifestElementType({ element_type: { name: "Page" } })).toBe("Page");
+  });
+
+  it("returns empty string for null, undefined, or non-string/object values", () => {
+    expect(manifestElementType({ element_type: null })).toBe("");
+    expect(manifestElementType({ element_type: undefined })).toBe("");
+    expect(manifestElementType({})).toBe("");
+    expect(manifestElementType({ element_type: 42 })).toBe("");
+  });
+
+  // Regression: rag:chunks filters structural pages via
+  // isStructuralPage(manifestElementType(doc)). Before the fix, rag:chunks
+  // still unwrapped element_type as the old object shape, so a plain-string
+  // "Toggle" yielded "" → isStructuralPage("") === false → Toggle/Title pages
+  // leaked into rag/chunks/ (the "0/62 structural pages leak" guarantee broke).
+  it("supports the rag:chunks structural-page filter on plain-string element_type", () => {
+    const toggle = { element_type: "Toggle" };
+    const title = { element_type: "Title" };
+    const page = { element_type: "Page" };
+
+    expect(isStructuralPage(manifestElementType(toggle))).toBe(true);
+    expect(isStructuralPage(manifestElementType(title))).toBe(true);
+    expect(isStructuralPage(manifestElementType(page))).toBe(false);
   });
 });

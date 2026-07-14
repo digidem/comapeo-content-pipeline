@@ -3,8 +3,8 @@
  */
 
 import { NotionClient } from "./notion-client.js";
-import type { NotionPage, NotionBlock } from "./notion-client.js";
-import { NOTION_PROPERTIES } from "./notion-properties.js";
+import type { NotionPage } from "./notion-client.js";
+import { NOTION_PROPERTIES, normalizeLocale } from "./notion-properties.js";
 import { convertBlocks } from "./notion-converter.js";
 import type { NotionBlockList } from "./notion-converter.js";
 import { postProcessMarkdown } from "./post-process.js";
@@ -67,7 +67,8 @@ export interface ConvertOverrides {
  * Asset rehosting: Notion image URLs are temporary (~1 hour). This function
  * downloads Notion-hosted images, hashes them, and replaces URLs in the
  * canonical markdown with stable R2 paths. The content_hash is computed
- * BEFORE URL replacement so it's stable across re-syncs.
+ * AFTER URL replacement (on the canonical markdown) so it's stable across
+ * re-syncs — pre-rewrite markdown embeds signed, expiring Notion URLs.
  */
 export async function convertPageData(input: {
   pageId: string;
@@ -91,19 +92,19 @@ export async function convertPageData(input: {
   const resolvedSection = overrides?.section ?? extractSection(pageLike);
   const resolvedSectionOrder = overrides?.sectionOrder ?? extractSectionOrder(pageLike);
   const resolvedElementType = overrides?.elementType ?? extractProperty(pageLike, NOTION_PROPERTIES.ELEMENT_TYPE);
-  const resolvedDraftingStatus = overrides?.draftingStatus ?? extractProperty(pageLike, NOTION_PROPERTIES.DRAFTING_STATUS);
+  const resolvedDraftingStatus = overrides?.draftingStatus ?? extractProperty(pageLike, NOTION_PROPERTIES.PUBLISH_STATUS);
   const status = mapStatus(resolvedDraftingStatus);
 
   // Extract SEO and Docusaurus metadata properties
-  const keywords = extractMultiSelect(pageLike, "Keywords");
-  const tags = extractMultiSelect(pageLike, "Tags");
+  const keywords = extractMultiSelect(pageLike, NOTION_PROPERTIES.KEYWORDS);
+  const tags = extractMultiSelect(pageLike, NOTION_PROPERTIES.TAGS);
   // Extract sub-items (translations linked via Sub-item relation)
   const subItems = extractRelation(pageLike, NOTION_PROPERTIES.SUB_ITEM);
   // Apply defaults matching old pipeline behavior
   const resolvedKeywords = keywords.length > 0 ? keywords : ["docs", "comapeo"];
   const resolvedTags = tags.length > 0 ? tags : ["comapeo"];
   const icon = extractIcon(rawPage);
-  const publishedDate = extractDate(pageLike, "Date Published");
+  const publishedDate = extractDate(pageLike, NOTION_PROPERTIES.DATE_PUBLISHED);
 
   // Generate slug
   const slugSet = usedSlugs ?? new Set<string>();
@@ -115,9 +116,6 @@ export async function convertPageData(input: {
 
   // Post-process for Docusaurus compatibility (strip dup H1, fix headings, sanitize)
   markdownBody = postProcessMarkdown(markdownBody, title);
-
-  // Compute content hash BEFORE asset rehosting (stable across re-syncs)
-  const hash = await contentHash(markdownBody);
 
   // ── Asset rehosting ──
   // Download Notion-hosted images, replace URLs with stable R2 paths.
@@ -195,21 +193,25 @@ export async function convertPageData(input: {
     .map((a) => a.url);
   for (const url of leftoverUrls) {
     const esc = escapeRegExp(url);
+    // Drop the expiring query-string signature so the marker carries a stable
+    // identifier (see stripUrlSignature). Regex still matches the full signed
+    // URL because that's what's in the body; only the emitted marker is stripped.
+    const markerUrl = stripUrlSignature(url);
 
     // Markdown image: ![alt](url) → preserve alt text where present
     markdownBody = markdownBody.replace(
       new RegExp(`!\\[([^\\]]*)\\]\\(${esc}\\)`, "g"),
       (_match, alt: string) =>
         alt && alt.trim()
-          ? `**[Image unavailable: ${alt}]**\n<!-- failed-asset: ${url} -->`
-          : `**[Image unavailable]**\n<!-- failed-asset: ${url} -->`,
+          ? `**[Image unavailable: ${alt}]**\n<!-- failed-asset: ${markerUrl} -->`
+          : `**[Image unavailable]**\n<!-- failed-asset: ${markerUrl} -->`,
     );
 
     // HTML img: <img ... src="url" ...> (double or single quoted) → no alt recovery.
     // Callback (not a string replacer) so any `$` in `url` isn't re-interpreted.
     markdownBody = markdownBody.replace(
       new RegExp(`<img\\b[^>]*\\ssrc=(["'])${esc}\\1[^>]*>`, "gi"),
-      () => `**[Image unavailable]**\n<!-- failed-asset: ${url} -->`,
+      () => `**[Image unavailable]**\n<!-- failed-asset: ${markerUrl} -->`,
     );
   }
 
@@ -220,6 +222,12 @@ export async function convertPageData(input: {
       `Failed-asset neutralization left ${stillLeftover.length} expiring URL(s) in body; first: ${stillLeftover[0].url}`,
     );
   }
+
+  // Compute content hash on the CANONICAL markdown — after asset rehosting and
+  // failed-asset neutralization. Pre-rehost markdown embeds signed (expiring)
+  // Notion S3 URLs that change every fetch, which made the hash flap on every
+  // sync for asset pages; rehosted assets/<sha256> paths are stable.
+  const hash = await contentHash(markdownBody);
 
   // Build metadata
   const metadata: PageMetadata = {
@@ -343,19 +351,7 @@ function extractProperty(page: NotionPage, name: string): string | null {
 function extractLocale(page: NotionPage): string | null {
   const lang = extractProperty(page, NOTION_PROPERTIES.LANGUAGE);
   if (!lang) return null;
-
-  // Map Notion language names to locale codes
-  const localeMap: Record<string, string> = {
-    English: "en",
-    Portuguese: "pt",
-    Spanish: "es",
-    "pt-BR": "pt",
-    es: "es",
-    en: "en",
-    pt: "pt",
-  };
-
-  return localeMap[lang] ?? lang.toLowerCase();
+  return normalizeLocale(lang);
 }
 
 /** Extract content section from Notion page properties */
@@ -424,4 +420,27 @@ function extractIcon(rawPage: Record<string, unknown>): string | null {
 /** Escape RegExp metacharacters in a literal string so it embeds safely in a pattern. */
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Drop the query string (and thus the expiring X-Amz-Signature) from an asset
+ * URL, keeping only origin + pathname.
+ *
+ * Hash-stability requirement: the content_hash is computed on the canonical
+ * markdown AFTER failed-asset neutralization. The failed-asset marker embeds
+ * this identifier, so it must NOT carry the signature — otherwise two syncs of
+ * the same failed asset differ only in the signed query string and the hash
+ * flaps on every sync, defeating change detection (and shipping an expiring
+ * URL inside canonical markdown, which the rehost design exists to prevent).
+ * Origin + pathname stay useful for debugging which asset failed. Falls back to
+ * a literal `?` split when the URL won't parse.
+ */
+export function stripUrlSignature(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.origin + u.pathname;
+  } catch {
+    const i = url.indexOf("?");
+    return i >= 0 ? url.slice(0, i) : url;
+  }
 }

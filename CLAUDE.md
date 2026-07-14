@@ -22,7 +22,7 @@ npm test                     # vitest run (all *.test.ts under src/ and test/)
 npm run test:watch
 npm run test:coverage
 npm run typecheck            # tsc --noEmit
-npm run lint                 # eslint src --ext .ts --fix
+npm run lint                 # eslint src (npm run lint:fix to autofix)
 
 # Run a single test file
 npx vitest run src/rag/chunker.test.ts
@@ -30,7 +30,7 @@ npx vitest run src/rag/chunker.test.ts
 npx vitest run -t "slug"
 ```
 
-CLI subcommands: `sync:page <id>`, `sync:full [--out --limit --filter]`, `manifest:generate`, `docs:pull --out ./docs`, `validate`, `diff`, `rag:chunks`. Note `rag:chunks` and `diff` are stubs — see TASKS.md.
+CLI subcommands: `sync:page <id>`, `sync:full [--out --limit --filter --all]`, `manifest:generate`, `docs:pull --out ./docs`, `validate`, `diff`, `rag:chunks [--all]`. Note: `sync:full` writes `manifest.json` itself; `manifest:generate` rebuilds it from the `<page_id>.metadata.json` blobs the sync also emits, and refuses to run without them.
 
 ## Architecture / data flow
 
@@ -50,7 +50,7 @@ D1 schema (`migrations/0001_initial.sql`, queries in `src/persistence/d1.ts`): `
 
 Hono app. Routes: `GET /health`, `GET /health/deep` (D1+R2+Notion check), `POST /webhooks/notion` (verification challenge + enqueue), `POST /admin/sync/page|sync/changed|manifest/regenerate`. Admin routes require `Authorization: Bearer ${ADMIN_TOKEN}`. `scheduled` cron (`*/5 * * * *`) queries Notion for changed pages and enqueues.
 
-**Known gap (TASKS.md §1):** the Worker currently fetches raw page/blocks and writes raw JSON to R2 but does NOT yet run `convertBlocks`/`buildFrontmatter` — it does not emit canonical Markdown. The queue consumer is disabled in `wrangler.toml` (commented out) pending a fix. When wiring the converter into the Worker, share `syncPage` logic rather than duplicating it, and keep it Node-API-free.
+**Queue Consumer:** The queue consumer is enabled in `wrangler.toml` and processes events using the shared runtime-agnostic `convertPageData` to generate Markdown and upload assets to R2.
 
 ## Conventions
 

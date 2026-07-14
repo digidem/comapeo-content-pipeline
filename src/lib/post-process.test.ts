@@ -4,6 +4,7 @@ import {
   ensureBlankLineAfterStandaloneBold,
   sanitizeMarkdownContent,
   sanitizeMarkdownImages,
+  stripImageAuthorNotes,
   postProcessMarkdown,
 } from "./post-process.js";
 
@@ -198,6 +199,49 @@ describe("sanitizeMarkdownImages", () => {
     const content = "![bad]()\n![undef](undefined)\n![good](https://example.com/a.png)\n![space]( https://b.com/img.png )";
     const result = sanitizeMarkdownImages(content);
     expect(result).toBe("\n\n![good](https://example.com/a.png)\n![space](https://b.com/img.png)");
+  });
+});
+
+describe("stripImageAuthorNotes", () => {
+  it("strips a standalone [Image: url] line", () => {
+    const content = "Some text.\n[Image: https://prod-files-secure.s3.amazonaws.com/abc123]\nMore text.";
+    const result = stripImageAuthorNotes(content);
+    expect(result).not.toContain("[Image:");
+    expect(result).toContain("Some text.");
+    expect(result).toContain("More text.");
+  });
+
+  it("strips a bold-wrapped [Image: url] line", () => {
+    const content = "Before.\n**[Image: https://example.com/pic.jpg]**\nAfter.";
+    const result = stripImageAuthorNotes(content);
+    expect(result).not.toContain("[Image:");
+    expect(result).toContain("Before.");
+    expect(result).toContain("After.");
+  });
+
+  it("does NOT strip [Image: ...] when it appears mid-sentence with other content", () => {
+    const content = "See the [Image: https://example.com/pic.jpg] for reference.";
+    const result = stripImageAuthorNotes(content);
+    // Line has other content — must be preserved
+    expect(result).toContain("[Image:");
+  });
+
+  it("does NOT touch standard Markdown images ![alt](url)", () => {
+    const content = "![A screenshot](https://example.com/screenshot.png)";
+    const result = stripImageAuthorNotes(content);
+    expect(result).toBe(content);
+  });
+
+  it("collapses double blank lines left after stripping", () => {
+    const content = "Para one.\n\n[Image: https://example.com/img.png]\n\nPara two.";
+    const result = stripImageAuthorNotes(content);
+    expect(result).not.toMatch(/\n{3,}/);
+    expect(result).toContain("Para one.");
+    expect(result).toContain("Para two.");
+  });
+
+  it("handles empty input", () => {
+    expect(stripImageAuthorNotes("")).toBe("");
   });
 });
 

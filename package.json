@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src --ext .ts --fix",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
     "pipeline": "bun src/cli/index.ts"
   },
   "dependencies": {
@@ -24,10 +25,12 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260609.1",
+    "@eslint/js": "^10.0.1",
     "@types/node": "^25.4.0",
     "@vitest/coverage-v8": "^4.0.18",
     "eslint": "^10.0.3",
     "typescript": "~5.9.3",
+    "typescript-eslint": "^8.63.0",
     "vitest": "^4.0.18",
     "wrangler": "^4.72.0"
   }

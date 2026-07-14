@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "<GENERATED_AT>",
+  "source": {
+    "type": "notion",
+    "database_id": "db-golden",
+    "data_source_id": "ds-golden"
+  },
+  "docs": [
+    {
+      "page_id": "golden-en-sectioned",
+      "title": "Getting Started with CoMapeo",
+      "locale": "en",
+      "section": "Getting Started",
+      "section_order": 1,
+      "element_type": "page",
+      "drafting_status": "Published",
+      "slug": "getting-started",
+      "docusaurus_id": "getting-started",
+      "docusaurus_path": "/getting-started",
+      "r2_doc_key": "docs/en/docs/Getting Started/getting-started.md",
+      "r2_metadata_key": "pages/golden-en-sectioned/metadata.json",
+      "source_url": "https://www.notion.so/golden-en-sectioned",
+      "notion_last_edited_time": "2026-06-01T10:00:00.000Z",
+      "content_hash": "sha256:golden-en-sectioned-body",
+      "status": "active",
+      "sub_items": [
+        "golden-es-translation"
+      ]
+    },
+    {
+      "page_id": "golden-es-translation",
+      "title": "Primeros pasos con CoMapeo",
+      "locale": "es",
+      "section": "Primeros pasos",
+      "section_order": 1,
+      "element_type": "page",
+      "drafting_status": "Published",
+      "slug": "primeros-pasos",
+      "docusaurus_id": "primeros-pasos",
+      "docusaurus_path": "/primeros-pasos",
+      "r2_doc_key": "docs/es/docs/Primeros pasos/primeros-pasos.md",
+      "r2_metadata_key": "pages/golden-es-translation/metadata.json",
+      "source_url": "https://www.notion.so/golden-es-translation",
+      "notion_last_edited_time": "2026-06-02T12:30:00.000Z",
+      "content_hash": "sha256:golden-es-translation-body",
+      "status": "active"
+    },
+    {
+      "page_id": "golden-en-flat",
+      "title": "Frequently Asked Questions",
+      "locale": "en",
+      "section": null,
+      "section_order": 10,
+      "element_type": "page",
+      "drafting_status": "Published",
+      "slug": "faq",
+      "docusaurus_id": "faq",
+      "docusaurus_path": "/faq",
+      "r2_doc_key": "docs/en/docs/faq.md",
+      "r2_metadata_key": "pages/golden-en-flat/metadata.json",
+      "source_url": "https://www.notion.so/golden-en-flat",
+      "notion_last_edited_time": "2026-06-03T08:15:00.000Z",
+      "content_hash": "sha256:golden-en-flat-body",
+      "status": "active"
+    }
+  ],
+  "sidebars": {
+    "en": [
+      {
+        "type": "category",
+        "label": "Getting Started",
+        "items": [
+          "getting-started"
+        ]
+      },
+      "faq"
+    ],
+    "es": [
+      {
+        "type": "category",
+        "label": "Primeros pasos",
+        "items": [
+          "primeros-pasos"
+        ]
+      }
+    ]
+  }
+}

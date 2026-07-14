@@ -19,9 +19,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # NOTE: `npm run lint` is intentionally omitted — the repo has no
-      # eslint.config.js and the script's `--ext` flag was removed in ESLint v9,
-      # so it currently errors. Re-add once the flat-config migration lands.
+      - name: Lint
+        run: npm run lint
 
       - name: Typecheck
         run: npm run typecheck

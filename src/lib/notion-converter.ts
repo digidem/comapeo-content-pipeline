@@ -39,38 +39,9 @@ export interface NotionBlockList {
 }
 
 // Block content accessors with type-specific payloads
-interface HeadingContent {
-  rich_text: NotionRichText[];
-}
-
-interface ParagraphContent {
-  rich_text: NotionRichText[];
-}
-
-interface BulletedListItemContent {
-  rich_text: NotionRichText[];
-}
-
-interface NumberedListItemContent {
-  rich_text: NotionRichText[];
-}
-
 interface ToDoContent {
   rich_text: NotionRichText[];
   checked?: boolean;
-}
-
-interface ToggleContent {
-  rich_text: NotionRichText[];
-}
-
-interface QuoteContent {
-  rich_text: NotionRichText[];
-}
-
-interface CalloutContent {
-  rich_text: NotionRichText[];
-  icon?: unknown;
 }
 
 interface CodeContent {
@@ -86,18 +57,8 @@ interface ImageContent {
   link?: { url: string };
 }
 
-interface TableContent {
-  table_width: number;
-  has_column_header: boolean;
-  has_row_header: boolean;
-}
-
 interface TableRowContent {
   cells: NotionRichText[][];
-}
-
-interface DividerContent {
-  // no content
 }
 
 // ── Rich text → Markdown ──
@@ -170,7 +131,33 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
       const applyInline = (segment: string): string => {
         // Don't wrap empty segments (blank lines) — keeps them blank.
         if (segment === "") return "";
-        let s = segment;
+        // Whitespace-only segments must not receive inline markers.
+        // Markers that open or close adjacent to whitespace are not valid
+        // emphasis delimiters in CommonMark — they render as literal asterisks.
+        if (segment.trim() === "") return segment;
+
+        // Punctuation/symbol-only segments (no letters or digits) must not be
+        // emphasized either: authors sometimes bold/italicize just a ":" after
+        // a word ("Step 1*:*"), and per CommonMark flanking rules an emphasis
+        // delimiter between an alphanumeric and punctuation is not left-flanking
+        // — the markers render literally. Styling bare punctuation is visually
+        // meaningless, so drop the markers (keep color spans, which still work).
+        if (!/[\p{L}\p{N}]/u.test(segment) && !rt.annotations.code) {
+          const color = rt.annotations.color;
+          if (color && color !== "default" && !color.endsWith("_background")) {
+            return `<span style={{color:"${color}"}}>${segment}</span>`;
+          }
+          return segment;
+        }
+
+        // Hoist leading/trailing whitespace outside inline markers (MD037).
+        // e.g. bold(" Step 2: ") → " **Step 2:** " not "** Step 2: **"
+        const leadMatch = segment.match(/^(\s+)/);
+        const leadingWs = leadMatch ? leadMatch[1] : "";
+        const trailMatch = segment.match(/(\s+)$/);
+        const trailingWs = trailMatch ? trailMatch[1] : "";
+        let s = segment.slice(leadingWs.length, segment.length - trailingWs.length);
+
         if (rt.annotations.bold) {
           s = `**${s}**`;
         }
@@ -184,6 +171,7 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
           s = `<u>${s}</u>`;
         }
         if (rt.annotations.code) {
+          // For code spans, hoist surrounding whitespace but preserve interior.
           s = "`" + s + "`";
         }
 
@@ -195,7 +183,7 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
         if (color && color !== "default" && !color.endsWith("_background")) {
           s = `<span style={{color:"${color}"}}>${s}</span>`;
         }
-        return s;
+        return leadingWs + s + trailingWs;
       };
 
       text = text.includes("\n")
@@ -205,7 +193,20 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
       // Links: prefer href from mention, then text.link, then annotations
       const linkUrl = rt.href || rt.text?.link?.url;
       if (linkUrl && !rt.annotations.code) {
-        text = `[${rt.plain_text || text}](${linkUrl})`;
+        // Hoist leading/trailing whitespace outside the bracket syntax (MD039).
+        // e.g. plain_text=" text " → " [text](url) " not "[ text ](url)"
+        const rawLinkText = rt.plain_text || text;
+        const linkLeadMatch = rawLinkText.match(/^(\s+)/);
+        const linkLeadWs = linkLeadMatch ? linkLeadMatch[1] : "";
+        const linkTrailMatch = rawLinkText.match(/(\s+)$/);
+        const linkTrailWs = linkTrailMatch ? linkTrailMatch[1] : "";
+        const innerText = rawLinkText.slice(linkLeadWs.length, rawLinkText.length - linkTrailWs.length);
+        if (innerText) {
+          text = linkLeadWs + `[${innerText}](${linkUrl})` + linkTrailWs;
+        } else {
+          // Whitespace-only link text: emit the whitespace without brackets.
+          text = rawLinkText;
+        }
       }
 
       return text;
@@ -246,7 +247,10 @@ function convertHeading(
   level: number,
   _children: NotionBlock[],
 ): string {
-  const text = richTextToMarkdown(getRichText(block));
+  // Trim heading text to remove leading/trailing whitespace that Notion can
+  // produce (e.g. a leading space from a padded rich-text span), which would
+  // generate `##  Title` (double-space) failing MD019.
+  const text = richTextToMarkdown(getRichText(block)).trim();
   const prefix = "#".repeat(level);
   return `${prefix} ${text}`;
 }
@@ -368,7 +372,7 @@ function convertCallout(
     if (trimmed.startsWith(icon)) {
       let remainder = trimmed.slice(icon.length);
       // Strip whitespace/separators after icon
-      const sepMatch = remainder.match(/^[\s   :;!?¡¿\-–—–—−‑‒：﹕꞉；，、。．·•・.]+/u);
+      const sepMatch = remainder.match(/^[\s\u00A0\u2007\u202F:;!?¡¿\-–—–—−‑‒：﹕꞉；，、。．·•・.]+/u);
       if (sepMatch) {
         remainder = remainder.slice(sepMatch[0].length);
       }
@@ -388,8 +392,11 @@ function convertCallout(
     const firstLine = lines[0].trimStart();
     const leading = lines[0].match(/^\s*/)?.[0] ?? "";
 
-    // Try bold title: **Title** separator? remainder
-    const boldMatch = firstLine.match(/^\*\*(.+?)\*\*(?:\s*[:;!?\-–—–—−‑‒：﹕꞉]+)?\s*(.*)$/u);
+    // Try bold title: **Title** (or bold+italic ***Title***) separator? remainder.
+    // \*{2,3} with a [^*] inner guard so ***Tip:*** captures "Tip:" cleanly —
+    // a lazy (.+?) against \*\* would swallow the third asterisk into the title
+    // and leak the closing one into the content ("*Tip" / "* After …").
+    const boldMatch = firstLine.match(/^\*{2,3}([^*]+?)\*{2,3}(?:\s*[:;!?\-–—–—−‑‒：﹕꞉]+)?\s*(.*)$/u);
     if (boldMatch && boldMatch[2]) {
       const rawTitle = boldMatch[1].trim();
       // Strip trailing punctuation
@@ -434,19 +441,32 @@ function convertCallout(
 
   const joinedContent = contentLines.join("\n").replace(/^[\s\t]*\n+/u, "").replace(/\n+[\s\t]*$/u, "");
 
+  // Nested admonitions (a Notion callout inside a callout/toggle) require the
+  // OUTER fence to use more colons than any fence it contains — with equal
+  // colons the first inner `:::` closes the outer container early and the
+  // outer's own close renders as literal ":::" text (Docusaurus/remark-directive
+  // rule). Scan the already-converted inner content for its deepest fence and
+  // go one colon deeper (minimum 3).
+  const innerContent = [joinedContent, childrenOutput].filter(Boolean).join("\n\n");
+  let maxInnerColons = 2;
+  for (const line of innerContent.split("\n")) {
+    const m = line.match(/^(:{3,})/);
+    if (m && m[1].length > maxInnerColons) maxInnerColons = m[1].length;
+  }
+  const fence = ":".repeat(Math.max(3, maxInnerColons + 1));
+
   // Build admonition
   const result: string[] = [];
-  result.push(`:::${admonitionType}${derivedTitle ? " " + derivedTitle : ""}`);
+  result.push(`${fence}${admonitionType}${derivedTitle ? " " + derivedTitle : ""}`);
 
-  if (joinedContent) {
-    result.push(joinedContent);
+  if (innerContent) {
+    result.push(innerContent);
   }
 
-  if (childrenOutput) {
-    result.push(childrenOutput);
-  }
-
-  result.push(":::");
+  // Blank line before the closing fence so it can never be swallowed as a lazy
+  // continuation of the preceding paragraph/image line.
+  result.push("");
+  result.push(fence);
   return result.join("\n");
 }
 
@@ -560,7 +580,13 @@ function convertTable(
     const cells = (row.table_row as TableRowContent)?.cells ?? [];
     return (
       "| " +
-      cells.map((cell) => richTextToMarkdown(cell)).join(" | ") +
+      cells.map((cell) => {
+        const raw = richTextToMarkdown(cell);
+        // Newlines inside table cells break Markdown table syntax (MD056).
+        // Trim edge whitespace first (which handles trailing-newline artifacts),
+        // then replace any remaining interior newlines with <br />.
+        return raw.trim().replace(/\n/g, "<br />");
+      }).join(" | ") +
       " |"
     );
   });
@@ -578,7 +604,12 @@ function convertTable(
 }
 
 function convertDivider(): string {
-  return "---";
+  // Prepend a blank line so a `---` that follows body text (e.g. inside a
+  // callout where children are joined with a single newline) is never parsed
+  // as a setext H2 heading (MD003).  At the top level, `convertBlocks` already
+  // joins blocks with `\n\n`, so the extra leading newline creates at most one
+  // additional blank line, which Markdown renderers collapse harmlessly.
+  return "\n---";
 }
 
 function convertEmbed(block: NotionBlock): string {

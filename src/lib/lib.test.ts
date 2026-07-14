@@ -7,6 +7,7 @@ import {
   generateSlug,
   slugToDocusaurusId,
   mapStatus,
+  isPublishableStatus,
   contentHash,
   hashJSON,
   hashesEqual,
@@ -135,6 +136,117 @@ describe("mapStatus", () => {
     expect(mapStatus(null)).toBe("draft");
     expect(mapStatus(undefined)).toBe("draft");
     expect(mapStatus("")).toBe("draft");
+  });
+});
+
+describe("isPublishableStatus", () => {
+  it("active is publishable with and without --all", () => {
+    expect(isPublishableStatus("active", false)).toBe(true);
+    expect(isPublishableStatus("active", true)).toBe(true);
+  });
+
+  it("draft is publishable only under --all", () => {
+    expect(isPublishableStatus("draft", false)).toBe(false);
+    expect(isPublishableStatus("draft", true)).toBe(true);
+  });
+
+  it("dead statuses are never publishable, even under --all", () => {
+    expect(isPublishableStatus("deprecated", false)).toBe(false);
+    expect(isPublishableStatus("deprecated", true)).toBe(false);
+    expect(isPublishableStatus("archived", false)).toBe(false);
+    expect(isPublishableStatus("archived", true)).toBe(false);
+  });
+});
+
+// ── mapStatus: all 13 live "Publish Status" values (confirmed 2026-07-01) ──
+
+describe("mapStatus — live Notion vocabulary (exact-match table)", () => {
+  const cases: Array<[string, "active" | "draft" | "deprecated" | "archived"]> = [
+    // active — published or cleared for publishing
+    ["Ready to publish",                      "active"],
+    ["Adding to staging site",                "active"],
+    ["Draft published",                       "active"],
+    ["Published",                             "active"],
+    // draft — pre-publication editorial states
+    ["Not started",                           "draft"],
+    ["Update in progress",                    "draft"],
+    ["Ready for translation",                 "draft"],
+    ["Automated translation in progress",     "draft"],
+    ["Automated translations generated",      "draft"],
+    ["Auto translation generated",            "draft"],
+    ["Reviewing translations",                "draft"],
+    // deprecated — explicit removal
+    ["Remove",                                "deprecated"],
+    // archived — was live, now taken down
+    ["Unplublished",                          "archived"],  // real Notion typo
+  ];
+
+  for (const [value, expected] of cases) {
+    it(`"${value}" → ${expected}`, () => {
+      expect(mapStatus(value)).toBe(expected);
+    });
+  }
+});
+
+describe("mapStatus — case-insensitivity", () => {
+  it('"PUBLISHED" (all-caps) → active', () => {
+    expect(mapStatus("PUBLISHED")).toBe("active");
+  });
+
+  it('"published" (lowercase) → active', () => {
+    expect(mapStatus("published")).toBe("active");
+  });
+
+  it('"READY TO PUBLISH" → active', () => {
+    expect(mapStatus("READY TO PUBLISH")).toBe("active");
+  });
+
+  it('"Unplublished" (canonical Notion typo) → archived', () => {
+    expect(mapStatus("Unplublished")).toBe("archived");
+  });
+
+  it('"UNPLUBLISHED" (all-caps Notion typo) → archived', () => {
+    expect(mapStatus("UNPLUBLISHED")).toBe("archived");
+  });
+
+  it('"unplublished" (lowercase Notion typo) → archived', () => {
+    expect(mapStatus("unplublished")).toBe("archived");
+  });
+
+  it('"Unpublished" (corrected spelling) → archived', () => {
+    expect(mapStatus("Unpublished")).toBe("archived");
+  });
+
+  it('"unpublished" (lowercase corrected) → archived', () => {
+    expect(mapStatus("unpublished")).toBe("archived");
+  });
+
+  it('"UNPUBLISHED" (all-caps corrected) → archived', () => {
+    expect(mapStatus("UNPUBLISHED")).toBe("archived");
+  });
+});
+
+describe("mapStatus — legacy fallback still works", () => {
+  it('"EN Done" → active (legacy /done/ pattern)', () => {
+    expect(mapStatus("EN Done")).toBe("active");
+  });
+
+  it('"X - Depreciated" → deprecated (legacy /depreciated/ pattern)', () => {
+    expect(mapStatus("X - Depreciated")).toBe("deprecated");
+  });
+
+  it('"Deleted" → archived (legacy /deleted/ pattern)', () => {
+    expect(mapStatus("Deleted")).toBe("archived");
+  });
+
+  it('unknown value → draft (default)', () => {
+    expect(mapStatus("Some brand new status we have never seen")).toBe("draft");
+  });
+
+  it('"Adding to staging site" does not match any draft fallback pattern', () => {
+    // Ensures the exact map claim is essential: without it the fallback would
+    // return "draft" (no pattern matches), but with it we get "active".
+    expect(mapStatus("Adding to staging site")).toBe("active");
   });
 });
 

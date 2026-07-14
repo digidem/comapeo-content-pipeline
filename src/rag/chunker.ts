@@ -37,7 +37,7 @@ function estimateTokens(text: string): number {
 export async function generateChunks(input: ChunkInput): Promise<RagChunk[]> {
   const { pageId, title, locale, slug, sourceUrl, docusaurusPath, contentHash, markdownBody } = input;
 
-  const sections = splitIntoSections(markdownBody);
+  const sections = coalesceSections(splitIntoSections(markdownBody));
   const chunks: RagChunk[] = [];
   let chunkIndex = 0;
 
@@ -76,6 +76,54 @@ interface Section {
 }
 
 /**
+ * Post-process raw sections into retrieval-worthy units (found on the real
+ * corpus: 314/1138 chunks under 50 tokens, including literal `---` remnants).
+ *
+ * 1. Drop noise: a section whose text has no letters or digits (stray
+ *    dividers, spacer markup) is worthless as a retrieval unit.
+ * 2. Coalesce: real Notion sections are mostly far below the 400-token
+ *    target, and a 30-token chunk retrieves poorly. Adjacent sections of the
+ *    same page merge while the accumulating section is still under 400 tokens
+ *    and the combination stays ≤ 800. The merged section keeps the FIRST
+ *    section's heading path — the constituent `##` heading lines remain
+ *    visible inside the text.
+ */
+function coalesceSections(sections: Section[]): Section[] {
+  const out: Section[] = [];
+  for (const s of sections) {
+    if (!/[\p{L}\p{N}]/u.test(s.text)) continue; // noise: no word characters
+
+    const last = out[out.length - 1];
+    if (
+      last &&
+      estimateTokens(last.text) < 400 &&
+      estimateTokens(last.text) + estimateTokens(s.text) <= 800
+    ) {
+      last.text = `${last.text}\n\n${s.text}`;
+      continue;
+    }
+    out.push({ headingPath: s.headingPath, text: s.text });
+  }
+  return out;
+}
+
+/**
+ * Strip inline markup from a heading title for use in heading_path metadata:
+ * inline HTML tags (falling back to an img's alt text when the tag is the
+ * whole title), emphasis/code markers, collapsed whitespace. The chunk TEXT
+ * keeps the raw heading line; only the metadata path is cleaned.
+ */
+function cleanHeadingTitle(raw: string): string {
+  const alt = raw.match(/alt="([^"]*)"/)?.[1] ?? "";
+  const cleaned = raw
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\*\*|`/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || alt;
+}
+
+/**
  * Split markdown into sections by headings.
  */
 function splitIntoSections(markdown: string): Section[] {
@@ -95,13 +143,28 @@ function splitIntoSections(markdown: string): Section[] {
     currentLines = [];
   }
 
+  // Fence tracking: a `## …` line INSIDE a fenced code block (markdown examples
+  // in the docs) is content, not a document heading — treating it as one tears
+  // the fence across sections and fabricates heading_path entries.
+  let inFence = false;
+
   for (const line of lines) {
+    if (line.startsWith("```")) {
+      inFence = !inFence;
+      currentLines.push(line);
+      continue;
+    }
+    if (inFence) {
+      currentLines.push(line);
+      continue;
+    }
+
     const headingMatch = line.match(/^(#{1,6})\s+(.+)/);
     if (headingMatch) {
       flushSection();
 
       const level = headingMatch[1].length;
-      const title = headingMatch[2].trim();
+      const title = cleanHeadingTitle(headingMatch[2].trim());
 
       // Update heading stack
       while (headingStack.length > 0 && headingStack[headingStack.length - 1].level >= level) {
@@ -122,85 +185,227 @@ function splitIntoSections(markdown: string): Section[] {
 
 /**
  * Split text into overlapping chunks aiming for [minTokens, maxTokens] token range.
- * Preserves paragraph and code-block boundaries.
+ * Preserves paragraph, code-block, and table boundaries. After greedy packing, a
+ * repair pass merges or rebalances ANY piece that fell below `minTokens` — not
+ * just the trailing remainder — so an under-sized piece cannot sit in the middle
+ * of the sequence. Atomic units (code fences, tables) stay whole, so a piece
+ * pinned between oversized atoms is left as-is as a best-effort exception.
  */
 function splitText(
   text: string,
-  _minTokens: number,
+  minTokens: number,
   maxTokens: number,
   overlapTokens: number,
 ): string[] {
   const paragraphs = splitByParagraphs(text);
-  const chunks: string[] = [];
+
+  // Phase 1 — pack paragraphs greedily into pieces (NO overlap yet).
+  const pieces: string[][] = [];
   let current: string[] = [];
   let currentTokens = 0;
-
   for (const para of paragraphs) {
     const paraTokens = estimateTokens(para);
-
     if (currentTokens + paraTokens > maxTokens && current.length > 0) {
-      // Emit current chunk
-      chunks.push(current.join("\n\n"));
-
-      // Overlap: keep last ~overlapTokens tokens
-      const overlapText = buildOverlap(current, overlapTokens);
-      current = overlapText ? [overlapText] : [];
-      currentTokens = estimateTokens(overlapText);
+      pieces.push(current);
+      current = [];
+      currentTokens = 0;
     }
-
     current.push(para);
     currentTokens += paraTokens;
   }
+  if (current.length > 0) pieces.push(current);
 
-  // Emit final chunk
-  if (current.length > 0) {
-    chunks.push(current.join("\n\n"));
-  }
+  // Phase 2 — min-size repair (spec §10.1) on the raw pieces. Greedy packing
+  // can leave a piece below the minimum anywhere in the sequence, not just as
+  // a trailing remainder. A naturally small section never reaches splitText
+  // (it emits via the ≤ max path), so this only ever collapses split pieces —
+  // never forces cross-section merging.
+  repairMinSize(pieces, minTokens, maxTokens);
 
-  return chunks;
+  // Phase 3 — overlap is applied LAST, between the final (post-repair)
+  // adjacent pieces. Applying it during packing and repairing afterwards
+  // duplicated content: merging a piece into its predecessor kept the
+  // predecessor-tail overlap baked into the piece, so the merged chunk carried
+  // those paragraphs twice.
+  return pieces.map((piece, idx) => {
+    if (idx === 0) return piece.join("\n\n");
+    const overlapText = buildOverlap(pieces[idx - 1], overlapTokens);
+    return overlapText ? [overlapText, ...piece].join("\n\n") : piece.join("\n\n");
+  });
+}
+
+/** Token estimate for a piece (its paragraphs joined as they will be emitted). */
+function pieceTokens(piece: string[]): number {
+  return estimateTokens(piece.join("\n\n"));
 }
 
 /**
- * Split text into logical paragraphs, preserving code blocks.
+ * Repair pass over packed pieces: ensure every piece reaches `minTokens` when
+ * atomicity allows it. Walks left to right (re-checking after each repair) and
+ * is bounded to one full pass plus a single re-pass — no unbounded loops.
+ *
+ * For each under-minimum piece, in priority order:
+ *   1. Merge with an adjacent piece (prefer the previous; else the next) when
+ *      the combined size stays ≤ maxTokens * 1.2.
+ *   2. Rebalance with the larger neighbor: re-split their combined paragraphs
+ *      at the boundary closest to an even split — but only when both resulting
+ *      pieces reach `minTokens`. A single-unit (atomic) neighbor is skipped,
+ *      since it cannot be re-split.
+ *   3. Leave as-is (escape hatch): when neither applies — e.g. a small piece
+ *      pinned next to an oversized atomic unit — the minimum is best-effort.
+ */
+function repairMinSize(pieces: string[][], minTokens: number, maxTokens: number): void {
+  const mergeCeiling = Math.ceil(maxTokens * 1.2);
+
+  for (let pass = 0; pass < 2; pass++) {
+    let repaired = false;
+    for (let i = 0; i < pieces.length; i++) {
+      if (pieceTokens(pieces[i]) >= minTokens) continue;
+
+      // 1. Merge with previous neighbor when it fits.
+      if (i > 0 && pieceTokens([...pieces[i - 1], ...pieces[i]]) <= mergeCeiling) {
+        pieces[i - 1] = [...pieces[i - 1], ...pieces[i]];
+        pieces.splice(i, 1);
+        repaired = true;
+        i--; // re-check the slot that just shifted into index i
+        continue;
+      }
+
+      // 1b. Else merge with the next neighbor when it fits.
+      if (i < pieces.length - 1 && pieceTokens([...pieces[i], ...pieces[i + 1]]) <= mergeCeiling) {
+        pieces[i] = [...pieces[i], ...pieces[i + 1]];
+        pieces.splice(i + 1, 1);
+        repaired = true;
+        i--; // re-check this slot (now holds the merged piece)
+        continue;
+      }
+
+      // 2. Rebalance with the larger neighbor when no merge fits.
+      if (rebalancePiece(pieces, i, minTokens)) {
+        repaired = true;
+        i--; // re-check the rebalanced slot
+        continue;
+      }
+
+      // 3. Escape hatch: leave as-is.
+    }
+    if (!repaired) break;
+  }
+}
+
+/**
+ * Rebalance the under-minimum piece at `pieces[i]` against its larger neighbor:
+ * recombine their paragraphs and re-split at the boundary closest to even. Only
+ * commits when both halves reach `minTokens`; a single-paragraph (atomic)
+ * neighbor is skipped because it cannot be subdivided. Returns true when applied.
+ */
+function rebalancePiece(pieces: string[][], i: number, minTokens: number): boolean {
+  const prev = i > 0 ? pieces[i - 1] : null;
+  const next = i < pieces.length - 1 ? pieces[i + 1] : null;
+
+  let neighbor: string[] | null = null;
+  let neighborIdx = -1;
+  if (prev && next) {
+    if (pieceTokens(next) >= pieceTokens(prev)) {
+      neighbor = next;
+      neighborIdx = i + 1;
+    } else {
+      neighbor = prev;
+      neighborIdx = i - 1;
+    }
+  } else if (prev) {
+    neighbor = prev;
+    neighborIdx = i - 1;
+  } else if (next) {
+    neighbor = next;
+    neighborIdx = i + 1;
+  }
+  if (!neighbor) return false;
+
+  // Atomic guard: a single-unit neighbor cannot be re-split.
+  if (neighbor.length <= 1) return false;
+
+  const combined =
+    neighborIdx < i ? [...neighbor, ...pieces[i]] : [...pieces[i], ...neighbor];
+  const combinedTokens = combined.reduce((sum, p) => sum + estimateTokens(p), 0);
+  if (combinedTokens < minTokens * 2) return false;
+
+  // Paragraph boundary (number of leading paragraphs) closest to an even split.
+  let bestSplit = 1;
+  let bestDiff = Infinity;
+  let running = 0;
+  for (let k = 0; k < combined.length - 1; k++) {
+    running += estimateTokens(combined[k]);
+    const diff = Math.abs(running - (combinedTokens - running));
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestSplit = k + 1;
+    }
+  }
+
+  const firstHalf = combined.slice(0, bestSplit);
+  const secondHalf = combined.slice(bestSplit);
+  if (pieceTokens(firstHalf) < minTokens || pieceTokens(secondHalf) < minTokens) {
+    return false;
+  }
+
+  const lo = neighborIdx < i ? neighborIdx : i;
+  const hi = neighborIdx < i ? i : neighborIdx;
+  pieces[lo] = firstHalf;
+  pieces[hi] = secondHalf;
+  return true;
+}
+
+/**
+ * Split text into logical paragraphs, preserving code blocks and tables.
  */
 function splitByParagraphs(text: string): string[] {
   const parts: string[] = [];
   let inCodeBlock = false;
   let buffer: string[] = [];
 
-  const lines = text.split("\n");
-  for (const line of lines) {
+  function flush() {
+    if (buffer.length > 0) {
+      parts.push(buffer.join("\n"));
+      buffer = [];
+    }
+  }
+
+  for (const line of text.split("\n")) {
+    // Fenced code blocks are atomic units (spec §10.1).
     if (line.startsWith("```")) {
-      // Flush current paragraph
-      if (buffer.length > 0 && !inCodeBlock) {
-        parts.push(buffer.join("\n"));
-        buffer = [];
-      }
+      if (!inCodeBlock) flush(); // break any in-progress paragraph
       inCodeBlock = !inCodeBlock;
       buffer.push(line);
-      if (!inCodeBlock) {
-        // End of code block — emit as single unit
-        parts.push(buffer.join("\n"));
-        buffer = [];
-      }
+      if (!inCodeBlock) flush(); // closing fence → emit whole block
       continue;
     }
 
-    if (!inCodeBlock && line.trim() === "") {
-      if (buffer.length > 0) {
-        parts.push(buffer.join("\n"));
-        buffer = [];
-      }
+    if (inCodeBlock) {
+      buffer.push(line);
       continue;
     }
 
-    // Inside code block or regular text
+    // Markdown tables are atomic units too: a run of consecutive lines each
+    // starting with "|" (header + separator + rows) stays together, mirroring
+    // code-fence protection. A table larger than max chunk size is emitted
+    // whole as an oversized unit (same as an oversized code block).
+    const isTableLine = line.startsWith("|");
+    const bufferIsTable =
+      buffer.length > 0 && buffer.every((b) => b.startsWith("|"));
+    if (buffer.length > 0 && isTableLine !== bufferIsTable) {
+      flush(); // boundary between prose and a table run
+    }
+
+    if (line.trim() === "") {
+      flush();
+      continue;
+    }
+
     buffer.push(line);
   }
 
-  if (buffer.length > 0) {
-    parts.push(buffer.join("\n"));
-  }
+  flush();
 
   return parts.filter((p) => p.trim().length > 0);
 }
@@ -212,11 +417,38 @@ function buildOverlap(paragraphs: string[], targetTokens: number): string {
   let tokens = 0;
   const overlap: string[] = [];
 
-  for (let i = paragraphs.length - 1; i >= 0; i--) {
-    const pt = estimateTokens(paragraphs[i]);
-    if (tokens + pt > targetTokens * 1.5 && overlap.length > 0) break;
-    overlap.unshift(paragraphs[i]);
+  // Spec targets 80–120 overlap tokens: cap whole-paragraph accumulation at
+  // target * 1.2 (= 120 for the default 100) so no oversized paragraph rides
+  // along whole. `next` ends on the first (older) paragraph that did NOT fit.
+  let next = paragraphs.length - 1;
+  for (; next >= 0; next--) {
+    const pt = estimateTokens(paragraphs[next]);
+    if (tokens + pt > targetTokens * 1.2) break;
+    overlap.unshift(paragraphs[next]);
     tokens += pt;
+  }
+
+  const isAtomic = (p: string) => p.startsWith("```") || p.startsWith("|");
+
+  if (overlap.length === 0) {
+    // The tail paragraph alone exceeds the overlap budget (spec targets
+    // 80–120 tokens — carrying a whole 400+-token paragraph as "overlap" both
+    // bloats the next chunk and violates the target). Slice the trailing
+    // characters of prose; NEVER tear an atomic unit (code fence / table) —
+    // skip the overlap entirely instead.
+    const tail = paragraphs[paragraphs.length - 1];
+    if (isAtomic(tail)) return "";
+    return tail.slice(-targetTokens * 4);
+  }
+
+  // Floor (spec 80–120): a short tail paragraph alone (e.g. 30 tokens) would
+  // otherwise under-shoot the range. Top up with a trailing slice of the next
+  // older paragraph — prose only, never a torn atomic unit; when that
+  // paragraph is atomic (or none remains), the short overlap stands.
+  const floor = Math.floor(targetTokens * 0.8);
+  if (tokens < floor && next >= 0 && !isAtomic(paragraphs[next])) {
+    const need = targetTokens - tokens;
+    overlap.unshift(paragraphs[next].slice(-need * 4));
   }
 
   return overlap.join("\n\n");

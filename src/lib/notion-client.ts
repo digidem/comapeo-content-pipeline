@@ -9,7 +9,9 @@
  *   MAX_NOTION_RPS        — requests per second (default: 3)
  */
 
-import { classifyError, ClassifiedError, ErrorCategory } from "./errors.js";
+import { Client } from "@notionhq/client";
+import { classifyError, ErrorCategory } from "./errors.js";
+import { NOTION_API } from "./notion-properties.js";
 
 // Minimal Notion API types used internally
 export interface NotionPage {
@@ -64,14 +66,16 @@ export class NotionClient {
   private version: string;
   private maxRps: number;
   private lastRequestTime: number = 0;
-  private baseUrl = "https://api.notion.com/v1";
+  private baseUrl = NOTION_API.BASE_URL;
   private inFlightRequests: Map<string, Promise<unknown>> = new Map();
+  /** Lazily instantiated SDK client for dataSources.query (DATABASE_VERSION). */
+  private _sdkClient: Client | null = null;
 
   constructor(config: NotionConfig) {
     this.token = config.token;
     this.databaseId = config.databaseId;
     this.dataSourceId = config.dataSourceId;
-    this.version = config.version || "2026-03-11";
+    this.version = config.version || NOTION_API.SEARCH_VERSION;
     this.maxRps = config.maxRps ?? 3;
   }
 
@@ -104,6 +108,29 @@ export class NotionClient {
       await sleep(minInterval - elapsed);
     }
     this.lastRequestTime = Date.now();
+  }
+
+  /**
+   * Retry wrapper for @notionhq/client SDK calls, mirroring the raw-fetch
+   * path's policy (the SDK itself never retries): 429 waits ~1s per attempt
+   * (the SDK error does not surface Retry-After), 5xx/529 backs off
+   * exponentially capped at 30s, anything else rethrows immediately.
+   */
+  private async withSdkRetry<T>(fn: () => Promise<T>, retries = 4): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        const status = (err as { status?: number }).status;
+        const retryable = status === 429 || status === 529 || (typeof status === "number" && status >= 500);
+        if (!retryable || attempt >= retries) throw err;
+        const waitMs =
+          status === 429 ? 1000 * (attempt + 1) : Math.min(1000 * Math.pow(2, attempt), 30000);
+        console.warn(`Notion SDK ${status}; retrying in ${waitMs}ms (attempt ${attempt + 1}/${retries})`);
+        await sleep(waitMs);
+        await this.throttle();
+      }
+    }
   }
 
   // ── HTTP wrapper with retry ──
@@ -201,13 +228,104 @@ export class NotionClient {
   // ── API methods ──
 
   /**
+   * Query Notion pages from the data source using the `@notionhq/client` v5 SDK.
+   *
+   * Uses `dataSources.query` (POST /v1/data_sources/{id}/query) with
+   * `Notion-Version: 2025-09-03`. Paginates through ALL results internally and
+   * returns them in a single `NotionPageResponse` (`next_cursor: null`).
+   *
+   * Pass `filter: buildQueryFilter(...)` from `notion-filters.ts` to exclude
+   * dead-status pages at the API level. Default sort is `last_edited_time DESC`
+   * to preserve the cron watermark assumption.
+   *
+   * A MAX_PAGES = 10_000 safety counter prevents runaway pagination loops.
+   *
+   * @param params.filter   - Notion filter object (undefined = no filter, all rows).
+   * @param params.sorts    - Override default sort. Default: last_edited_time DESC.
+   * @param params.pageSize - Page size per SDK request (default: NOTION_API.DEFAULT_PAGE_SIZE).
+   */
+  async queryDatabase(params: {
+    filter?: Record<string, unknown>;
+    sorts?: Array<Record<string, unknown>>;
+    pageSize?: number;
+  } = {}): Promise<NotionPageResponse> {
+    // Lazy SDK client instantiation (reuses across calls on the same NotionClient instance)
+    if (!this._sdkClient) {
+      this._sdkClient = new Client({
+        auth: this.token,
+        notionVersion: NOTION_API.DATABASE_VERSION,
+      });
+    }
+    const sdkClient = this._sdkClient;
+
+    const dataSourceId = this.dataSourceId || this.databaseId;
+    if (!dataSourceId) {
+      throw new Error("queryDatabase requires dataSourceId or databaseId to be configured");
+    }
+
+    const defaultSorts = [
+      { timestamp: "last_edited_time" as const, direction: "descending" as const },
+    ];
+
+    const all: NotionPage[] = [];
+    let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    let pageCount = 0;
+    const MAX_PAGES = 10_000; // safety counter (Phase 4.3)
+
+    do {
+      if (++pageCount > MAX_PAGES) {
+        console.error("queryDatabase: safety page limit exceeded, breaking pagination loop");
+        break;
+      }
+
+      await this.throttle();
+
+      // The SDK filter type is a strict union; we cast to satisfy TypeScript while the
+      // actual shape is validated by Notion's API at runtime. The SDK does not retry,
+      // so the call is wrapped with the same 429/5xx backoff policy the raw-fetch
+      // path uses (spec §8.5 / §16.4 — back off instead of aborting the sync).
+      const resp = await this.withSdkRetry(() =>
+        sdkClient.dataSources.query({
+          data_source_id: dataSourceId,
+          ...(params.filter ? { filter: params.filter as never } : {}),
+          sorts: (params.sorts ?? defaultSorts) as never,
+          ...(cursor ? { start_cursor: cursor } : {}),
+          page_size: params.pageSize ?? NOTION_API.DEFAULT_PAGE_SIZE,
+        }),
+      );
+
+      for (const item of resp.results) {
+        if (item.object === "page") {
+          all.push(item as unknown as NotionPage);
+        }
+      }
+
+      const nextCursor = resp.next_cursor ?? undefined;
+      if (nextCursor) {
+        if (seenCursors.has(nextCursor)) {
+          console.error(
+            `  ⚠ Stale cursor detected in queryDatabase pagination: ${nextCursor}. Breaking to prevent infinite loop.`,
+          );
+          break;
+        }
+        seenCursors.add(nextCursor);
+      }
+      cursor = nextCursor;
+    } while (cursor);
+
+    return { results: all, next_cursor: null, has_more: false };
+  }
+
+  /**
+   * @deprecated Use {@link queryDatabase} instead.
+   *
    * Query Notion pages from the database, sorted by last_edited_time DESC.
    *
    * Uses /v1/search (the working endpoint with API version 2026-03-11).
    * Results are filtered client-side by parent database_id when configured.
    */
   async queryDataSource(params: {
-    dataSourceId?: string;
     filter?: Record<string, unknown>;
     startCursor?: string;
     pageSize?: number;
@@ -222,7 +340,7 @@ export class NotionClient {
         direction: "descending",
         timestamp: "last_edited_time",
       },
-      page_size: params.pageSize ?? 100,
+      page_size: params.pageSize ?? NOTION_API.DEFAULT_PAGE_SIZE,
     };
 
     if (params.startCursor) {

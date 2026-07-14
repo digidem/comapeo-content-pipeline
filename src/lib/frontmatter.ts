@@ -139,7 +139,7 @@ function toYamlLine(key: string, value: unknown, indent: number = 0): string {
 
   if (typeof value === "string") {
     // Quote strings that contain YAML-significant characters
-    const needsQuote = /[&:\[\]{}|>*!%@`#"'\-]|^\s|^['"]|['"]$/.test(value);
+    const needsQuote = /[&:[\]{}|>*!%@`#"'-]|^\s|^['"]|['"]$/.test(value);
     if (needsQuote) {
       return `${pad}${key}: "${value.replace(/"/g, '\\"')}"`;
     }
@@ -153,7 +153,7 @@ function toYamlLine(key: string, value: unknown, indent: number = 0): string {
   if (Array.isArray(value)) {
     if (value.length === 0) return `${pad}${key}: []`;
     const items = value.map((v) => {
-      const needsQuote = typeof v === "string" && /[&:\[\]{}|>*!%@`#"'\-]/.test(v);
+      const needsQuote = typeof v === "string" && /[&:[\]{}|>*!%@`#"'-]/.test(v);
       if (needsQuote) return `"${v.replace(/"/g, '\\"')}"`;
       return v;
     });
