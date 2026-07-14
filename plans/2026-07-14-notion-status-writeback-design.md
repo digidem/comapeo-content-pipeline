@@ -31,7 +31,7 @@ The old system did a blanket Notion query (`from: X`) with no page-level scoping
 
 ### 3. Does the pipeline's Notion integration have write scope today?
 
-`comapeo-content-pipeline` is deliberately read-only by design (see `TASKS.md`: *"this pipeline is stateless (no write-back)... every post-editorial-gate state must map to active."*). Introducing write capability is a real architecture change, not just a relocation — needs its own review of what the integration token can do and whether a separate, more narrowly-scoped write token should be used (principle of least privilege: a token that can flip one property on rows matching a manifest, nothing else).
+`comapeo-content-pipeline` is deliberately read-only by design (see `src/lib/status.ts`: *"this pipeline is stateless (no write-back)... every post-editorial-gate state must map to active."*). Introducing write capability is a real architecture change, not just a relocation — needs its own review of what the integration token can do and whether a separate, more narrowly-scoped write token should be used (principle of least privilege: a token that can flip one property on rows matching a manifest, nothing else).
 
 ### 4. Failure isolation
 
