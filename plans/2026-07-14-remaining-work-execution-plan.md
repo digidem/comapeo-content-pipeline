@@ -11,11 +11,13 @@ Related reading (unchanged, still the source of the *why*):
 
 | Track | What | Repo(s) | Blocks / blocked by |
 |---|---|---|---|
-| A | Amend comapeo-docs#183 to keep `static/images/` | comapeo-docs | Independent — no dependency on B or C |
-| B | Move Notion status write-back into the pipeline | Both | Independent of A and C |
-| C | Migrate PR-preview content generation off legacy scripts | comapeo-docs (+ this pipeline as a consumer) | Independent of A and B |
+| A | Amend comapeo-docs#183 to keep `static/images/` | comapeo-docs | No *logical* block, but see file-overlap note below — do first |
+| B | Move Notion status write-back into the pipeline | Both | No logical block; shares `deploy-production.yml` with A |
+| C | Migrate PR-preview content generation off legacy scripts | comapeo-docs (+ this pipeline as a consumer) | No logical block; shares `deploy-pr-preview.yml` with A |
 
-None of the three tracks technically block each other — they touch different files and different workflows. The ordering below is by **effort and risk**, cheapest/safest first, not by hard dependency: closing the small one first keeps the loose-end count visibly dropping, and both B and C need a human decision before any code gets written, so front-loading those decision-asks lets them happen in parallel with implementation work on whichever track resolves first.
+No track *logically* blocks another — none needs a capability another produces. But the earlier claim that they "touch different files" is not accurate: verified against the local `comapeo-docs` checkout, Track A's `fix/deploy-pathspec-img` branch edits **all four** `deploy-*.yml` workflows, and two of those files are also edited by other tracks — **B** adds a step to `deploy-production.yml` (Track A changes its checkout-pathspec + image-guard block, lines ~133/169–179; B's insertion is near the "Persist promoted content lock SHA" step, ~213, and the old `bun run notionStatus:publish-production` step it removes, ~229 — different hunks, but same file), and **C** rewrites the regeneration branch of `deploy-pr-preview.yml` (Track A also edits that file's checkout + guard). So there is a real **merge-conflict / rebase** relationship: A must land first (it already leads the ordering), and B's and C's comapeo-docs branches must be cut from **post-A-merge** `main`, not from today's `main`, or they will conflict on those two workflows. This is a soft ordering constraint, not a hard capability dependency.
+
+Given that, the ordering below is by **effort and risk**, cheapest/safest first: closing the small one (A) first both drops the loose-end count and establishes the post-A workflow baseline that B and C rebase onto. Both B and C also need a human decision before any code gets written, so front-loading those decision-asks lets them happen in parallel with implementation work on whichever track resolves first.
 
 ---
 
@@ -40,13 +42,17 @@ Before writing any code, get an explicit answer from whoever owns Notion's edito
 
 Also confirm at this checkpoint: **does the pipeline's existing Notion integration token have write scope**, or does a new, narrowly-scoped token need provisioning? (design doc Q3). This is an infra/credentials question, not a design one — cheap to answer now, expensive to discover mid-implementation.
 
+Third, resolve the design doc's **Q2 correlation problem** — it is a real blocker for B2, not just background. `sync:mark-published` takes `--manifest-version <ts>`, but `deploy-production.yml` today has **no manifest handle at all** — it only knows `content-lock.sha` (a comapeo-docs content-branch commit SHA; verified: no `manifest` reference exists anywhere in that workflow). So B2 cannot invoke B1 until there is a decided mechanism to map "the SHA this deploy promoted" → "the pipeline manifest version that produced it" (design doc Q2's two options: correlate by manifest timestamp, or embed the pipeline's manifest generation identifier into the comapeo-docs commit that gets deployed). Pick one here; without it, B1 is buildable but B2 has nothing to pass.
+
 ### B1 — Implement the write-back primitive (this pipeline)
 
 - New CLI command, e.g. `sync:mark-published --manifest-version <ts>` (or `--manifest-key`), in `src/cli/index.ts` (or extracted per the `docs-pull.ts`/`validate-diff.ts` precedent, into its own module if it grows past a few dozen lines).
 - Reads the specified manifest version from storage, resolves the page IDs in it whose current Notion status is the pre-published stage decided in B0.
 - Writes the resolved to-stage (`Published`, or `Draft published`→`Published` per B0) to each of those pages via the Notion API. Reuses the existing `NotionClient` wrapper (`src/lib/notion-client.ts`) — this is the pipeline's first *write* call, so add an explicit, narrow method (e.g. `updatePageStatus(pageId, status)`) rather than a generic PATCH passthrough, to keep the write surface auditable.
 - Non-blocking-failure semantics: log and report per-page failures, but the command's own exit code should reflect whether it *ran*, not whether every page write succeeded — mirrors the old script's behavior of "0 changes is still a successful run."
-- Unit tests: mock the Notion write call, verify manifest→page-ID resolution, verify only pages in the target pre-stage get written (not pages already `Published`, not pages in unrelated drafts).
+- **`--dry-run` flag (required before first production use):** since this is the pipeline's first-ever *write* to Notion, the command must support resolving + logging exactly which pages it *would* transition, without writing, so it can be validated against the real production DB before anything is mutated. Do not run the live path against production until a dry-run against the same manifest version has been eyeballed.
+- **Decide, don't silently drop, rollback recording.** The legacy `comapeo-docs/scripts/notion-status` system this replaces recorded each page's original status before changing it (`rollbackRecorder.ts`, `enableRollback` defaulted **on**) so a bad batch could be reverted. The new write path has no equivalent. Make an explicit call at B0/B1: either port a minimal equivalent (e.g. write the pre-change status of each touched page into the manifest version's storage, or a sibling `mark-published-rollback/{ts}.json`), or consciously accept that a `Draft published → Published` flip is cheap enough to reverse by hand and skip it. Either is fine — silently having *no* rollback where the predecessor defaulted to having one is the thing to avoid.
+- Unit tests: mock the Notion write call, verify manifest→page-ID resolution, verify only pages in the target pre-stage get written (not pages already `Published`, not pages in unrelated drafts); assert `--dry-run` performs resolution but issues zero write calls.
 
 **Acceptance:** `bun src/cli/index.ts sync:mark-published --manifest-version <ts>` runs against a test/staging Notion DB and correctly transitions only the intended pages; tests green; typecheck clean.
 
