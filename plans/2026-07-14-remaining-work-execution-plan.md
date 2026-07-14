@@ -100,7 +100,7 @@ These two answers substantially change the size of C1 — get them before starti
 ## Summary task list, in recommended working order
 
 1. [ ] **A**: amend comapeo-docs#183 back to `static/images/`, merge, close #186.
-2. [ ] **B0**: get the two-stage-vocabulary and write-token-scope decisions from the content/editorial + infra owners.
+2. [ ] **B0**: settle B0's three decisions — two-stage-vocabulary (content/editorial owner), write-token-scope (infra), and the manifest-version↔deployed-SHA correlation mechanism (an engineering pick, blocks B2) — and make the rollback-recording call (B0/B1).
 3. [ ] **C0**: get the "does preview need fresh content" and "scoped vs full sync" decisions from PR-preview users.
 4. [ ] **B1**: implement `sync:mark-published` in this pipeline, with tests.
 5. [ ] **C1**: implement the gated pipeline-backed preview path in comapeo-docs.
