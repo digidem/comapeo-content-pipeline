@@ -728,6 +728,18 @@ async function sweepStaleDocs(env: Env): Promise<void> {
 
 // ── Helpers ──
 
+/** List every key under an R2 prefix, following pagination until exhausted. */
+async function listAllR2(bucket: R2Bucket, prefix: string): Promise<string[]> {
+  const keys: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const res = await bucket.list({ prefix, cursor });
+    for (const o of res.objects) keys.push(o.key);
+    cursor = res.truncated ? res.cursor : undefined;
+  } while (cursor);
+  return keys;
+}
+
 /**
  * Adapt an R2 bucket binding to the runtime-agnostic ManifestStorage interface.
  * R2 paginates `list` at 1000 keys per response, so the adapter loops on
@@ -821,6 +833,7 @@ async function regenerateManifest(env: Env): Promise<RegenResult> {
   const sidebars = validated.sidebars as Record<string, unknown> | undefined;
   let sidebarErrors = 0;
   const failedLocales: string[] = [];
+  const publishedLocales = new Set(Object.keys(sidebars ?? {}));
   if (sidebars) {
     for (const [locale, items] of Object.entries(sidebars)) {
       try {
@@ -835,6 +848,28 @@ async function regenerateManifest(env: Env): Promise<RegenResult> {
         failedLocales.push(locale);
       }
     }
+  }
+
+  // A locale whose last content was removed no longer appears in the new
+  // manifest's sidebars map at all, so the write loop above never touches
+  // it — remove any previously-published sidebar for such a locale so it
+  // doesn't keep serving routes that no longer exist.
+  try {
+    const existing = await listAllR2(env.CONTENT_BUCKET, "sidebars/");
+    for (const key of existing) {
+      const m = key.match(/^sidebars\/(.+)\.json$/);
+      const locale = m?.[1];
+      if (!locale || publishedLocales.has(locale)) continue;
+      try {
+        await env.CONTENT_BUCKET.delete(key);
+      } catch (err) {
+        console.warn(`Failed to delete stale sidebar for locale ${locale}:`, err);
+        sidebarErrors++;
+        failedLocales.push(locale);
+      }
+    }
+  } catch (err) {
+    console.warn("Failed to list existing sidebars for stale-locale cleanup:", err);
   }
 
   if (sidebarErrors > 0) {

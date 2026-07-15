@@ -93,7 +93,9 @@ function mockR2Bucket(objects: Map<string, string> = new Map()) {
       const val = objects.get(key);
       return val ? { key, size: val.length } : null;
     }),
-    delete: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn().mockImplementation(async (key: string) => {
+      objects.delete(key);
+    }),
     // Enumerate the in-memory map by prefix so manifest regen can list pages/*.
     list: vi.fn().mockImplementation(async (options?: { prefix?: string }) => {
       const prefix = options?.prefix ?? "";
@@ -1477,6 +1479,31 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
       const sidebarBody = JSON.parse(await sidebarBlob!.text());
       expect(sidebarBody).toEqual(latest.sidebars[loc]);
     }
+  });
+
+  it("admin: deletes a previously-published locale sidebar that no longer has any content", async () => {
+    // A prior run published a PT sidebar. All PT content has since been
+    // removed from Notion, so the new manifest has no "pt" entry in its
+    // sidebars map at all. The stale sidebars/pt.json must not be left
+    // behind referencing routes that no longer exist.
+    const objects = new Map([
+      ["sidebars/pt.json", JSON.stringify(["docs/old-pt-page"])],
+      ["pages/p-en/metadata.json", JSON.stringify(validMetadata({ page_id: "p-en", locale: "en" }))],
+      ["pages/p-es/metadata.json", JSON.stringify(validMetadata({ page_id: "p-es", locale: "es", slug: "intro-es", docusaurus_id: "docs/intro-es" }))],
+    ]);
+    env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+
+    const res = await request(app, "/admin/manifest/regenerate", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-admin-token" },
+    }, env);
+    expect(res.status).toBe(200);
+
+    const ptSidebar = await env.CONTENT_BUCKET.get("sidebars/pt.json");
+    expect(ptSidebar).toBeNull();
+    // en/es sidebars still get written normally.
+    expect(await env.CONTENT_BUCKET.get("sidebars/en.json")).not.toBeNull();
+    expect(await env.CONTENT_BUCKET.get("sidebars/es.json")).not.toBeNull();
   });
 
   it("admin partial: es sidebar write fails, manifest_dirty restored", async () => {
