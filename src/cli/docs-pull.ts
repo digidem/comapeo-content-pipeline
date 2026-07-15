@@ -12,6 +12,7 @@ import { join, dirname } from "node:path";
 import { buildHierarchyPlan, toSectionDir, type CategoryEntry } from "../lib/hierarchy.js";
 import { buildRouteMaps, resolveInternalLinks, type DocLite } from "../lib/links.js";
 import { rewriteRawImgSrcToStatic } from "../lib/img-rewrite.js";
+import { isStubBody } from "../lib/stub-body.js";
 import {
   SECTION_NAMES,
   UNCATEGORIZED_ORDER,
@@ -503,23 +504,6 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
 const PLACEHOLDER_BODY = `:::note
 Content coming soon — this page has no content in Notion yet.
 :::`;
-
-const STUB_BODY_MARKER = /\[\s*(insert|add)\s+content\s+here\s*\]/i;
-
-function meaningfulBody(content: string): string {
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  const body = fmMatch ? fmMatch[2] : content;
-  return body
-    .replace(/<div class="notion-spacer"[^>]*><\/div>/g, "")
-    .replace(/^---\s*$/gm, "")
-    .trim();
-}
-
-function isStubBody(content: string): boolean {
-  const body = meaningfulBody(content);
-  if (body.length === 0) return true;
-  return STUB_BODY_MARKER.test(body) && body.replace(STUB_BODY_MARKER, "").trim().length === 0;
-}
 
 function ensurePlaceholderForEmptyBody(content: string): string {
   if (!isStubBody(content)) return content;

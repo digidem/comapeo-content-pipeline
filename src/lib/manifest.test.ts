@@ -289,6 +289,50 @@ describe("buildManifestFromStorage", () => {
     expect(skipped).toEqual([]);
   });
 
+  it("reads each page's real R2 body to rank family-selection candidates by real content over a stub", async () => {
+    // A PT container links two EN children: one with a real body (lower
+    // section_order isn't in its favor) and one that's an empty stub (listed
+    // first in the relation, with a LOWER section_order so it would win a
+    // pure order-based tiebreak). Without reading actual R2 body content,
+    // buildHierarchyPlan would treat both as bodyless and fall through to the
+    // order tiebreak, incorrectly picking the empty stub as the canonical EN
+    // source — which would publish the sidebar route under the stub's own
+    // title-derived slug ("empty-stub") instead of the real page's
+    // ("real-page").
+    const container: PageMetadata = {
+      ...basePage, page_id: "pt-container", title: "Creando un Proyecto", locale: "pt",
+      section: "50-Projects", section_order: 1, slug: "pt-cont",
+      sub_items: ["en-empty", "en-real"],
+    };
+    const enEmpty: PageMetadata = {
+      ...basePage, page_id: "en-empty", title: "Empty Stub", locale: "en",
+      section: "50-Projects", section_order: 1, slug: "empty-stub",
+    };
+    const enReal: PageMetadata = {
+      ...basePage, page_id: "en-real", title: "Real Page", locale: "en",
+      section: "50-Projects", section_order: 2, slug: "real-page",
+    };
+
+    const storage = memStorage({
+      "pages/pt-container/metadata.json": JSON.stringify(container),
+      "pages/en-empty/metadata.json": JSON.stringify(enEmpty),
+      "pages/en-real/metadata.json": JSON.stringify(enReal),
+      // R2 doc bodies, at the same keys buildR2DocKey computes for each page.
+      "docs/pt/docs/50-Projects/pt-cont.md": "---\ntitle: x\n---\nContainer.\n",
+      "docs/en/docs/50-Projects/empty-stub.md": "---\ntitle: x\n---\n",
+      "docs/en/docs/50-Projects/real-page.md": "---\ntitle: x\n---\nReal content here.\n",
+    });
+
+    const { manifest } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+
+    const allIds = JSON.stringify(manifest.sidebars);
+    expect(allIds).toContain("real-page");
+    expect(allIds).not.toContain("empty-stub");
+  });
+
   it("routes a transient storage.get throw to readErrors, not skipped", async () => {
     const valid: PageMetadata = { ...basePage, page_id: "p1", status: "active" };
     const storage = memStorage({

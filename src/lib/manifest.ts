@@ -7,6 +7,7 @@ import type { PageMetadata } from "../schemas/metadata.js";
 import { PageMetadataSchema } from "../schemas/metadata.js";
 import { stripSectionPrefix, CURATED_SECTION_TRANSLATIONS, SECTION_NAMES, UNCATEGORIZED_ORDER } from "./notion-properties.js";
 import { buildHierarchyPlan, toSectionDir, type HierarchyPlan } from "./hierarchy.js";
+import { isStubBody } from "./stub-body.js";
 
 export interface ManifestInput {
   databaseId: string;
@@ -15,6 +16,12 @@ export interface ManifestInput {
   /** Locale → Docusaurus sidebar items */
   sidebars?: Record<string, SidebarItem[]>;
   ragChunksManifestKey?: string;
+  /**
+   * Page-id → "has a real (non-stub) body" map, used for hierarchy family
+   * selection (buildSidebarsFromPlan). Only meaningful when `sidebars` is
+   * omitted (sidebars are then built from the plan); ignored otherwise.
+   */
+  hasBodyById?: Record<string, boolean>;
 }
 
 /**
@@ -57,7 +64,7 @@ export function generateManifest(input: ManifestInput): ContentManifest {
       data_source_id: input.dataSourceId,
     },
     docs,
-    sidebars: input.sidebars ?? buildSidebarsFromPlan(docs),
+    sidebars: input.sidebars ?? buildSidebarsFromPlan(docs, input.hasBodyById),
   };
 
   if (input.ragChunksManifestKey) {
@@ -95,8 +102,8 @@ function buildR2MetadataKey(pageId: string): string {
  * Content-only: no structural or container IDs. Uses localized Toggle labels
  * and canonical paths/slugs.
  */
-function buildSidebarsFromPlan(docs: ManifestDoc[]): Record<string, SidebarItem[]> {
-  const plan = buildHierarchyPlan({ docs, includeDrafts: false });
+function buildSidebarsFromPlan(docs: ManifestDoc[], hasBodyById?: Record<string, boolean>): Record<string, SidebarItem[]> {
+  const plan = buildHierarchyPlan({ docs, includeDrafts: false, hasBodyById });
   return projectSidebars(plan);
 }
 
@@ -393,10 +400,26 @@ export async function buildManifestFromStorage(
     }
   }
 
+  // Determine each page's real-body-vs-stub status by reading its converted
+  // Markdown from R2 (the same file docs:pull reads via r2_doc_key), so
+  // family selection here matches docs:pull's body-quality ranking instead of
+  // treating every candidate as bodyless. A read failure is NOT a fatal
+  // readError like the metadata reads above — worst case this page is
+  // conservatively treated as bodyless, buildHierarchyPlan's existing default
+  // when no signal is available at all.
+  const hasBodyById: Record<string, boolean> = {};
+  await Promise.all(pages.map(async (page) => {
+    try {
+      const raw = await storage.get(buildR2DocKey(page));
+      hasBodyById[page.page_id] = raw != null && !isStubBody(raw);
+    } catch { /* leave unset — treated as bodyless below */ }
+  }));
+
   const manifest = generateManifest({
     databaseId: opts.databaseId,
     dataSourceId: opts.dataSourceId,
     pages,
+    hasBodyById,
   });
 
   return { manifest, skipped, readErrors };
