@@ -146,4 +146,25 @@ describe("buildRouteMaps + resolveInternalLinks", () => {
     });
     expect(out).toBe("[x](/docs/does-not-exist)");
   });
+
+  it("resolves canonical slug to localized prefix when slug differs from all source slugs and title-derived slugs", () => {
+    // Canonical slug "getting-started" does NOT match any source slug or title-derived key.
+    // EN container has slug "gs-en" and title "Intro to CoMapeo" → title slug "intro-to-comapeo"
+    // EN child has slug "start-here", PT child has slug "comecar"
+    // The canonical slug itself must still resolve through Pass 3.
+    const docs: DocLite[] = [
+      { page_id: "en-c", slug: "gs-en", title: "Intro to CoMapeo" },
+      { page_id: "en-child", slug: "start-here", title: "Start Here" },
+      { page_id: "pt-child", slug: "comecar", title: "Começar" },
+    ];
+    const canonicalSlugOf = (pid: string) => {
+      if (pid === "en-c" || pid === "en-child" || pid === "pt-child") return "getting-started";
+      return null;
+    };
+    const maps = buildRouteMaps(docs, canonicalSlugOf);
+    // "getting-started" differs from all source slugs and title-derived slugs,
+    // but Pass 3 registers it from the canonical slug itself
+    const ptOut = resolveInternalLinks("[link](/docs/getting-started)", { locale: "pt", maps });
+    expect(ptOut).toBe("[link](/pt/docs/getting-started)");
+  });
 });

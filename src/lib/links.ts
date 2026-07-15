@@ -78,6 +78,15 @@ export function buildRouteMaps(
     if (key && !slugMap.has(key)) slugMap.set(key, canon);
   }
 
+  // Pass 3: canonical slug itself (resolves links already written with the
+  // canonical route). Without overwriting existing more-specific mappings.
+  for (const d of docs) {
+    const canon = canonicalSlugOf(d.page_id);
+    if (!canon) continue;
+    const key = slugify(canon);
+    if (key && !slugMap.has(key)) slugMap.set(key, canon);
+  }
+
   return { slugMap, pageIdMap };
 }
 
