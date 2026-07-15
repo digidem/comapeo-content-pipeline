@@ -88,7 +88,9 @@ export async function convertPageData(input: {
 
   // Extract properties — overrides take precedence
   const title = extractTitle(pageLike);
-  const locale = overrides?.locale || extractLocale(pageLike) || "en";
+  const rawLanguage = extractProperty(pageLike, NOTION_PROPERTIES.LANGUAGE);
+  const languageSource = classifyLanguageSource(rawLanguage);
+  const locale = overrides?.locale || (rawLanguage ? normalizeLocale(rawLanguage) : "en");
   const resolvedSection = overrides?.section ?? extractSection(pageLike);
   const resolvedSectionOrder = overrides?.sectionOrder ?? extractSectionOrder(pageLike);
   const resolvedElementType = overrides?.elementType ?? extractProperty(pageLike, NOTION_PROPERTIES.ELEMENT_TYPE);
@@ -252,6 +254,7 @@ export async function convertPageData(input: {
     element_type: resolvedElementType ?? undefined,
     drafting_status: resolvedDraftingStatus ?? undefined,
     sub_items: subItems.length > 0 ? subItems : undefined,
+    language_source: languageSource,
   };
 
   // Build frontmatter + serialize with url-replaced markdown
@@ -347,11 +350,16 @@ function extractProperty(page: NotionPage, name: string): string | null {
   return null;
 }
 
-/** Extract locale from Notion "Language" property */
-function extractLocale(page: NotionPage): string | null {
-  const lang = extractProperty(page, NOTION_PROPERTIES.LANGUAGE);
-  if (!lang) return null;
-  return normalizeLocale(lang);
+/**
+ * Classify the raw Notion Language value's provenance.
+ * "ES - automated" / "PT - automated" → "automated"
+ * Any other non-null value → "explicit"
+ * null/undefined → "fallback"
+ */
+function classifyLanguageSource(rawLanguage: string | null): "explicit" | "automated" | "fallback" {
+  if (!rawLanguage) return "fallback";
+  if (/\bautomated\b/i.test(rawLanguage)) return "automated";
+  return "explicit";
 }
 
 /** Extract content section from Notion page properties */

@@ -8,6 +8,12 @@ export interface SidebarCategory {
   type: "category";
   label: string;
   items: SidebarItem[];
+  collapsible?: boolean;
+  collapsed?: boolean;
+  link?: { type: string; title?: string };
+  customProps?: Record<string, unknown>;
+  /** Stable, locale-independent unique key for Docusaurus sidebar translation. */
+  key?: string;
 }
 
 /** Recursive Zod schema for Docusaurus sidebar items */
@@ -17,6 +23,11 @@ export const SidebarItemSchema: z.ZodType<SidebarItem> = z.union([
     type: z.literal("category"),
     label: z.string(),
     items: z.lazy(() => z.array(SidebarItemSchema)),
+    collapsible: z.boolean().optional(),
+    collapsed: z.boolean().optional(),
+    link: z.object({ type: z.string(), title: z.string().optional() }).optional(),
+    customProps: z.record(z.string(), z.unknown()).optional(),
+    key: z.string().optional(),
   }),
 ]);
 
@@ -40,6 +51,8 @@ export const ManifestDocSchema = z.object({
   status: z.enum(["active", "draft", "deprecated", "archived"]),
   /** Page IDs of sub-items (translations) linked via Sub-item relation */
   sub_items: z.array(z.string()).optional(),
+  /** Language provenance: how the locale was determined */
+  language_source: z.enum(["explicit", "automated", "fallback"]).optional(),
 });
 
 export type ManifestDoc = z.infer<typeof ManifestDocSchema>;
