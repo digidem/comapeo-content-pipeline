@@ -210,6 +210,11 @@ export function buildHierarchyPlan(input: BuildInput): HierarchyPlan {
       if (!child) continue;
       const cStatus = child.status;
       if (cStatus === "deprecated" || cStatus === "archived") continue;
+      // Content children need the same publishable gate as the parent — a
+      // draft translation must not leak through a normal (non---all) run just
+      // because its parent happens to be active. Structural children (Title/
+      // Toggle rows) are exempt: they still supply labels while in draft.
+      if (isContent && !includeDrafts && cStatus !== "active") continue;
       allMembers.push({
         doc: child, locale: normalizeLocale(child.locale),
         elementType: manifestElementType(child), section: child.section,

@@ -238,6 +238,31 @@ describe("buildHierarchyPlan edge cases", () => {
     expect(esPage!.customPropsTitle).toBeUndefined();
   });
 
+  it("a draft translation child is not selected when includeDrafts is false, even though the parent is active", () => {
+    // The family-formation gate (isContent && !includeDrafts && doc.status !== "active")
+    // only ever checks the PARENT's status. The child-collection loop excludes
+    // deprecated/archived children but did not apply the same includeDrafts gate
+    // to children — so a draft ES child of an active EN parent could still be
+    // selected and published in a normal (non---all) run.
+    const docs: ManifestDoc[] = [
+      makeDoc({
+        page_id: "en-parent", title: "Page Title", locale: "en",
+        section: "10-Basics", section_order: 1, slug: "page-title",
+        sub_items: ["es-draft"], status: "active",
+      }),
+      makeDoc({
+        page_id: "es-draft", title: "Título Borrador", locale: "es",
+        section: "10-Basics", section_order: 1, slug: "titulo-borrador", status: "draft",
+      }),
+    ];
+    const plan = buildHierarchyPlan({
+      docs, includeDrafts: false,
+      hasBodyById: { "en-parent": true, "es-draft": true },
+    });
+    const esPage = plan.canonicalPages.find((cp) => cp.locale === "es");
+    expect(esPage).toBeUndefined();
+  });
+
   it("Toggle without a translated member for a locale still gets a fallback localized category when pages are nested under it", () => {
     const docs: ManifestDoc[] = [
       makeDoc({ page_id: "toggle1-en", title: "Group A", section: "10-Basics", section_order: 1, slug: "toggle1-en", element_type: "Toggle", sub_items: ["toggle1-es"] }),
