@@ -261,13 +261,25 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
   }
 
   // ── Emit _category_.json from plan ──
+  // The synthetic "Uncategorized" section has no directory of its own — its
+  // pages are written straight into the locale root (see the sectionDir ??
+  // null branch in the page-emission loop above), and root pages render as
+  // plain sidebar IDs, not inside a category (see projectSidebars). Skip the
+  // section-level entry entirely so no empty _category_.json is left behind;
+  // a Toggle nested under it still gets a real directory, just without the
+  // "uncategorized" path segment.
+  const UNCATEGORIZED_DIR = toSectionDir(SECTION_NAMES.UNCATEGORIZED);
   for (const cat of plan.categories) {
+    const isRootSection = cat.sectionDir === UNCATEGORIZED_DIR;
+    if (isRootSection && !cat.toggleDir) continue;
+
     const localePrefix =
       cat.locale === "en"
         ? join(outDir, "docs")
         : join(outDir, "i18n", cat.locale, "docusaurus-plugin-content-docs", "current");
 
-    const parts = [localePrefix, cat.sectionDir];
+    const parts = [localePrefix];
+    if (!isRootSection) parts.push(cat.sectionDir);
     if (cat.toggleDir) parts.push(cat.toggleDir);
     const categoryDir = join(...parts);
 
@@ -313,8 +325,9 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
   // exactly match the rendered English category keys.  Empty toggle
   // categories are excluded unless at least one EN canonical page lives in
   // the same sectionDir + toggleDir (matching projectSidebars exclusion).
-  // Uncategorized/root docs are excluded because Docusaurus renders them as
-  // plain sidebar IDs — write-translations emits no category key for them.
+  // The root ("Uncategorized") section-level entry is excluded because Docusaurus
+  // renders those docs as plain sidebar IDs — write-translations emits no category
+  // key for it. A Toggle nested under the root section is still a real category.
   const nonEnLocales = new Set(
     plan.categories
       .filter((c) => c.locale !== "en")
@@ -349,8 +362,10 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
       };
 
       for (const enCat of enCats) {
-        // Uncategorized pages are plain sidebar IDs; Docusaurus emits no category key
-        if (enCat.sectionDir === "uncategorized") continue;
+        // Uncategorized pages are plain sidebar IDs; Docusaurus emits no category
+        // key for the section itself. A Toggle nested under it still gets a real
+        // directory and category, so only skip the section-level entry.
+        if (enCat.sectionDir === UNCATEGORIZED_DIR && !enCat.toggleDir) continue;
         // Exclude EN toggle categories backed by zero EN canonical pages
         if (enCat.toggleDir && !enPageToggleKeys.has(enCat.key)) continue;
 

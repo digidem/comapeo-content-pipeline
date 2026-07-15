@@ -1212,6 +1212,32 @@ sidebar_position: 23
       // Uncategorized pages are plain sidebar IDs — Docusaurus write-translations
       // emits no category key for them
       expect(es["sidebar.docsSidebar.category.uncategorized"]).toBeUndefined();
+      // Root pages are written straight into the locale root, not into an
+      // "uncategorized" subdirectory — no _category_.json should exist there
+      // (an empty one would render as a phantom clickable category).
+      expect(existsSync(join(out, "docs", "uncategorized"))).toBe(false);
+      expect(existsSync(join(out, ...ES_DOCS_CURRENT, "uncategorized"))).toBe(false);
+    });
+
+    it("Toggle nested under the Uncategorized section gets its own directory, not an 'uncategorized/' prefix", async () => {
+      const inputDir = mkdtempSync(join(tmpdir(), "docspull-curjson-uncat-toggle-"));
+      temps.push(inputDir);
+      const out = freshOut();
+
+      const docs: FixtureDoc[] = [
+        { page_id: "toggle-en", title: "Root Group", locale: "en", section: null as unknown as string, section_order: 1, status: "active", slug: "toggle-en", sub_items: [], element_type: TOGGLE_TYPE },
+        { page_id: "en-page", title: "Nested Page", locale: "en", section: null as unknown as string, section_order: 2, status: "active", slug: "nested-page" },
+      ];
+
+      writeFileSync(join(inputDir, "manifest.json"), JSON.stringify(buildManifest(docs), null, 2));
+      writeFileSync(join(inputDir, "en-page.md"), sourceMd("Nested Page", "nested-page", 2, "EN body."));
+
+      await docsPull({ input: join(inputDir, "manifest.json"), "input-dir": inputDir, out, all: "true" });
+
+      // The page lands under docs/root-group/, not docs/uncategorized/root-group/.
+      expect(existsSync(join(out, "docs", "root-group", "nested-page.md"))).toBe(true);
+      expect(existsSync(join(out, "docs", "root-group", "_category_.json"))).toBe(true);
+      expect(existsSync(join(out, "docs", "uncategorized"))).toBe(false);
     });
 
     it("excludes empty EN toggle category when no EN canonical page exists in that toggleDir", async () => {
