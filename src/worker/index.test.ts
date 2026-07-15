@@ -512,12 +512,12 @@ describe("queue consumer", () => {
     expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeDefined();
   });
 
-  it("sets manifest_dirty even when a later step (sidebar regen) fails", async () => {
+  it("queue sets manifest_dirty and completes; sidebar publication is in cron regenerateManifest", async () => {
     // Ordering invariant (review round 5): once the source_pages hash is
     // updated, a retry takes the hash-skip path and never sets the flag — so
     // the flag write must directly follow the upsert, before any fallible
-    // step. Here the sidebar R2 put throws; the flag must still be set and the
-    // job recorded as failed.
+    // step. The queue marks dirty and completes; sidebar rebuild is in cron
+    // regenerateManifest.
     const fixturePath = join(__dirname, "../../test/fixtures/notion/simple-page.json");
     const fixtureBlocks = JSON.parse(readFileSync(fixturePath, "utf8"));
     const pageResponse = {
@@ -536,21 +536,18 @@ describe("queue consumer", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ object: "list", results: fixtureBlocks.results, next_cursor: null, has_more: false }), { status: 200 }));
     env.DB.first.mockResolvedValue(null);
 
-    // Sidebar writes go to sidebars/<locale>.json — make exactly those throw.
-    const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
-    const realPut = bucket.put.getMockImplementation()!;
-    bucket.put.mockImplementation(async (key: string, value: string) => {
-      if (key.startsWith("sidebars/")) throw new Error("sidebar write failed");
-      return realPut(key, value);
-    });
+    // Queue handler sets manifest_dirty and completes. Sidebar writes are in
+    // regenerateManifest (cron/admin), not in the queue consumer.
 
     const batch = buildMessageBatch("test-page-id");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await queueHandler(batch as any, env, {} as any);
 
     const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    // manifest_dirty is set
     expect(findPrepareCall(prepareMock, "manifest_dirty")).toBeDefined();
-    expect(findPrepareCall(prepareMock, "'failed'")).toBeDefined();
+    // Job completes successfully (sidebar rebuild is now in cron, not queue)
+    expect(findPrepareCall(prepareMock, "'completed'")).toBeDefined();
   });
 
   /** Arm fetchMock with the page + blocks responses for one queueHandler run. */
@@ -1433,5 +1430,166 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
     expect(findPrepareCall(prepareMock, "'manifest_dirty', '0'")).toBeDefined();
     expect(findPrepareCall(prepareMock, "'manifest_dirty', '1'")).toBeDefined();
+  });
+
+  // ── Partial sidebar publication tests ──
+
+  it("admin full success: replaces old sentinel manifest, writes matching sidebars for all locales", async () => {
+    const oldSentinel = {
+      schema_version: "1.0",
+      generated_at: "2026-01-01T00:00:00.000Z",
+      source: { type: "notion" as const, database_id: "test-db-id", data_source_id: "test-ds-id" },
+      docs: [{
+        page_id: "sentinel", title: "Old Sentinel", locale: "en", section: "docs", section_order: 1,
+        element_type: "page", drafting_status: "Draft published", slug: "sentinel",
+        docusaurus_id: "docs/sentinel", docusaurus_path: "docs/sentinel",
+        r2_doc_key: "docs/en/docs/sentinel.md", r2_metadata_key: "pages/sentinel/metadata.json",
+        source_url: "https://notion.so/sentinel", notion_last_edited_time: "2026-01-01T00:00:00.000Z",
+        content_hash: "sha256:old", status: "active" as const,
+      }],
+      sidebars: { en: ["docs/sentinel"] },
+    };
+    const oldEnSidebar = JSON.stringify(["docs/sentinel"]);
+    const objects = new Map([
+      ["manifests/latest.json", JSON.stringify(oldSentinel)],
+      ["sidebars/en.json", oldEnSidebar],
+      ["pages/p-en/metadata.json", JSON.stringify(validMetadata({ page_id: "p-en", locale: "en" }))],
+      ["pages/p-es/metadata.json", JSON.stringify(validMetadata({ page_id: "p-es", locale: "es", slug: "intro-es", docusaurus_id: "docs/intro-es" }))],
+    ]);
+    env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+
+    const res = await request(app, "/admin/manifest/regenerate", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-admin-token" },
+    }, env);
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.regenerated).toBe(true);
+
+    const latestBlob = await env.CONTENT_BUCKET.get("manifests/latest.json");
+    const latest = JSON.parse(await latestBlob!.text());
+    expect(latest.docs).toHaveLength(2);
+    expect(latest.docs.some((d: { page_id: string }) => d.page_id === "sentinel")).toBe(false);
+
+    for (const loc of ["en", "es"]) {
+      const sidebarBlob = await env.CONTENT_BUCKET.get(`sidebars/${loc}.json`);
+      expect(sidebarBlob).not.toBeNull();
+      const sidebarBody = JSON.parse(await sidebarBlob!.text());
+      expect(sidebarBody).toEqual(latest.sidebars[loc]);
+    }
+  });
+
+  it("admin partial: es sidebar write fails, manifest_dirty restored", async () => {
+    const objects = new Map([
+      ["pages/p-en/metadata.json", JSON.stringify(validMetadata({ page_id: "p-en", locale: "en" }))],
+      ["pages/p-es/metadata.json", JSON.stringify(validMetadata({ page_id: "p-es", locale: "es", slug: "intro-es", docusaurus_id: "docs/intro-es" }))],
+    ]);
+    env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+
+    const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
+    const realPut = bucket.put.getMockImplementation()!;
+    const putCalls: string[] = [];
+    bucket.put.mockImplementation(async (key: string, value: string, opts?: Record<string, unknown>) => {
+      putCalls.push(key);
+      if (key === "sidebars/es.json") throw new Error("R2 write failed for es");
+      return realPut(key, value, opts);
+    });
+
+    const res = await request(app, "/admin/manifest/regenerate", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-admin-token" },
+    }, env);
+    expect(res.status).toBe(503);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.regenerated).toBe(true);
+    expect(body.sidebar_errors).toBe(1);
+    expect(body.failed_locales).toEqual(["es"]);
+
+    expect(putCalls).toContain("manifests/latest.json");
+    expect(putCalls).toContain("sidebars/en.json");
+    expect(putCalls).toContain("sidebars/es.json");
+
+    const latestBlob = await env.CONTENT_BUCKET.get("manifests/latest.json");
+    const latest = JSON.parse(await latestBlob!.text());
+    const enSidebarBlob = await env.CONTENT_BUCKET.get("sidebars/en.json");
+    expect(enSidebarBlob).not.toBeNull();
+    const enSidebarBody = JSON.parse(await enSidebarBlob!.text());
+    expect(enSidebarBody).toEqual(latest.sidebars.en);
+
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "'manifest_dirty', '1'")).toBeDefined();
+  });
+
+  it("cron partial: es sidebar write fails; dirty clear then restore, rebuilt_at prepared, partial warned", async () => {
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+
+    (env.DB.first as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ value: "1" })
+      .mockResolvedValueOnce({ t: "2026-07-13 12:00:00" });
+
+    const objects = new Map([
+      ["pages/p-en/metadata.json", JSON.stringify(validMetadata({ page_id: "p-en", locale: "en" }))],
+      ["pages/p-es/metadata.json", JSON.stringify(validMetadata({ page_id: "p-es", locale: "es", slug: "intro-es", docusaurus_id: "docs/intro-es" }))],
+    ]);
+    env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+
+    const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
+    const realPut = bucket.put.getMockImplementation()!;
+    bucket.put.mockImplementation(async (key: string, value: string, opts?: Record<string, unknown>) => {
+      if (key === "sidebars/es.json") throw new Error("R2 write failed for es");
+      return realPut(key, value, opts);
+    });
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+
+    const clearIdx = prepareMock.mock.calls.findIndex(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("'manifest_dirty', '0'"),
+    );
+    const restoreIdx = prepareMock.mock.calls.findIndex(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("'manifest_dirty', '1'"),
+    );
+    expect(clearIdx).toBeGreaterThanOrEqual(0);
+    expect(restoreIdx).toBeGreaterThanOrEqual(0);
+    expect(clearIdx).toBeLessThan(restoreIdx);
+
+    expect(findPrepareCall(prepareMock, "'manifest_rebuilt_at'")).toBeDefined();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("partial"));
+    expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("rebuilt manifest"));
+
+    warnSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  it("cron retry success: all sidebars written, rebuilt_at recorded, no dirty restore", async () => {
+    fetchMock.mockResolvedValueOnce(sdkQueryResponse([], null, false));
+
+    (env.DB.first as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ value: "1" })
+      .mockResolvedValueOnce({ t: "2026-07-13 12:00:00" });
+
+    const objects = new Map([
+      ["pages/p-en/metadata.json", JSON.stringify(validMetadata({ page_id: "p-en", locale: "en" }))],
+      ["pages/p-es/metadata.json", JSON.stringify(validMetadata({ page_id: "p-es", locale: "es", slug: "intro-es", docusaurus_id: "docs/intro-es" }))],
+    ]);
+    env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+
+    await scheduledHandler({} as never, env, {} as never);
+
+    const puts = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
+    const putKeys = puts.map((c) => c[0] as string);
+    expect(putKeys).toContain("sidebars/en.json");
+    expect(putKeys).toContain("sidebars/es.json");
+
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "'manifest_rebuilt_at'")).toBeDefined();
+    expect(findPrepareCall(prepareMock, "'manifest_dirty', '0'")).toBeDefined();
+    expect(findPrepareCall(prepareMock, "'manifest_dirty', '1'")).toBeUndefined();
   });
 });

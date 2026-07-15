@@ -22,7 +22,6 @@ import { R2_PATHS } from "../persistence/r2.js";
 import { buildManifestFromStorage } from "../lib/manifest.js";
 import type { ManifestStorage } from "../lib/manifest.js";
 import { ContentManifestSchema } from "../schemas/manifest.js";
-import type { SidebarItem } from "../schemas/manifest.js";
 
 // Minimal Cloudflare Workers type declarations (avoid @cloudflare/workers-types conflicts with @types/node)
 declare global {
@@ -262,6 +261,17 @@ app.post("/admin/manifest/regenerate", async (c: Context) => {
     );
   }
 
+  if (result.status === "partial") {
+    return c.json({
+      error: "partial publication: manifest written but some sidebar locale writes failed",
+      regenerated: true,
+      docs_count: result.docsCount,
+      skipped_count: result.skippedCount,
+      sidebar_errors: result.sidebarErrorsCount,
+      failed_locales: result.failedLocales,
+    }, 503);
+  }
+
   return c.json({
     regenerated: true,
     docs_count: result.docsCount,
@@ -489,9 +499,6 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         ).bind(key, type, pid, contentHash, sizeBytes).run();
       }
 
-      // Regenerate sidebar for this locale
-      await regenerateSidebar(env, metadata.locale, metadata);
-
       // Mark job complete
       await env.DB.prepare(
         "UPDATE sync_jobs SET status = 'completed', finished_at = datetime('now') WHERE id = ?",
@@ -587,6 +594,16 @@ export async function scheduledHandler(
       const result = await regenerateManifest(env);
       if (result.status === "written") {
         console.log(`Cron: rebuilt manifest (${result.docsCount} docs, ${result.skippedCount} skipped)`);
+        if (rebuildStart?.t) {
+          await env.DB.prepare(
+            "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_rebuilt_at', ?, datetime('now'))",
+          ).bind(rebuildStart.t).run();
+        }
+      } else if (result.status === "partial") {
+        // Manifest published but sidebar locale writes failed. manifest_dirty is
+        // already restored by regenerateManifest. Record rebuilt_at because
+        // manifests/latest was successfully written — stale-doc sweeping is safe.
+        console.warn(`Cron: manifest rebuilt but sidebar publication partial (${result.sidebarErrorsCount} locale(s) failed: ${result.failedLocales.join(", ")}); retrying next tick`);
         if (rebuildStart?.t) {
           await env.DB.prepare(
             "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_rebuilt_at', ?, datetime('now'))",
@@ -736,10 +753,14 @@ function r2ManifestStorage(bucket: R2Bucket): ManifestStorage {
 }
 
 interface RegenResult {
-  status: "written" | "clobbered" | "read_errors";
+  status: "written" | "clobbered" | "read_errors" | "partial";
   docsCount: number;
   skippedCount: number;
   readErrorsCount: number;
+  /** Set on partial: number of locale sidebar writes that failed. */
+  sidebarErrorsCount: number;
+  /** Set on partial: locales whose sidebar write failed. */
+  failedLocales: string[];
 }
 
 /**
@@ -766,6 +787,8 @@ async function regenerateManifest(env: Env): Promise<RegenResult> {
       docsCount: manifest.docs.length,
       skippedCount: skipped.length,
       readErrorsCount: readErrors.length,
+      sidebarErrorsCount: 0,
+      failedLocales: [],
     };
   }
 
@@ -778,7 +801,7 @@ async function regenerateManifest(env: Env): Promise<RegenResult> {
       try {
         const parsed = JSON.parse(await existing.text());
         if (Array.isArray(parsed.docs) && parsed.docs.length > 0) {
-          return { status: "clobbered", docsCount: 0, skippedCount: skipped.length, readErrorsCount: 0 };
+          return { status: "clobbered", docsCount: 0, skippedCount: skipped.length, readErrorsCount: 0, sidebarErrorsCount: 0, failedLocales: [] };
         }
       } catch { /* unparseable existing manifest — allow overwrite */ }
     }
@@ -791,63 +814,39 @@ async function regenerateManifest(env: Env): Promise<RegenResult> {
     env.CONTENT_BUCKET.put(R2_PATHS.manifestVersion(timestamp), body, { httpMetadata: { contentType: "application/json" } }),
   ]);
 
-  return { status: "written", docsCount: validated.docs.length, skippedCount: skipped.length, readErrorsCount: 0 };
-}
-
-/**
- * Read existing Docusaurus sidebar from R2, upsert the page's entry, write back.
- *
- * Format: `SidebarItem[]` (Docusaurus sidebar JSON).
- * - Uncategorized pages (no section): plain string ID.
- * - Categorized pages: placed inside the matching category's items array.
- */
-async function regenerateSidebar(
-  env: Env,
-  locale: string,
-  metadata: { docusaurus_id: string; slug: string; section: string | null; section_order: number | null; title: string },
-): Promise<void> {
-  const sidebarKey = R2_PATHS.sidebar(locale);
-
-  let items: SidebarItem[];
-  const existing = await env.CONTENT_BUCKET.get(sidebarKey);
-  if (existing) {
-    items = JSON.parse(await existing.text()) as SidebarItem[];
-  } else {
-    items = [];
-  }
-
-  const docId = metadata.docusaurus_id;
-  const section = metadata.section;
-
-  // Remove any previous occurrence of this docId from categories and top-level
-  for (const item of items) {
-    if (typeof item !== "string" && item.type === "category") {
-      item.items = item.items.filter((id) => id !== docId);
+  // Publish sidebars from the newly built manifest (not stale copies).
+  // Each locale sidebar is a best-effort write; failure on one locale does
+  // not block the others, but the dirty flag is restored so the next tick
+  // retries the full rebuild.
+  const sidebars = validated.sidebars as Record<string, unknown> | undefined;
+  let sidebarErrors = 0;
+  const failedLocales: string[] = [];
+  if (sidebars) {
+    for (const [locale, items] of Object.entries(sidebars)) {
+      try {
+        await env.CONTENT_BUCKET.put(
+          R2_PATHS.sidebar(locale),
+          JSON.stringify(items, null, 2),
+          { httpMetadata: { contentType: "application/json" } },
+        );
+      } catch (err) {
+        console.warn(`Failed to write sidebar for locale ${locale}:`, err);
+        sidebarErrors++;
+        failedLocales.push(locale);
+      }
     }
   }
-  items = items.filter((id) => id !== docId);
 
-  if (section) {
-    // Find or create the category
-    let category = items.find(
-      (item): item is Extract<typeof item, { type: "category" }> =>
-        typeof item !== "string" && item.type === "category" && item.label === section,
-    );
-    if (!category) {
-      category = { type: "category", label: section, items: [] };
-      items.push(category);
-    }
-    category.items.push(docId);
-  } else {
-    // Uncategorized: plain string
-    items.push(docId);
+  if (sidebarErrors > 0) {
+    // Partial sidebar failure: manifest is published but sidebars are incomplete.
+    // Restore manifest_dirty so the next tick retries all locale writes.
+    await env.DB.prepare(
+      "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '1', datetime('now'))",
+    ).run();
+    return { status: "partial", docsCount: validated.docs.length, skippedCount: skipped.length, readErrorsCount: 0, sidebarErrorsCount: sidebarErrors, failedLocales };
   }
 
-  await env.CONTENT_BUCKET.put(
-    sidebarKey,
-    JSON.stringify(items, null, 2),
-    { httpMetadata: { contentType: "application/json" } },
-  );
+  return { status: "written", docsCount: validated.docs.length, skippedCount: skipped.length, readErrorsCount: 0, sidebarErrorsCount: 0, failedLocales: [] };
 }
 
 async function getLastSyncWatermark(db: D1Database): Promise<string | null> {
