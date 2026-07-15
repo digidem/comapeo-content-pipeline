@@ -59,3 +59,8 @@ Hono app. Routes: `GET /health`, `GET /health/deep` (D1+R2+Notion check), `POST 
 - Converter tests are golden-file based: input `test/fixtures/notion/*.json` → expected `test/fixtures/expected/*.md`. Add a fixture pair when adding block-type support.
 - `strict` TypeScript; `src/cli/index.ts` is excluded from coverage.
 - TASKS.md tracks remaining work against the spec's Definition of Done; `comapeo_content_pipeline_spec.md` is the authoritative spec.
+
+## Delegation
+
+- Use a senior/junior pattern for implementation work: delegate edits to a junior (GLM by default; fall back to Sonnet 5 as a mid-tier junior when GLM isn't specified or is capacity-exhausted), push as much execution as possible to the junior, but verify everything yourself before committing.
+- Before working a TASKS.md item, confirm it's still real and necessary — the list isn't guaranteed current.
