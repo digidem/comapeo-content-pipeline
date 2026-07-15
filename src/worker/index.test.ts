@@ -1506,6 +1506,41 @@ describe("scheduledHandler (cron, plan 5.4)", () => {
     expect(await env.CONTENT_BUCKET.get("sidebars/es.json")).not.toBeNull();
   });
 
+  it("admin: a list failure during stale-sidebar cleanup counts as a sidebar error, not silent success", async () => {
+    const objects = new Map([
+      ["pages/p-en/metadata.json", JSON.stringify(validMetadata({ page_id: "p-en", locale: "en" }))],
+      ["pages/p-es/metadata.json", JSON.stringify(validMetadata({ page_id: "p-es", locale: "es", slug: "intro-es", docusaurus_id: "docs/intro-es" }))],
+    ]);
+    env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+
+    const bucket = env.CONTENT_BUCKET as ReturnType<typeof mockR2Bucket>;
+    const realList = bucket.list.getMockImplementation()!;
+    bucket.list.mockImplementation(async (options?: { prefix?: string }) => {
+      if (options?.prefix === "sidebars/") throw new Error("R2 list failed");
+      return realList(options);
+    });
+
+    const res = await request(app, "/admin/manifest/regenerate", {
+      method: "POST",
+      headers: { Authorization: "Bearer test-admin-token" },
+    }, env);
+    // A silent-list-failure must not be reported as full success — otherwise
+    // manifest_dirty is never restored and a genuinely stale locale sidebar
+    // could persist indefinitely with no retry.
+    expect(res.status).toBe(503);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.regenerated).toBe(true);
+    expect(body.sidebar_errors as number).toBeGreaterThanOrEqual(1);
+
+    // Both locale sidebars were still written normally; only the stale-cleanup
+    // listing failed.
+    expect(await env.CONTENT_BUCKET.get("sidebars/en.json")).not.toBeNull();
+    expect(await env.CONTENT_BUCKET.get("sidebars/es.json")).not.toBeNull();
+
+    const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+    expect(findPrepareCall(prepareMock, "'manifest_dirty', '1'")).toBeDefined();
+  });
+
   it("admin partial: es sidebar write fails, manifest_dirty restored", async () => {
     const objects = new Map([
       ["pages/p-en/metadata.json", JSON.stringify(validMetadata({ page_id: "p-en", locale: "en" }))],

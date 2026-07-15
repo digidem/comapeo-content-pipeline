@@ -869,7 +869,11 @@ async function regenerateManifest(env: Env): Promise<RegenResult> {
       }
     }
   } catch (err) {
+    // A failure to even list existing sidebars means stale-locale cleanup
+    // silently didn't run this pass — count it the same as a write/delete
+    // failure so the caller doesn't report full success and skip retrying.
     console.warn("Failed to list existing sidebars for stale-locale cleanup:", err);
+    sidebarErrors++;
   }
 
   if (sidebarErrors > 0) {
