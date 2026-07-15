@@ -148,6 +148,36 @@ describe("buildHierarchyPlan dedupe", () => {
 });
 
 describe("buildHierarchyPlan edge cases", () => {
+  it("an ordinary-titled empty EN sub-item does not win family selection over a real EN parent", () => {
+    // Same root cause as the internal-placeholder case, but the child's title
+    // carries no internal marker at all — it's just an empty editorial stub
+    // sitting alongside the real translations in sub_items. selectLocaleMember
+    // must not pick it purely because it's the only EN relation child; the
+    // parent's real body must win.
+    const docs: ManifestDoc[] = [
+      makeDoc({
+        page_id: "en-parent", title: "Getting Started", locale: "en",
+        section: "10-Basics", section_order: 1, slug: "getting-started",
+        sub_items: ["en-stub-child", "pt-child"], status: "active",
+      }),
+      makeDoc({
+        page_id: "en-stub-child", title: "Getting Started (WIP)", locale: "en",
+        section: "10-Basics", section_order: 1, slug: "getting-started-wip",
+      }),
+      makeDoc({
+        page_id: "pt-child", title: "Introdução", locale: "pt",
+        section: "10-Basics", section_order: 1, slug: "introducao",
+      }),
+    ];
+    const plan = buildHierarchyPlan({
+      docs, includeDrafts: true,
+      hasBodyById: { "en-parent": true, "en-stub-child": false, "pt-child": true },
+    });
+    const enPage = plan.canonicalPages.find((cp) => cp.locale === "en");
+    expect(enPage).toBeDefined();
+    expect(enPage!.pageId).toBe("en-parent");
+  });
+
   it("internal placeholder child does not win family selection over a real parent", () => {
     const docs: ManifestDoc[] = [
       makeDoc({

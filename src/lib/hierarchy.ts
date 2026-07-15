@@ -91,20 +91,40 @@ function getLanguageSource(doc: ManifestDoc, map?: Record<string, "explicit" | "
 
 // ── Select locale representative ──
 
-function selectLocaleMember(members: FamilyMember[], locale: string): FamilyMember | undefined {
+function selectLocaleMember(members: FamilyMember[], locale: string, parentLocale: string): FamilyMember | undefined {
   const filtered = members.filter((m) => m.locale === locale);
   if (filtered.length === 0) return undefined;
   if (filtered.length === 1) return filtered[0];
 
-  // Prefer relation children over parent
+  // An EN parent IS the family's genuine canonical content — canonicalSlug for
+  // an EN-parent family always comes from the parent itself, never a child
+  // (see the parentLocale === "en" branch below), so it is never a routing
+  // container. When resolving that EN parent's own locale, check body quality
+  // across every candidate (parent included) before any child/parent
+  // preference: an anomalous, accidentally-empty EN relation child must not
+  // shortcut past a parent that has real content just because it's the only
+  // child present.
+  //
+  // A non-EN parent is always a routing container regardless of its own body
+  // text — its canonical identity is always derived from an EN child, never
+  // from itself — so for that parent's own locale, its own-locale child is
+  // always the correct localized page, even when that child is a stub (so it
+  // still routes through the EN body fallback rather than silently
+  // substituting the container's incidental filler text).
+  const parentLocaleIsEn = locale === parentLocale && parentLocale === "en";
+
   const children = filtered.filter((m) => m.isRelationChild);
-  const candidates = children.length > 0 ? children : filtered;
+  const candidates = parentLocaleIsEn ? filtered : (children.length > 0 ? children : filtered);
 
-  if (candidates.length === 1) return candidates[0];
-
-  // Has usable body beats stub/missing
   const withBody = candidates.filter((m) => m.hasBody);
-  const usableCandidates = withBody.length > 0 ? withBody : candidates;
+  let usableCandidates = withBody.length > 0 ? withBody : candidates;
+
+  if (parentLocaleIsEn) {
+    const bodyChildren = usableCandidates.filter((m) => m.isRelationChild);
+    usableCandidates = bodyChildren.length > 0 ? bodyChildren : usableCandidates;
+  }
+
+  if (usableCandidates.length === 1) return usableCandidates[0];
 
   // Rank: explicit > automated > fallback, typed > untyped, non-staging > staging, lower order
   const srcRank: Record<string, number> = { explicit: 0, automated: 1, fallback: 2 };
@@ -209,7 +229,7 @@ export function buildHierarchyPlan(input: BuildInput): HierarchyPlan {
     const selected = new Map<string, FamilyMember>();
     const locales = new Set(allMembers.map((m) => m.locale));
     for (const loc of locales) {
-      const sel = selectLocaleMember(allMembers, loc);
+      const sel = selectLocaleMember(allMembers, loc, parentLocale);
       if (sel) selected.set(loc, sel);
     }
 
