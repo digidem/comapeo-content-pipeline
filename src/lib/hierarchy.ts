@@ -19,6 +19,15 @@ export interface CanonicalPage {
   elementType: string; title: string; isStructural: boolean;
   parentId?: string; customPropsTitle?: string; toggleDir?: string;
   enFallbackPageId?: string;
+  /**
+   * The family's selected EN member, for any non-EN page — set whenever an EN
+   * sibling exists, regardless of this page's own body/hasBody status (unlike
+   * enFallbackPageId, which only fires for whole-page stub fallback). Used to
+   * recover individual broken image references inside an otherwise-real
+   * translated body (e.g. an untranslatable image left as inline placeholder
+   * text by upstream translation tooling).
+   */
+  enSiblingPageId?: string;
   /** Sort order for event replay (selected EN child order, or canonicalOrder). */
   eventOrder: number;
   /** Resolved body availability (from preflight or FamilyMember). */
@@ -297,11 +306,16 @@ export function buildHierarchyPlan(input: BuildInput): HierarchyPlan {
     for (const [locale, member] of family.selected) {
       if (!isContentPage(member.elementType)) continue;
 
-      // Determine EN fallback for stubs
+      // Determine EN fallback for stubs, and the general EN sibling reference
+      // (used for per-image repair even when this page has a real body).
       let enFallbackPageId: string | undefined;
-      if (locale !== "en" && !member.hasBody) {
+      let enSiblingPageId: string | undefined;
+      if (locale !== "en") {
         const enSel = family.selected.get("en");
-        if (enSel && enSel.hasBody) enFallbackPageId = enSel.doc.page_id;
+        if (enSel) {
+          enSiblingPageId = enSel.doc.page_id;
+          if (!member.hasBody && enSel.hasBody) enFallbackPageId = enSel.doc.page_id;
+        }
       }
 
       canonicalPages.push({
@@ -311,7 +325,7 @@ export function buildHierarchyPlan(input: BuildInput): HierarchyPlan {
         canonicalOrder: family.canonicalOrder, locale,
         elementType: member.elementType, title: member.doc.title ?? "",
         isStructural: false, parentId: family.parentDoc.page_id,
-        enFallbackPageId,
+        enFallbackPageId, enSiblingPageId,
         eventOrder: family.flowOrder,
         hasBody: member.hasBody,
         languageSource: member.languageSource,

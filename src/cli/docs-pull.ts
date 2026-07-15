@@ -153,6 +153,23 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
 
     let content = readFileSync(srcFile, "utf8");
 
+    // Repair broken image placeholders left by upstream translation tooling.
+    // A translated page can otherwise be real, fully-translated content with
+    // one or more images replaced by an inline text placeholder (e.g. a raw
+    // "static/images/<name>_<n>.<ext>" path, or a bracketed "[Image
+    // Placeholder]" marker) inside a `:::note 🖼️ ... :::` callout — this is
+    // NOT a whole-page stub, so it doesn't go through the EN-body-fallback
+    // path below. Recover each placeholder positionally: the Nth 🖼️ callout
+    // in this page is replaced with the Nth real image from its EN sibling,
+    // for as many EN images as are available; any placeholder beyond that is
+    // left untouched (nothing to recover it with).
+    if (cp.locale !== "en" && cp.enSiblingPageId) {
+      const enSrcForImages = join(inputDir, `${cp.enSiblingPageId}.md`);
+      if (existsSync(enSrcForImages)) {
+        content = repairBrokenImagePlaceholders(content, readFileSync(enSrcForImages, "utf8"));
+      }
+    }
+
     // Rewrite id/slug/position to canonical values
     if (cp.canonicalSlug !== cp.doc.slug) {
       content = content
@@ -510,6 +527,33 @@ function ensurePlaceholderForEmptyBody(content: string): string {
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!fmMatch) return `${PLACEHOLDER_BODY}\n`;
   return `---\n${fmMatch[1]}\n---\n${PLACEHOLDER_BODY}\n`;
+}
+
+/** A single-line untranslatable-image marker left inside a picture-frame callout
+ * by upstream translation tooling — either a guessed static path (e.g.
+ * "static/images/name_0.png") or a bracketed marker (e.g. "[Image Placeholder]",
+ * "[Espaço Reservado para Imagem]", "[Marcador de Imagen]"). Constrained to
+ * these two known shapes (rather than any single-line 🖼️ callout body) so a
+ * legitimate human-authored note that happens to use the same icon is never
+ * mistaken for a broken-image marker.
+ */
+const IMAGE_PLACEHOLDER_CALLOUT = /:::note 🖼️\n(?:static\/images\/[^\n]+|\[[^\]\n]+\])\n\n:::/g;
+const REAL_IMAGE_MARKDOWN = /!\[[^\]]*\]\(assets\/[^)]+\)/g;
+
+/**
+ * Replace each broken image-placeholder callout in a translated page's body
+ * with the real image at the same position in its EN sibling, positionally
+ * (Nth placeholder here ↔ Nth real image there). A placeholder beyond the
+ * EN sibling's image count is left untouched. Assumes every image on the
+ * translated page became a placeholder (true for every case observed so far)
+ * — a page with a mix of surviving real images and placeholders would need
+ * joint document-order counting instead of this simpler independent count.
+ */
+function repairBrokenImagePlaceholders(content: string, enBody: string): string {
+  const enImages = enBody.match(REAL_IMAGE_MARKDOWN);
+  if (!enImages || enImages.length === 0) return content;
+  let i = 0;
+  return content.replace(IMAGE_PLACEHOLDER_CALLOUT, (match) => (i < enImages.length ? enImages[i++] : match));
 }
 
 function collectReferencedAssets(sectionAbsDir: string, availableAssets: Set<string>): Set<string> {

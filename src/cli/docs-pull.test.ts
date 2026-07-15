@@ -671,6 +671,74 @@ sidebar_position: 23
     expect(ptContent).toContain("EN body content.");
   });
 
+  it("recovers broken image placeholders in an otherwise-real translated page using the EN sibling's real images, positionally", async () => {
+    // Upstream translation tooling sometimes replaces an image it can't
+    // translate with an inline text placeholder inside a picture-frame
+    // callout, while leaving the surrounding prose fully translated — this is
+    // NOT a whole-page stub, so it never reaches the EN-body-fallback path.
+    const inputDir = mkdtempSync(join(tmpdir(), "docspull-imgfix-"));
+    temps.push(inputDir);
+    const out = freshOut();
+
+    const docs: FixtureDoc[] = [
+      { page_id: "en-parent", title: "Building Categories", locale: "en", section: "10-Basics", section_order: 1, status: "active", slug: "building-categories", sub_items: ["es-child"], element_type: PAGE_TYPE },
+      { page_id: "es-child", title: "Construyendo Categorías", locale: "es", section: "10-Basics", section_order: 1, status: "active", slug: "construyendo-categorias", element_type: PAGE_TYPE },
+    ];
+
+    writeFileSync(join(inputDir, "manifest.json"), JSON.stringify(buildManifest(docs), null, 2));
+    writeFileSync(join(inputDir, "en-parent.md"), sourceMd(
+      "Building Categories", "building-categories", 1,
+      "Intro text.\n\n![First](assets/hash1.png)\n\nMiddle text.\n\n![Second](assets/hash2.png)\n\nEnd text.",
+    ));
+    writeFileSync(join(inputDir, "es-child.md"), sourceMd(
+      "Construyendo Categorías", "construyendo-categorias", 1,
+      "Texto de introducción.\n\n:::note 🖼️\nstatic/images/buildingcategories_0.png\n\n:::\n\nTexto del medio.\n\n:::note 🖼️\nstatic/images/buildingcategories_1.png\n\n:::\n\nTexto final.",
+    ));
+
+    await docsPull({ input: join(inputDir, "manifest.json"), "input-dir": inputDir, out, all: "true" });
+
+    // Translations publish under the EN family's canonical slug, not their own.
+    const esFile = join(out, ...ES_DOCS_CURRENT, "basics", "building-categories.md");
+    expect(existsSync(esFile)).toBe(true);
+    const esContent = readFileSync(esFile, "utf8");
+    expect(esContent).toContain("![First](assets/hash1.png)");
+    expect(esContent).toContain("![Second](assets/hash2.png)");
+    expect(esContent).not.toContain("static/images/buildingcategories");
+    expect(esContent).not.toContain(":::note 🖼️");
+  });
+
+  it("leaves an image placeholder untouched when the EN sibling has no image at that position", async () => {
+    const inputDir = mkdtempSync(join(tmpdir(), "docspull-imgfix-short-"));
+    temps.push(inputDir);
+    const out = freshOut();
+
+    const docs: FixtureDoc[] = [
+      { page_id: "en-parent", title: "One Image Page", locale: "en", section: "10-Basics", section_order: 1, status: "active", slug: "one-image-page", sub_items: ["es-child"], element_type: PAGE_TYPE },
+      { page_id: "es-child", title: "Página de Una Imagen", locale: "es", section: "10-Basics", section_order: 1, status: "active", slug: "pagina-de-una-imagen", element_type: PAGE_TYPE },
+    ];
+
+    writeFileSync(join(inputDir, "manifest.json"), JSON.stringify(buildManifest(docs), null, 2));
+    // EN sibling has only ONE real image.
+    writeFileSync(join(inputDir, "en-parent.md"), sourceMd(
+      "One Image Page", "one-image-page", 1,
+      "Intro.\n\n![Only](assets/only.png)\n\nEnd.",
+    ));
+    // ES page has TWO placeholders — the second has nothing to recover from.
+    writeFileSync(join(inputDir, "es-child.md"), sourceMd(
+      "Página de Una Imagen", "pagina-de-una-imagen", 1,
+      "Introducción.\n\n:::note 🖼️\nstatic/images/oneimagepage_0.png\n\n:::\n\nMedio.\n\n:::note 🖼️\nstatic/images/oneimagepage_1.png\n\n:::\n\nFin.",
+    ));
+
+    await docsPull({ input: join(inputDir, "manifest.json"), "input-dir": inputDir, out, all: "true" });
+
+    // Translations publish under the EN family's canonical slug, not their own.
+    const esFile = join(out, ...ES_DOCS_CURRENT, "basics", "one-image-page.md");
+    const esContent = readFileSync(esFile, "utf8");
+    expect(esContent).toContain("![Only](assets/only.png)");
+    // Second placeholder had no EN image to recover from — left as-is.
+    expect(esContent).toContain("static/images/oneimagepage_1.png");
+  });
+
   it("Archived child is excluded from family selection", async () => {
     const inputDir = mkdtempSync(join(tmpdir(), "docspull-archived-"));
     temps.push(inputDir);
