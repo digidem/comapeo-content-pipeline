@@ -174,19 +174,7 @@ export function projectSidebars(plan: HierarchyPlan): Record<string, SidebarItem
       const secCat = plan.categories.find((c) => c.locale === locale && c.sectionDir === toSectionDir(section) && !c.toggleDir);
       const label = secCat?.label ?? stripSectionPrefix(section);
       const sectionDir = toSectionDir(section);
-
-      if (section === SECTION_NAMES.UNCATEGORIZED) {
-        // Root docs: sort by canonicalOrder then index then pageId
-        const rootEntries: PageEntry[] = [];
-        for (const [, entries] of byToggle) for (const e of entries) rootEntries.push(e);
-        rootEntries.sort((a, b) => {
-          if (a.order !== b.order) return a.order - b.order;
-          if (a.idx !== b.idx) return a.idx - b.idx;
-          return a.pageId.localeCompare(b.pageId);
-        });
-        for (const e of rootEntries) items.push(e.id);
-        continue;
-      }
+      const isRootSection = section === SECTION_NAMES.UNCATEGORIZED;
 
       // Collect toggle keys sorted by Toggle CategoryEntry position
       const toggleKeys = [...byToggle.keys()].filter((tk) => tk !== "");
@@ -204,7 +192,11 @@ export function projectSidebars(plan: HierarchyPlan): Record<string, SidebarItem
         return a.localeCompare(b);
       });
 
-      // Build combined section items: Toggle categories and direct pages interleaved by order
+      // Build combined section items: Toggle categories and direct pages
+      // interleaved by order. This applies identically to the root
+      // ("Uncategorized") section — a Toggle nested directly under root still
+      // needs its own category (matching the real on-disk directory
+      // docs-pull.ts writes for it); only plain root pages render as bare IDs.
       const combinedItems: Array<{ order: number; idx: number; item: SidebarItem }> = [];
 
       for (const tk of toggleKeys) {
@@ -236,6 +228,14 @@ export function projectSidebars(plan: HierarchyPlan): Record<string, SidebarItem
       // Sort by order then idx
       combinedItems.sort((a, b) => a.order !== b.order ? a.order - b.order : a.idx - b.idx);
       const sectionItems: SidebarItem[] = combinedItems.map((c) => c.item);
+
+      if (isRootSection) {
+        // Root pages render as plain sidebar IDs with no wrapping category —
+        // Toggle categories nested under root are still pushed as their own
+        // entries, just not wrapped in a synthetic "Uncategorized" category.
+        items.push(...sectionItems);
+        continue;
+      }
 
       items.push({
         type: "category",

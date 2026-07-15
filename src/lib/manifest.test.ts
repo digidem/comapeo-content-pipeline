@@ -541,6 +541,28 @@ describe("generateManifest canonical sidebars", () => {
     expect((sec.items[2] as SidebarCategory).label).toBe("Second Toggle");
   });
 
+  it("Toggle nested directly under the root (Uncategorized) section keeps its own category, not flattened", () => {
+    const docs: ManifestDoc[] = [
+      // Plain root page BEFORE the Toggle, so it's not swept into the Toggle's
+      // group (activeToggleDir only starts applying to pages after the Toggle
+      // event, per the existing event-replay ordering rules).
+      makeDoc({ page_id: "root-page", title: "Plain Root Page", section: null, section_order: 1, slug: "plain-root-page" }),
+      { ...makeDoc({ page_id: "toggle-en", title: "Root Group", section: null, section_order: 2, slug: "toggle-en", element_type: "Toggle", sub_items: [] }) },
+      makeDoc({ page_id: "en-page", title: "Nested Page", section: null, section_order: 3, slug: "nested-page" }),
+    ];
+    const plan = buildHierarchyPlan({ docs, includeDrafts: false });
+    const sb = projectSidebars(plan);
+    // The Toggle group still renders as its own category (with a real label
+    // and translation key), sitting alongside the plain root page — neither
+    // is wrapped in a synthetic "Uncategorized" category.
+    expect(sb.en).toHaveLength(2);
+    expect(sb.en[0]).toBe("plain-root-page");
+    const toggleCat = sb.en[1] as SidebarCategory;
+    expect(toggleCat.type).toBe("category");
+    expect(toggleCat.label).toBe("Root Group");
+    expect(toggleCat.items).toEqual(["root-group/nested-page"]);
+  });
+
   it("identical canonical slugs in different sections both appear in sidebar", () => {
     const docs: ManifestDoc[] = [
       makeDoc({ page_id: "a1", title: "Overview", section: "10-A", section_order: 1, slug: "overview" }),
