@@ -8,19 +8,16 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, unlinkSync, rmdirSync } from "node:fs";
-import { join } from "node:path";
-import { isPublishableStatus } from "../lib/status.js";
+import { join, dirname } from "node:path";
+import { buildHierarchyPlan, toSectionDir, type CategoryEntry } from "../lib/hierarchy.js";
+import { buildRouteMaps, resolveInternalLinks, type DocLite } from "../lib/links.js";
+import { rewriteRawImgSrcToStatic } from "../lib/img-rewrite.js";
 import {
-  isContentPage,
-  normalizeLocale,
-  NOTION_ELEMENT_TYPES,
   SECTION_NAMES,
   UNCATEGORIZED_ORDER,
 } from "../lib/notion-properties.js";
-import { slugify } from "../lib/slug.js";
-import { buildRouteMaps, resolveInternalLinks, type DocLite } from "../lib/links.js";
-import { rewriteRawImgSrcToStatic } from "../lib/img-rewrite.js";
-import { manifestElementType } from "../lib/manifest.js";
+
+export { toSectionDir };
 
 /** Error thrown by docsPull for fatal-but-recoverable conditions (missing manifest, etc.). */
 export class DocsPullError extends Error {
@@ -28,6 +25,52 @@ export class DocsPullError extends Error {
     super(message);
     this.name = "DocsPullError";
   }
+}
+
+/** Node-side preflight: read language_source and body availability from disk. */
+function preflightMetadata(inputDir: string, docs: Array<{ page_id: string; language_source?: string }>): {
+  languageSourceById: Record<string, "explicit" | "automated" | "fallback">;
+  hasBodyById: Record<string, boolean>;
+} {
+  const languageSourceById: Record<string, "explicit" | "automated" | "fallback"> = {};
+  const hasBodyById: Record<string, boolean> = {};
+
+  for (const doc of docs) {
+    // First check manifest's own language_source
+    if (doc.language_source) {
+      languageSourceById[doc.page_id] = doc.language_source as "explicit" | "automated" | "fallback";
+    }
+
+    const metaPath = join(inputDir, `${doc.page_id}.metadata.json`);
+    try {
+      if (existsSync(metaPath)) {
+        const raw = JSON.parse(readFileSync(metaPath, "utf8"));
+        if (raw.language_source && !languageSourceById[doc.page_id]) {
+          languageSourceById[doc.page_id] = raw.language_source;
+        }
+        const langProp = raw.properties?.["Language"];
+        if (langProp && typeof langProp === "object" && !languageSourceById[doc.page_id]) {
+          const name = (langProp as Record<string, unknown>).select
+            ? ((langProp as Record<string, unknown>).select as Record<string, unknown>).name
+            : (langProp as Record<string, unknown>).name;
+          if (typeof name === "string") {
+            languageSourceById[doc.page_id] = /\bautomated\b/i.test(name) ? "automated" : "explicit";
+          }
+        }
+      }
+    } catch { /* ignore */ }
+
+    // Check body availability using exact same logic as isStubBody
+    const mdPath = join(inputDir, `${doc.page_id}.md`);
+    try {
+      if (existsSync(mdPath)) {
+        const raw = readFileSync(mdPath, "utf8");
+        hasBodyById[doc.page_id] = !isStubBody(raw);
+      }
+    } catch { /* ignore */ }
+  }
+
+  return { languageSourceById, hasBodyById };
 }
 
 export async function docsPull(args: Record<string, string>): Promise<void> {
@@ -45,271 +88,169 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
 
   mkdirSync(outDir, { recursive: true });
 
+  // Node-side preflight: read language_source and body availability from disk
+  const preflight = preflightMetadata(inputDir, manifest.docs);
+
+  // ── Build canonical hierarchy plan ──
+  const plan = buildHierarchyPlan({
+    docs: manifest.docs,
+    includeDrafts: args.all === "true",
+    languageSourceById: preflight.languageSourceById,
+    hasBodyById: preflight.hasBodyById,
+  });
+
+  // ── Report diagnostics ──
+  if (plan.diagnostics.length > 0) {
+    console.warn(`\n  Translation validation: ${plan.diagnostics.length} issue(s) found:`);
+    for (const d of plan.diagnostics) {
+      console.warn(`    [${d.category}] ${d.pageId} ("${d.title}") — ${d.detail}`);
+    }
+  }
+
+  // ── Build route maps (needs canonicalSlugOf) ──
   const docById = new Map<string, (typeof manifest.docs)[number]>();
   for (const doc of manifest.docs) {
     docById.set(doc.page_id, doc);
   }
 
-  // ── Internal-page detection ──────────────────────────────────────────────
-  // Declared early so they can be used when building internalGroupIds below.
-
-  // Editorial QA/test pages authored in Notion. They cannot be distinguished by
-  // status/element_type (all draft Pages), so match by slug (most reliable —
-  // translations inherit the English slug) and by title as a secondary signal.
-  const TEST_PAGE_TITLE = /^\s*[[(]?\s*(testing|test|teste|prueba)\b/i;
-  const TEST_PAGE_SLUG = /^(testing|teste)-/i;
-
-  // Internal/template scratch pages authored in Notion that must never publish.
-  const INTERNAL_PAGE_TITLE = /^\s*(new element|process checklist)\s*$/i;
-  const INTERNAL_PAGE_MARKER = /\[\s*(add content here|en title|insert content here)\s*\]/i;
-  // Staging/translation scratch containers whose titles carry a parenthesised annotation
-  // like "(translating for public page)" or "(staging)".
-  const INTERNAL_PAGE_ANNOTATION =
-    /\((?:translating|translation|for translation|staging|do not publish|internal)[^)]*\)/i;
-
-  /** Returns true when a page's own title marks it as internal/template. */
-  const isInternalTitle = (title: string, pageId: string): boolean =>
-    INTERNAL_PAGE_TITLE.test(title) ||
-    INTERNAL_PAGE_MARKER.test(title) ||
-    INTERNAL_PAGE_ANNOTATION.test(title) ||
-    title.trim() === pageId; // untitled page (title defaulted to its id)
-
-  const containerIds = new Set<string>();
-  const containerHasEnChild = new Set<string>();
-  for (const doc of manifest.docs) {
-    if (doc.locale !== "en" || !Array.isArray(doc.sub_items) || doc.sub_items.length === 0) continue;
-    containerIds.add(doc.page_id);
-    if (doc.sub_items.some((subId: string) => docById.get(subId)?.locale === "en")) {
-      containerHasEnChild.add(doc.page_id);
+  // Build pageId → canonicalSlug for all canonical pages + route aliases
+  const pageIdToCanonicalSlug = new Map<string, string>();
+  for (const cp of plan.canonicalPages) {
+    pageIdToCanonicalSlug.set(cp.pageId, cp.canonicalSlug);
+  }
+  // Include route aliases for family members
+  for (const alias of plan.routeAliases) {
+    if (!pageIdToCanonicalSlug.has(alias.pageId)) {
+      pageIdToCanonicalSlug.set(alias.pageId, alias.canonicalSlug);
     }
   }
 
-  // Build translation lookup from Sub-item relations: translation page_id → { slug, section, order }
-  // The container parent's own slug may carry a collision suffix (e.g.
-  // `inviting-collaborators-2331b081`) because the real English child reserved
-  // the clean slug first. The parent is skipped from publishing, so the whole
-  // group (en child + translations) should publish at the *clean* slug derived
-  // from the title — that's what cross-references point at.
-  const translationMap = new Map<string, { slug: string; section: string | null; order: number | null }>();
-  for (const doc of manifest.docs) {
-    if (doc.locale === "en" && doc.sub_items && doc.sub_items.length > 0) {
-      const cleanSlug = slugify(doc.title ?? "") || doc.slug;
-      for (const subId of doc.sub_items) {
-        translationMap.set(subId, { slug: cleanSlug, section: doc.section, order: doc.section_order ?? null });
-      }
-    }
-  }
-
-  // Pages whose container title carries an internal annotation must be excluded
-  // along with all their sub-item children, because the children's own titles
-  // carry no annotation (the annotation lives only on the container).
-  const internalGroupIds = new Set<string>();
-  for (const doc of manifest.docs) {
-    if (!isInternalTitle(doc.title ?? "", doc.page_id)) continue;
-    internalGroupIds.add(doc.page_id);
-    if (Array.isArray(doc.sub_items)) {
-      for (const subId of doc.sub_items) {
-        internalGroupIds.add(subId);
-      }
-    }
-  }
-
-  // Canonical published slug for a page: the (cleaned) English source slug for
-  // grouped pages, otherwise the page's own slug.
   const canonicalSlugOf = (pageId: string): string | null => {
-    const t = translationMap.get(pageId);
-    if (t) return t.slug;
-    const d = docById.get(pageId);
-    if (!d) return null;
-    // Container parent (skipped from publishing): a link to its own (possibly
-    // suffixed) slug should resolve to the clean group slug its children use.
-    if (Array.isArray(d.sub_items) && d.sub_items.length > 0) {
-      return slugify(d.title ?? "") || d.slug;
-    }
-    return d.slug;
+    return pageIdToCanonicalSlug.get(pageId) ?? null;
   };
   const routeMaps = buildRouteMaps(manifest.docs as DocLite[], canonicalSlugOf);
 
-  // Build translated section labels from Toggle pages.
-  // Toggle page titles provide localized sidebar labels.
-  // (Section order is derived from each section's numeric name prefix, not the
-  // Toggle Order property — see the category-sort block below.)
-  const sectionLabels = new Map<string, Map<string, string>>(); // locale → section → label
-  for (const doc of manifest.docs) {
-    const et = manifestElementType(doc);
-    if (et.toLowerCase() !== NOTION_ELEMENT_TYPES.TOGGLE) continue;
-    const sec = doc.section || "__none__";
-    const loc = normalizeLocale(doc.locale);
-    // Store label per locale (first Toggle wins — lowest section_order)
-    if (!sectionLabels.has(loc)) sectionLabels.set(loc, new Map());
-    if (!sectionLabels.get(loc)!.has(sec)) {
-      sectionLabels.get(loc)!.set(sec, doc.title);
-    }
-  }
-
+  // ── Emit canonical pages ──
   let count = 0;
-  let skippedNonPage = 0;
-  let skippedTestPages = 0;
   let skippedStubTranslations = 0;
-  // Track sections per locale for _category_.json generation
-  const sectionPositions = new Map<string, Map<string, number>>(); // locale → section → min position
-  // Absolute section dirs that actually received .md writes — drives per-section
-  // asset copying (only assets referenced by each section's .md files).
-  const writtenSectionDirs = new Set<string>();
-  // Inline <img> asset filenames referenced via /images/notion/ site-root paths;
-  // copied to <out>/static/images/notion/ after all docs are written.
-  const inlineStaticAssets = new Set<string>();
-  // Absolute paths of every .md actually written this run. docs:pull is a full
-  // materialization, so this set IS the publishable corpus — orphan cleanup
-  // keeps exactly these, inheriting every emit-loop gate (status, structural,
-  // internal/test/container exclusions, dedupe) instead of re-deriving a
-  // partial approximation from the manifest.
+  let stubBodyFallbacks = 0;
   const writtenDocPaths = new Set<string>();
+  const writtenSectionDirs = new Set<string>();
+  const writtenCategoryPaths = new Set<string>();
+  const inlineStaticAssets = new Set<string>();
+  const emitDiagnostics: Array<{ category: string; pageId: string; title: string; detail: string }> = [];
 
-  // Deduplicate pages with the same slug in the same locale
-  // (e.g. test pages that share a slug like "test-guia-de-instalacao" in PT)
-  const dedupedDocs: typeof manifest.docs = [];
-  const seenSlugs = new Map<string, (typeof manifest.docs)[number]>(); // locale/slug → doc
-  for (const doc of manifest.docs) {
-    if (containerIds.has(doc.page_id) && containerHasEnChild.has(doc.page_id)) {
-      continue;
-    }
-    if (!isPublishableStatus(doc.status, args.all === "true")) {
-      dedupedDocs.push(doc);
-      continue;
-    }
-    const elementType = manifestElementType(doc);
-    if (!isContentPage(elementType)) {
-      dedupedDocs.push(doc);
-      continue;
-    }
-    const translation = translationMap.get(doc.page_id);
-    const translationSlug = translation?.slug ?? doc.slug;
-    const title = doc.title ?? "";
-    if (
-      TEST_PAGE_TITLE.test(title) ||
-      TEST_PAGE_SLUG.test(translationSlug ?? "") ||
-      isInternalTitle(title, doc.page_id) ||
-      internalGroupIds.has(doc.page_id)
-    ) {
-      skippedTestPages++;
-      continue; // drop editorial test/internal/template page (and its translations)
-    }
-    const normalizedLocale = normalizeLocale(doc.locale);
-    const key = `${normalizedLocale}/${translationSlug}`;
-    const existing = seenSlugs.get(key);
-    if (existing) {
-      const existingOrder = existing.section_order ?? 999;
-      const docOrder = doc.section_order ?? 999;
-      if (docOrder < existingOrder) {
-        console.warn(`  Replacing duplicate slug "${translationSlug}" (${normalizedLocale}): ${existing.page_id} → ${doc.page_id}`);
-        // Replace existing in dedupedDocs
-        const idx = dedupedDocs.indexOf(existing);
-        if (idx !== -1) dedupedDocs[idx] = doc;
-        seenSlugs.set(key, doc);
-      } else {
-        console.warn(`  Skipping duplicate slug "${translationSlug}" (${normalizedLocale}): keeping ${existing.page_id}, dropping ${doc.page_id}`);
-      }
-      continue;
-    }
-    seenSlugs.set(key, doc);
-    dedupedDocs.push(doc);
-  }
+  // Collect pending headings for content page emission
+  // buildHierarchyPlan returns pendingHeadings from the hierarchy pass
 
-  for (const doc of dedupedDocs) {
-    if (containerIds.has(doc.page_id) && containerHasEnChild.has(doc.page_id)) {
-      continue;
-    }
-    if (!isPublishableStatus(doc.status, args.all === "true")) continue;
-
-    // Skip structural pages (Toggles, Titles) — only publish content Pages
-    const elementType = manifestElementType(doc);
-    if (!isContentPage(elementType)) {
-      skippedNonPage++;
-      continue;
-    }
-
-    // Docusaurus i18n requires translations to share the English source's slug AND path
-    const translation = translationMap.get(doc.page_id);
-    const translationSlug = translation?.slug ?? doc.slug;
-    const title = doc.title ?? "";
-    if (
-      TEST_PAGE_TITLE.test(title) ||
-      TEST_PAGE_SLUG.test(translationSlug ?? "") ||
-      isInternalTitle(title, doc.page_id) ||
-      internalGroupIds.has(doc.page_id)
-    ) {
-      skippedTestPages++;
-      continue; // drop editorial test/internal/template page (and its translations)
-    }
-    // Use English section for translated page so paths match
-    const effectiveSection = translation?.section ?? doc.section;
-
-    const srcFile = join(inputDir, `${doc.page_id}.md`);
+  for (const cp of plan.canonicalPages) {
+    const srcFile = join(inputDir, `${cp.pageId}.md`);
     if (!existsSync(srcFile)) {
-      console.warn(`  Missing source file: ${srcFile}`);
+      emitDiagnostics.push({ category: "missing-source", pageId: cp.pageId, title: cp.title, detail: srcFile });
       continue;
     }
 
     let content = readFileSync(srcFile, "utf8");
 
-    // If translation slug differs from original, rewrite frontmatter to match
-    if (translationSlug !== doc.slug) {
+    // Rewrite id/slug/position to canonical values
+    if (cp.canonicalSlug !== cp.doc.slug) {
       content = content
-        .replace(/^id: .*$/m, `id: "${translationSlug}"`)
-        .replace(/^slug: .*$/m, `slug: /${translationSlug}`);
+        .replace(/^id: .*$/m, `id: "${cp.canonicalSlug}"`)
+        .replace(/^slug: .*$/m, `slug: /${cp.canonicalSlug}`);
     }
-    if (translation && translation.order != null) {
-      content = content.replace(/^sidebar_position: .*$/m, `sidebar_position: ${translation.order}`);
+    if (cp.canonicalOrder !== (cp.doc.section_order ?? UNCATEGORIZED_ORDER)) {
+      content = content.replace(/^sidebar_position: .*$/m, `sidebar_position: ${cp.canonicalOrder}`);
     }
 
-    // Strip stray Notion "[Insert/ADD content here]" placeholder lines left over
-    // inside otherwise-real content (the marker is never meaningful text).
+    // Strip stray Notion "[Insert/ADD content here]" placeholder lines
     content = content.replace(/^[ \t]*\[\s*(?:insert|add)\s+content\s+here\s*\][ \t]*\r?\n?/gim, "");
 
-    // Build Docusaurus-compatible output path
-    // en:   {outDir}/docs/{section}/{slug}.md
-    // non-en: {outDir}/i18n/{locale}/docusaurus-plugin-content-docs/current/{section}/{slug}.md
-    // Pages without a Content Section are placed in "Uncategorized" (appears last in sidebar)
-    const sectionRaw = effectiveSection || SECTION_NAMES.UNCATEGORIZED;
-    const sectionDir = sectionRaw ? toSectionDir(sectionRaw) : undefined;
-    // Normalize automated locales: "es - automated" → "es", "pt - automated" → "pt"
-    const normalizedLocale = normalizeLocale(doc.locale);
-
-    // Resolve internal cross-references to the locale-correct published route
-    // and slugify heading anchors to Docusaurus heading-ID format.
-    content = resolveInternalLinks(content, { locale: normalizedLocale, maps: routeMaps });
-
-    const finalPath =
-      normalizedLocale === "en"
-        ? join(outDir, "docs", ...(sectionDir ? [sectionDir] : []), `${translationSlug}.md`)
-        : join(
-            outDir,
-            "i18n",
-            normalizedLocale,
-            "docusaurus-plugin-content-docs",
-            "current",
-            ...(sectionDir ? [sectionDir] : []),
-            `${translationSlug}.md`,
-          );
-
-    // Stub bodies (empty or only an "[Insert/ADD content here]" marker) carry no
-    // real content. Skip translation stubs so Docusaurus falls back to the English
-    // content under the localized route; for the default locale, render a friendly
-    // placeholder so the page (and its sidebar entry) isn't blank.
-    if (isStubBody(content)) {
-      if (normalizedLocale !== "en") {
-        skippedStubTranslations++;
-        continue;
+    // Strip trailing `---` divider inserted by Notion converter after a
+    // single-image block. Must NOT strip the closing YAML frontmatter `---`
+    // delimiter — only strip an extra `---` that appears after the frontmatter
+    // pair (i.e. when there are ≥3 `---` separators in the file, remove the
+    // trailing one that a single-block Notion converter adds as an <hr>).
+    const fmEnd = content.indexOf("\n---\n", 4);
+    if (fmEnd !== -1) {
+      const bodyStart = fmEnd + 5; // after the closing `\n---\n`
+      const body = content.slice(bodyStart);
+      const strippedBody = body.replace(/\n*---\n*$/, "\n");
+      if (strippedBody !== body) {
+        content = content.slice(0, bodyStart) + strippedBody;
       }
-      content = ensurePlaceholderForEmptyBody(content);
     }
 
+    // Build Docusaurus path. Pages inside a Toggle group go into the Toggle
+    // directory (nested under the section dir). Pages outside any Toggle go
+    // directly under the section dir (or locale root for Uncategorized).
+    const sectionDir = cp.canonicalSection !== SECTION_NAMES.UNCATEGORIZED
+      ? toSectionDir(cp.canonicalSection)
+      : null;
+
+    const pathParts: string[] = [];
+    if (cp.locale === "en") {
+      pathParts.push(outDir, "docs");
+    } else {
+      pathParts.push(outDir, "i18n", cp.locale, "docusaurus-plugin-content-docs", "current");
+    }
+    if (sectionDir) pathParts.push(sectionDir);
+    if (cp.toggleDir) pathParts.push(cp.toggleDir);
+    pathParts.push(`${cp.canonicalSlug}.md`);
+
+    const finalPath = join(...pathParts);
+
+    // Inject sidebar_custom_props.title from pending heading if present
+    if (cp.customPropsTitle) {
+      if (content.includes("sidebar_custom_props:")) {
+        content = content.replace(
+          /^sidebar_custom_props:.*$/m,
+          `sidebar_custom_props:\n  title: "${cp.customPropsTitle}"`,
+        );
+      } else {
+        content = content.replace(
+          /^(sidebar_position: .*\n)/m,
+          `$1sidebar_custom_props:\n  title: "${cp.customPropsTitle}"\n`,
+        );
+      }
+    }
+
+    // Stub body handling
+    const isStub = isStubBody(content);
+    if (isStub) {
+      if (cp.locale !== "en") {
+        // Try EN body fallback for header-preserving stub
+        if (cp.enFallbackPageId) {
+          const enSrc = join(inputDir, `${cp.enFallbackPageId}.md`);
+          if (existsSync(enSrc)) {
+            const enBody = readFileSync(enSrc, "utf8");
+            const enFm = enBody.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+            if (enFm && enFm[2] && enFm[2].trim().length > 0) {
+              // Replace body with EN body, keep localized frontmatter
+              const localFm = content.match(/^---\n([\s\S]*?)\n---\n?/);
+              if (localFm) {
+                content = `---\n${localFm[1]}\n---\n${enFm[2]}`;
+                stubBodyFallbacks++;
+                emitDiagnostics.push({ category: "stub-translation-body-fallback", pageId: cp.pageId, title: cp.title, detail: "Using EN body fallback; preserving localized title" });
+              }
+            }
+          }
+        }
+        if (isStubBody(content)) {
+          skippedStubTranslations++;
+          emitDiagnostics.push({ category: "stub-translation", pageId: cp.pageId, title: cp.title, detail: "Empty/stub body; skipped for Docusaurus EN fallback" });
+          continue;
+        }
+      } else {
+        content = ensurePlaceholderForEmptyBody(content);
+      }
+    }
+
+    // Resolve internal cross-references (after EN body fallback so links are locale-correct)
+    content = resolveInternalLinks(content, { locale: cp.locale, maps: routeMaps });
+
     mkdirSync(join(finalPath, ".."), { recursive: true });
-    // Rewrite inline <img src="assets/..."> to site-root /images/notion/ paths
-    // (raw HTML src strings are invisible to the MDX bundler → 404s, and the
-    // consumer's ideal-image plugin breaks webpack-import alternatives). The
-    // referenced files are copied to <out>/static/images/notion/ below.
+
+    // Rewrite inline <img> assets
     const rewritten = rewriteRawImgSrcToStatic(content);
     content = rewritten.content;
     for (const assetFile of rewritten.assets) inlineStaticAssets.add(assetFile);
@@ -317,86 +258,126 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
     writtenDocPaths.add(finalPath);
     writtenSectionDirs.add(join(finalPath, ".."));
     count++;
+  }
 
-    // Track minimum section_order per section for _category_.json position
-    // Use effective section (English section for translations) so categories match
-    if (sectionRaw && doc.section_order != null) {
-      const locale = normalizedLocale;
-      if (!sectionPositions.has(locale)) {
-        sectionPositions.set(locale, new Map());
+  // ── Emit _category_.json from plan ──
+  for (const cat of plan.categories) {
+    const localePrefix =
+      cat.locale === "en"
+        ? join(outDir, "docs")
+        : join(outDir, "i18n", cat.locale, "docusaurus-plugin-content-docs", "current");
+
+    const parts = [localePrefix, cat.sectionDir];
+    if (cat.toggleDir) parts.push(cat.toggleDir);
+    const categoryDir = join(...parts);
+
+    // Skip Toggle category if no Markdown file has this directory as its parent
+    if (cat.toggleDir) {
+      const parentDir = categoryDir;
+      let hasPage = false;
+      for (const p of writtenDocPaths) {
+        if (dirname(p) === parentDir) { hasPage = true; break; }
       }
-      const localeMap = sectionPositions.get(locale)!;
-      const currentMin = localeMap.get(sectionRaw);
-      if (currentMin === undefined || doc.section_order < currentMin) {
-        localeMap.set(sectionRaw, doc.section_order);
+      if (!hasPage) continue;
+    }
+
+    if (!existsSync(categoryDir)) {
+      mkdirSync(categoryDir, { recursive: true });
+    }
+
+    const catPath = join(categoryDir, "_category_.json");
+    writtenCategoryPaths.add(catPath);
+
+    const categoryJson = {
+      key: cat.key,
+      label: cat.label,
+      position: cat.position,
+      collapsible: true,
+      collapsed: true,
+      link: {
+        type: "generated-index" as const,
+        title: cat.label,
+      },
+      customProps: { title: cat.customPropsTitle ?? null },
+    };
+    writeFileSync(join(categoryDir, "_category_.json"), JSON.stringify(categoryJson, null, 2));
+  }
+
+  // ── Emit current.json for non-default locales ──
+  // Docusaurus 3.10.1 ignores localized _category_.json labels for sidebar
+  // translation; it reads i18n/<locale>/docusaurus-plugin-content-docs/current.json
+  // with keys derived from each CategoryEntry.key. See docs-pull.test.ts
+  // → "current.json" describe block for full coverage.
+  //
+  // Keys are driven by EN source-sidebar categories so that ES/PT key sets
+  // exactly match the rendered English category keys.  Empty toggle
+  // categories are excluded unless at least one EN canonical page lives in
+  // the same sectionDir + toggleDir (matching projectSidebars exclusion).
+  // Uncategorized/root docs are excluded because Docusaurus renders them as
+  // plain sidebar IDs — write-translations emits no category key for them.
+  const nonEnLocales = new Set(
+    plan.categories
+      .filter((c) => c.locale !== "en")
+      .map((c) => c.locale),
+  );
+
+  if (nonEnLocales.size > 0) {
+    // Build set of EN toggle keys backed by at least one EN canonical page
+    const enPageToggleKeys = new Set<string>();
+    for (const cp of plan.canonicalPages) {
+      if (cp.locale === "en" && cp.toggleDir) {
+        enPageToggleKeys.add(`${toSectionDir(cp.canonicalSection)}/${cp.toggleDir}`);
       }
+    }
+
+    // Build fast lookup: locale / sectionDir / toggleDir → CategoryEntry
+    const catBySlot = new Map<string, CategoryEntry>();
+    for (const cat of plan.categories) {
+      catBySlot.set(`${cat.locale}/${cat.sectionDir}/${cat.toggleDir ?? ""}`, cat);
+    }
+
+    // English categories define the key set (Docusaurus write-translations parity)
+    const enCats = plan.categories.filter((c) => c.locale === "en");
+
+    for (const locale of nonEnLocales) {
+      const currentJson: Record<string, { message: string; description: string }> = {};
+
+      // version.label — matches Docusaurus write-translations output
+      currentJson["version.label"] = {
+        message: "Latest",
+        description: "The label for version current",
+      };
+
+      for (const enCat of enCats) {
+        // Uncategorized pages are plain sidebar IDs; Docusaurus emits no category key
+        if (enCat.sectionDir === "uncategorized") continue;
+        // Exclude EN toggle categories backed by zero EN canonical pages
+        if (enCat.toggleDir && !enPageToggleKeys.has(enCat.key)) continue;
+
+        const locCat = catBySlot.get(`${locale}/${enCat.sectionDir}/${enCat.toggleDir ?? ""}`);
+        const locLabel = locCat?.label ?? enCat.label;
+
+        const categoryKey = `sidebar.docsSidebar.category.${enCat.key}`;
+        currentJson[categoryKey] = {
+          message: locLabel,
+          description: `The label for category '${enCat.label}' in sidebar 'docsSidebar'`,
+        };
+        currentJson[`${categoryKey}.link.generated-index.title`] = {
+          message: locLabel,
+          description: `The generated-index page title for category '${enCat.label}' in sidebar 'docsSidebar'`,
+        };
+      }
+
+      const i18nPluginsDir = join(outDir, "i18n", locale, "docusaurus-plugin-content-docs");
+      mkdirSync(i18nPluginsDir, { recursive: true });
+      writeFileSync(join(i18nPluginsDir, "current.json"), JSON.stringify(currentJson, null, 2));
     }
   }
 
-  // Write _category_.json for each section (Docusaurus sidebar labels)
-  // Sort sections by numeric prefix (10, 20, ...) then alphabetically
-  for (const [locale, sectionMap] of sectionPositions) {
-    const sortedEntries = Array.from(sectionMap.entries()).sort((a, b) => {
-      // Prefix-less sections (e.g. "Overview") sort first; "Uncategorized" sorts last.
-      // Numbered sections ("10-…", "90+ - …") sort by their leading integer.
-      const OVERVIEW_ORDER = -1; // set to 9000 to instead place prefix-less sections last
-      const getOrder = (name: string) => {
-        if (name === SECTION_NAMES.UNCATEGORIZED) return UNCATEGORIZED_ORDER;
-        const m = name.match(/^(\d+)/);
-        if (m) return parseInt(m[1], 10);
-        return OVERVIEW_ORDER;
-      };
-      const aPos = getOrder(a[0]);
-      const bPos = getOrder(b[0]);
-      if (aPos !== bPos) return aPos - bPos;
-      return a[0].localeCompare(b[0]);
-    });
-    let position = 1;
-    for (const [sectionName] of sortedEntries) {
-      // Use translated label from Toggle page if available, otherwise the curated
-      // translation map, otherwise the stripped English label.
-      // Reject Notion-truncated Toggle titles (ending in …/...) and fall back instead.
-      const toggleLabel = sectionLabels.get(locale)?.get(sectionName);
-      const strippedEn = stripSectionPrefix(sectionName);
-      const curated = SECTION_TRANSLATIONS[locale]?.[strippedEn];
-      const isTruncated = (s?: string) => !!s && /(?:…|\.\.\.)$/.test(s.trim());
-      const label = toggleLabel && !isTruncated(toggleLabel)
-        ? toggleLabel
-        : (curated ?? strippedEn);
-      const sectionDir = toSectionDir(sectionName);
-      const categoryDir =
-        locale === "en"
-          ? join(outDir, "docs", sectionDir)
-          : join(outDir, "i18n", locale, "docusaurus-plugin-content-docs", "current", sectionDir);
-      const categoryPath = join(categoryDir, "_category_.json");
-      if (!existsSync(categoryDir)) {
-        mkdirSync(categoryDir, { recursive: true });
-      }
-      const categoryJson = {
-        label,
-        position: position++,
-        collapsible: true,
-        collapsed: true,
-        link: {
-          type: "generated-index" as const,
-          // Docusaurus uses link.title for the generated index page's <h1> and <title>.
-          // The label field only sets the sidebar entry. For translated locales,
-          // setting title ensures the category page shows the localized name.
-          title: label,
-        },
-        customProps: { title: label as string | null },
-      };
-      writeFileSync(categoryPath, JSON.stringify(categoryJson, null, 2));
-    }
-  }
-
-  // Optimize source images in the asset pool in place (best-effort; never fatal).
+  // ── Copy assets ──
   const assetsDir = join(inputDir, "assets");
   await optimizeAssets(assetsDir);
 
-  // Copy only the assets each section actually references — avoids copying the
-  // entire pool into every section dir (N×duplication). Each section dir gets
-  // only the assets referenced by the .md files written into it.
   if (existsSync(assetsDir)) {
     const assetFiles = readdirSync(assetsDir).filter((f) => statSync(join(assetsDir, f)).isFile());
     const availableAssets = new Set(assetFiles);
@@ -407,9 +388,8 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
       for (const sectionAbsDir of writtenSectionDirs) {
         if (seenDirs.has(sectionAbsDir)) continue;
         seenDirs.add(sectionAbsDir);
-        // Scan the .md files written into this section dir for asset references.
         const referenced = collectReferencedAssets(sectionAbsDir, availableAssets);
-        if (referenced.size === 0) continue; // no assets/ subdir unless something is referenced
+        if (referenced.size === 0) continue;
         const targetDir = join(sectionAbsDir, "assets");
         mkdirSync(targetDir, { recursive: true });
         dirsCopied++;
@@ -427,17 +407,11 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
       }
     }
 
-    // Publish inline-img assets (emoji/icons referenced via /images/notion/
-    // site-root paths) into the Docusaurus static dir.
     if (inlineStaticAssets.size > 0) {
       const staticDir = join(outDir, "static", "images", "notion");
       mkdirSync(staticDir, { recursive: true });
       let staticCopied = 0;
       for (const f of inlineStaticAssets) {
-        // Defense in depth: img-rewrite already drops non-basename names, but
-        // never join an attacker-influenced segment into a filesystem path — a
-        // name containing `/`, `\`, or `..` would read from / write to outside
-        // the asset pool and the static dir.
         if (f.includes("/") || f.includes("\\") || f.includes("..")) {
           console.warn(`  Skipping unsafe inline asset name (path segment): ${f}`);
           continue;
@@ -454,12 +428,8 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
     }
   }
 
-  // Remove orphaned files (pages deleted from Notion but still on disk)
+  // ── Clean orphans ──
   if (args["clean-orphans"] === "true") {
-    // Expected = exactly what this run wrote. Recomputing publishability from
-    // the manifest here re-derived only SOME of the emit-loop's gates (it
-    // missed the internal/test/container exclusions), so a formerly published
-    // staging child's stale file survived cleanup and kept rendering.
     const expectedPaths = writtenDocPaths;
     let removed = 0;
     const removeOrphans = (dir: string) => {
@@ -468,7 +438,6 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
         const fullPath = join(dir, entry.name);
         if (entry.isDirectory()) {
           removeOrphans(fullPath);
-          // Remove empty directories (except assets/)
           if (entry.name !== "assets") {
             try {
               const remaining = readdirSync(fullPath);
@@ -482,6 +451,9 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
               }
             } catch { /* ignore */ }
           }
+        } else if (entry.name === "_category_.json" && !writtenCategoryPaths.has(fullPath)) {
+          unlinkSync(fullPath);
+          removed++;
         } else if (entry.name.endsWith(".md") && !expectedPaths.has(fullPath)) {
           unlinkSync(fullPath);
           removed++;
@@ -496,91 +468,29 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
     if (removed > 0) console.log(`  Removed ${removed} orphaned files`);
   }
 
-  if (skippedNonPage > 0) {
-    console.log(`  (skipped ${skippedNonPage} structural pages: Toggle/Title)`);
-  }
-  if (skippedTestPages > 0) {
-    console.warn(`  (skipped ${skippedTestPages} editorial/internal page${skippedTestPages === 1 ? "" : "s"})`);
+  if (stubBodyFallbacks > 0) {
+    console.warn(`  (${stubBodyFallbacks} stub translation${stubBodyFallbacks === 1 ? "" : "s"} → EN body fallback with localized title)`);
   }
   if (skippedStubTranslations > 0) {
     console.warn(`  (skipped ${skippedStubTranslations} stub translation${skippedStubTranslations === 1 ? "" : "s"} → English fallback)`);
+  }
+  if (emitDiagnostics.length > 0) {
+    console.warn(`  Emit diagnostics: ${emitDiagnostics.length} issue(s):`);
+    for (const d of emitDiagnostics) {
+      console.warn(`    [${d.category}] ${d.pageId} ("${d.title}") — ${d.detail}`);
+    }
   }
   console.log(`Pulled ${count} active docs to ${outDir}`);
 }
 
 // ── Helpers ──
 
-/**
- * Static translations for section sidebar labels.
- * Used as fallback when a locale lacks a Toggle page for a section.
- * Toggle-provided labels always win over these static translations.
- */
-const SECTION_TRANSLATIONS: Record<string, Record<string, string>> = {
-  pt: {
-    "Uncategorized": "Sem Categoria",
-    "Overview": "Visão Geral",
-    "Preparing to use CoMapeo": "Preparando-se para usar o CoMapeo",
-    "Gathering Observations & Tracks": "Coletando Observações e Trayectos",
-    "Reviewing Observations & Tracks": "Revisando Observações e Trayectos",
-    // TODO: human-review these section translations
-    "Exchanging Observations": "Trocando Observações",
-    "Managing Data Privacy and Security": "Gestão de Privacidade de Dados e Segurança",
-    "Managing Projects": "Gerenciando Projetos",
-    "Sharing and Exporting different data types": "Compartilhando e Exportando Diferentes Tipos de Dados",
-    "Troubleshooting": "Solução de Problemas",
-    "Using Exchange Over the Internet": "Usando Exchange pela Internet",
-  },
-  es: {
-    "Uncategorized": "Sin Categoría",
-    "Overview": "Vista General",
-    "Preparing to use CoMapeo": "Preparándose para usar CoMapeo",
-    "Gathering Observations & Tracks": "Registrando Observaciones y Trayectos",
-    "Reviewing Observations & Tracks": "Revisando Observaciones y Trayectos",
-    // TODO: human-review these section translations
-    "Exchanging Observations": "Intercambiando Observaciones",
-    "Managing Data Privacy and Security": "Gestión de Privacidad y Seguridad de Datos",
-    "Managing Projects": "Gestión de Proyectos",
-    "Sharing and Exporting different data types": "Compartir y Exportar Diferentes Tipos de Datos",
-    "Troubleshooting": "Solución de Problemas",
-    "Using Exchange Over the Internet": "Usando Exchange por Internet",
-  },
-};
-
-/**
- * Strip number prefix from section name for display labels.
- * "10-Preparing to use CoMapeo" → "Preparing to use CoMapeo"
- * "90+ - Miscellaneous" → "Miscellaneous"
- */
-export function stripSectionPrefix(sectionName: string): string {
-  return sectionName.replace(/^\d+[+-]\s*(?:-\s*)?/, "").trim();
-}
-
-/**
- * Convert section name to URL/filesystem-safe directory name.
- * "10-Preparing to use CoMapeo" → "preparing-to-use-comapeo"
- */
-export function toSectionDir(sectionName: string): string {
-  return stripSectionPrefix(sectionName)
-    .toLowerCase()
-    .replace(/&/g, "and")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
-/**
- * Visible body inserted when a page has no content yet, so it doesn't render blank.
- */
 const PLACEHOLDER_BODY = `:::note
 Content coming soon — this page has no content in Notion yet.
 :::`;
 
-/** Notion-authored "no content yet" markers (e.g. "[Insert content here]", "[ADD content here]"). */
 const STUB_BODY_MARKER = /\[\s*(insert|add)\s+content\s+here\s*\]/i;
 
-/**
- * The doc body (everything after frontmatter), stripped of spacer divs, `---`
- * thematic-break lines and whitespace — i.e. its meaningful content.
- */
 function meaningfulBody(content: string): string {
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   const body = fmMatch ? fmMatch[2] : content;
@@ -590,22 +500,12 @@ function meaningfulBody(content: string): string {
     .trim();
 }
 
-/**
- * A body that carries no real content: empty/whitespace, or only a Notion
- * "[Insert/ADD content here]" placeholder marker.
- */
 function isStubBody(content: string): boolean {
   const body = meaningfulBody(content);
   if (body.length === 0) return true;
   return STUB_BODY_MARKER.test(body) && body.replace(STUB_BODY_MARKER, "").trim().length === 0;
 }
 
-/**
- * If a doc's body is a stub (empty or only an "[Insert content here]"-style
- * marker), inject the visible placeholder body. Non-stub bodies are unchanged.
- * Used for the default (en) locale; translation stubs are skipped entirely so
- * Docusaurus falls back to the English content.
- */
 function ensurePlaceholderForEmptyBody(content: string): string {
   if (!isStubBody(content)) return content;
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
@@ -613,10 +513,6 @@ function ensurePlaceholderForEmptyBody(content: string): string {
   return `---\n${fmMatch[1]}\n---\n${PLACEHOLDER_BODY}\n`;
 }
 
-/**
- * Scan the .md files in a section dir for `assets/<filename>` references and
- * return the subset that exist in the available asset pool.
- */
 function collectReferencedAssets(sectionAbsDir: string, availableAssets: Set<string>): Set<string> {
   const referenced = new Set<string>();
   let mdFiles: string[];
@@ -642,9 +538,6 @@ function collectReferencedAssets(sectionAbsDir: string, availableAssets: Set<str
   return referenced;
 }
 
-/**
- * Format a byte count as a compact human-readable string (e.g. "1.2 MB").
- */
 function formatBytes(bytes: number): string {
   if (bytes <= 0) return "0 bytes";
   const units = ["bytes", "KB", "MB", "GB"];
@@ -653,7 +546,6 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-/** Minimal structural type for the sharp chain we use (avoids importing types). */
 type SharpPipeline = {
   resize: (opts: Record<string, unknown>) => SharpPipeline;
   png: (opts: Record<string, unknown>) => SharpPipeline;
@@ -662,23 +554,12 @@ type SharpPipeline = {
   toBuffer: () => Promise<Buffer>;
 };
 
-/**
- * Optimize images in the asset pool in place (best-effort). Resizes to a max
- * width of 1280 (no upscaling via withoutEnlargement) and re-encodes; leaves
- * .svg/.gif and non-images untouched. If `sharp` is missing or any per-file
- * step errors, the failure is logged and the pull continues without that
- * optimization — never fatal. Runs once per docs:pull.
- */
 async function optimizeAssets(assetsDir: string): Promise<void> {
   if (!existsSync(assetsDir)) return;
 
-  // Dynamic import via a non-literal specifier so TypeScript does not try to
-  // resolve the (optional) sharp module — the import yields `any`, and a failed
-  // import is caught so the command still works without sharp installed.
   const SHARP_SPECIFIER = "sharp";
   let sharpFn: (input: string) => SharpPipeline;
   try {
-    // Non-literal specifier → import yields `any`; resolve sharp at runtime.
     const mod: { default?: (input: string) => SharpPipeline } = await import(SHARP_SPECIFIER);
     const fn = mod.default ?? (mod as unknown as (input: string) => SharpPipeline);
     if (typeof fn !== "function") throw new Error("sharp import did not expose a function");
@@ -714,8 +595,6 @@ async function optimizeAssets(assetsDir: string): Promise<void> {
         pipeline = pipeline.webp({ quality: 80 });
       }
       const buffer: Buffer = await pipeline.toBuffer();
-      // Overwrite in place — filenames are content-hash keys and markdown
-      // references the filename, so refs stay valid.
       writeFileSync(filePath, buffer);
       bytesSaved += before - buffer.length;
       optimized++;
