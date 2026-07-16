@@ -380,6 +380,33 @@ describe("buildManifestFromStorage", () => {
     expect(skipped).toEqual([]);
   });
 
+  it("routes a transient body-read throw to readErrors instead of silently treating the page as bodyless", async () => {
+    // Body availability ranks family/duplicate selection (see the "empty stub
+    // vs real content" family-selection test above), so a swallowed transient
+    // R2 failure while reading a page's Markdown body could pick the wrong
+    // canonical page. It must be routed to readErrors, exactly like a
+    // transient metadata-read failure, so the caller refuses to publish.
+    const valid: PageMetadata = { ...basePage, page_id: "p1", status: "active" };
+    const docKey = "docs/en/docs/basics/getting-started.md";
+    const storage = memStorage({
+      "pages/p1/metadata.json": JSON.stringify(valid),
+      [docKey]: "---\ntitle: x\n---\nReal content.\n",
+    });
+    const realGet = storage.get;
+    storage.get = async (key) => {
+      if (key === docKey) throw new Error("R2 transient");
+      return realGet(key);
+    };
+
+    const { readErrors, skipped } = await buildManifestFromStorage(storage, {
+      databaseId: "db1",
+      dataSourceId: "ds1",
+    });
+
+    expect(readErrors).toEqual([docKey]);
+    expect(skipped).toEqual([]);
+  });
+
   it("keeps corrupt-JSON blobs in skipped alongside a transient get throw in readErrors", async () => {
     const valid: PageMetadata = { ...basePage, page_id: "p1", status: "active" };
     const storage = memStorage({

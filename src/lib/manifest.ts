@@ -403,16 +403,20 @@ export async function buildManifestFromStorage(
   // Determine each page's real-body-vs-stub status by reading its converted
   // Markdown from R2 (the same file docs:pull reads via r2_doc_key), so
   // family selection here matches docs:pull's body-quality ranking instead of
-  // treating every candidate as bodyless. A read failure is NOT a fatal
-  // readError like the metadata reads above — worst case this page is
-  // conservatively treated as bodyless, buildHierarchyPlan's existing default
-  // when no signal is available at all.
+  // treating every candidate as bodyless. Body availability now ranks family
+  // and duplicate candidates, so a swallowed transient failure here could
+  // pick the wrong canonical page — route it to `readErrors` just like the
+  // metadata reads above, so the caller refuses to publish a partial/skewed
+  // manifest and retries instead.
   const hasBodyById: Record<string, boolean> = {};
   await Promise.all(pages.map(async (page) => {
+    const docKey = buildR2DocKey(page);
     try {
-      const raw = await storage.get(buildR2DocKey(page));
+      const raw = await storage.get(docKey);
       hasBodyById[page.page_id] = raw != null && !isStubBody(raw);
-    } catch { /* leave unset — treated as bodyless below */ }
+    } catch {
+      readErrors.push(docKey);
+    }
   }));
 
   const manifest = generateManifest({
