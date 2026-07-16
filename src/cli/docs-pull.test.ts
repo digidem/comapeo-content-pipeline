@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, rmSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import matter from "gray-matter";
 import { docsPull, DocsPullError } from "./docs-pull.js";
 
 /**
@@ -739,6 +740,44 @@ sidebar_position: 23
     expect(esContent).toContain("static/images/oneimagepage_1.png");
   });
 
+  it("maps placeholders to the correct EN image when an earlier image survived translation", async () => {
+    // EN has two images. The translated page kept the FIRST image as a real
+    // image but the SECOND became a placeholder. Recovery must count the
+    // surviving real image as an image slot too, so the placeholder maps to
+    // EN's second image, not EN's first (which would duplicate the first
+    // image and shift every later recovery by one).
+    const inputDir = mkdtempSync(join(tmpdir(), "docspull-imgfix-partial-"));
+    temps.push(inputDir);
+    const out = freshOut();
+
+    const docs: FixtureDoc[] = [
+      { page_id: "en-parent", title: "Partial Survival Page", locale: "en", section: "10-Basics", section_order: 1, status: "active", slug: "partial-survival-page", sub_items: ["es-child"], element_type: PAGE_TYPE },
+      { page_id: "es-child", title: "Página de Supervivencia Parcial", locale: "es", section: "10-Basics", section_order: 1, status: "active", slug: "pagina-de-supervivencia-parcial", element_type: PAGE_TYPE },
+    ];
+
+    writeFileSync(join(inputDir, "manifest.json"), JSON.stringify(buildManifest(docs), null, 2));
+    writeFileSync(join(inputDir, "en-parent.md"), sourceMd(
+      "Partial Survival Page", "partial-survival-page", 1,
+      "Intro.\n\n![First](assets/first.png)\n\nMiddle.\n\n![Second](assets/second.png)\n\nEnd.",
+    ));
+    // ES page kept the first image as real Markdown; only the second became a placeholder.
+    writeFileSync(join(inputDir, "es-child.md"), sourceMd(
+      "Página de Supervivencia Parcial", "pagina-de-supervivencia-parcial", 1,
+      "Introducción.\n\n![First](assets/first.png)\n\nMedio.\n\n:::note 🖼️\nstatic/images/partialsurvivalpage_1.png\n\n:::\n\nFin.",
+    ));
+
+    await docsPull({ input: join(inputDir, "manifest.json"), "input-dir": inputDir, out, all: "true" });
+
+    const esFile = join(out, ...ES_DOCS_CURRENT, "basics", "partial-survival-page.md");
+    const esContent = readFileSync(esFile, "utf8");
+    // The surviving real image is untouched.
+    expect(esContent).toContain("![First](assets/first.png)");
+    // The placeholder recovers EN's SECOND image, not a duplicate of the first.
+    expect(esContent).toContain("![Second](assets/second.png)");
+    expect((esContent.match(/assets\/first\.png/g) ?? []).length).toBe(1);
+    expect(esContent).not.toContain("static/images/partialsurvivalpage_1.png");
+  });
+
   it("Archived child is excluded from family selection", async () => {
     const inputDir = mkdtempSync(join(tmpdir(), "docspull-archived-"));
     temps.push(inputDir);
@@ -892,6 +931,33 @@ sidebar_position: 23
     // Typed, non-staging first page wins
     expect(content).toContain("Getting Started");
     expect(content).not.toContain("2026-04-13");
+  });
+
+  it("escapes a quoted Title heading so injected sidebar_custom_props stays valid YAML", async () => {
+    const inputDir = mkdtempSync(join(tmpdir(), "docspull-quoted-heading-"));
+    temps.push(inputDir);
+    const out = freshOut();
+
+    const docs: FixtureDoc[] = [
+      // A Title-type row's title becomes the following content page's
+      // sidebar_custom_props.title — unescaped double quotes in that title
+      // used to break the emitted frontmatter's YAML.
+      { page_id: "title-quote", title: 'Configuring "Private" Projects', locale: "en", section: "10-Basics", section_order: 1, status: "active", slug: "title-quote", sub_items: [], element_type: TITLE_TYPE },
+      { page_id: "content-page", title: "Private Project Setup", locale: "en", section: "10-Basics", section_order: 2, status: "active", slug: "private-project-setup", element_type: PAGE_TYPE },
+    ];
+
+    writeFileSync(join(inputDir, "manifest.json"), JSON.stringify(buildManifest(docs), null, 2));
+    writeFileSync(join(inputDir, "content-page.md"), sourceMd("Private Project Setup", "private-project-setup", 2, "Body content."));
+
+    await docsPull({ input: join(inputDir, "manifest.json"), "input-dir": inputDir, out, all: "true" });
+
+    const filePath = join(out, "docs", "basics", "private-project-setup.md");
+    expect(existsSync(filePath)).toBe(true);
+    const content = readFileSync(filePath, "utf8");
+
+    // The frontmatter must remain valid YAML — gray-matter must not throw.
+    const parsed = matter(content);
+    expect((parsed.data.sidebar_custom_props as { title: string }).title).toBe('Configuring "Private" Projects');
   });
 
 

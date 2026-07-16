@@ -20,6 +20,11 @@ import {
 
 export { toSectionDir };
 
+/** Escape a raw string for embedding in a double-quoted YAML scalar. */
+function yamlQuote(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
 /** Error thrown by docsPull for fatal-but-recoverable conditions (missing manifest, etc.). */
 export class DocsPullError extends Error {
   constructor(message: string) {
@@ -219,15 +224,16 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
 
     // Inject sidebar_custom_props.title from pending heading if present
     if (cp.customPropsTitle) {
+      const quotedTitle = yamlQuote(cp.customPropsTitle);
       if (content.includes("sidebar_custom_props:")) {
         content = content.replace(
           /^sidebar_custom_props:.*$/m,
-          `sidebar_custom_props:\n  title: "${cp.customPropsTitle}"`,
+          `sidebar_custom_props:\n  title: "${quotedTitle}"`,
         );
       } else {
         content = content.replace(
           /^(sidebar_position: .*\n)/m,
-          `$1sidebar_custom_props:\n  title: "${cp.customPropsTitle}"\n`,
+          `$1sidebar_custom_props:\n  title: "${quotedTitle}"\n`,
         );
       }
     }
@@ -540,20 +546,29 @@ function ensurePlaceholderForEmptyBody(content: string): string {
 const IMAGE_PLACEHOLDER_CALLOUT = /:::note 🖼️\n(?:static\/images\/[^\n]+|\[[^\]\n]+\])\n\n:::/g;
 const REAL_IMAGE_MARKDOWN = /!\[[^\]]*\]\(assets\/[^)]+\)/g;
 
+/** Matches either a broken-image placeholder or a surviving real image, in document order. */
+const IMAGE_SLOT_PATTERN = new RegExp(`${IMAGE_PLACEHOLDER_CALLOUT.source}|${REAL_IMAGE_MARKDOWN.source}`, "g");
+
 /**
  * Replace each broken image-placeholder callout in a translated page's body
  * with the real image at the same position in its EN sibling, positionally
- * (Nth placeholder here ↔ Nth real image there). A placeholder beyond the
- * EN sibling's image count is left untouched. Assumes every image on the
- * translated page became a placeholder (true for every case observed so far)
- * — a page with a mix of surviving real images and placeholders would need
- * joint document-order counting instead of this simpler independent count.
+ * (Nth image slot here ↔ Nth real image there). Counts every image slot in
+ * document order — placeholders AND surviving real images — so a page where
+ * some images survived translation and others became placeholders still maps
+ * each placeholder to its correct EN counterpart instead of shifting by the
+ * number of images that already survived. A placeholder beyond the EN
+ * sibling's image count is left untouched.
  */
 function repairBrokenImagePlaceholders(content: string, enBody: string): string {
   const enImages = enBody.match(REAL_IMAGE_MARKDOWN);
   if (!enImages || enImages.length === 0) return content;
   let i = 0;
-  return content.replace(IMAGE_PLACEHOLDER_CALLOUT, (match) => (i < enImages.length ? enImages[i++] : match));
+  return content.replace(IMAGE_SLOT_PATTERN, (match) => {
+    const isPlaceholder = match.startsWith(":::note");
+    const enImage = i < enImages.length ? enImages[i] : null;
+    i++;
+    return isPlaceholder && enImage ? enImage : match;
+  });
 }
 
 function collectReferencedAssets(sectionAbsDir: string, availableAssets: Set<string>): Set<string> {
