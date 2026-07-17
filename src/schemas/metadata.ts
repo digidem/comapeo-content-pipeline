@@ -37,6 +37,8 @@ export const PageMetadataSchema = z.object({
   drafting_status: z.string().nullable().optional(),
   /** Page IDs of sub-items linked via Notion Sub-item relation (translations) */
   sub_items: z.array(z.string()).optional(),
+  /** Language provenance: how the locale was determined */
+  language_source: z.enum(["explicit", "automated", "fallback"]).optional(),
 });
 
 export type PageMetadata = z.infer<typeof PageMetadataSchema>;

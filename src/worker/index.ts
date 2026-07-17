@@ -22,13 +22,13 @@ import { R2_PATHS } from "../persistence/r2.js";
 import { buildManifestFromStorage } from "../lib/manifest.js";
 import type { ManifestStorage } from "../lib/manifest.js";
 import { ContentManifestSchema } from "../schemas/manifest.js";
-import type { SidebarItem } from "../schemas/manifest.js";
 
 // Minimal Cloudflare Workers type declarations (avoid @cloudflare/workers-types conflicts with @types/node)
 declare global {
   interface D1Result<T = unknown> {
     results: T[];
     success: boolean;
+    meta?: { changes?: number };
   }
   interface D1PreparedStatement {
     bind(...values: unknown[]): D1PreparedStatement;
@@ -251,6 +251,10 @@ app.post("/admin/manifest/regenerate", async (c: Context) => {
   // no-clobber guard (mirrors CLI cmdManifestGenerate).
   const result = await regenerateManifest(env);
 
+  if (result.status === "locked") {
+    return c.json({ error: "manifest regeneration already in progress; try again shortly" }, 409);
+  }
+
   if (result.status === "clobbered") {
     return c.json({ error: "refusing to clobber non-empty manifest with 0-doc result" }, 409);
   }
@@ -260,6 +264,17 @@ app.post("/admin/manifest/regenerate", async (c: Context) => {
       { error: "transient storage read failures; manifest not regenerated", read_errors: result.readErrorsCount },
       503,
     );
+  }
+
+  if (result.status === "partial") {
+    return c.json({
+      error: "partial publication: manifest written but some sidebar locale writes failed",
+      regenerated: true,
+      docs_count: result.docsCount,
+      skipped_count: result.skippedCount,
+      sidebar_errors: result.sidebarErrorsCount,
+      failed_locales: result.failedLocales,
+    }, 503);
   }
 
   return c.json({
@@ -489,9 +504,6 @@ export async function queueHandler(batch: MessageBatch<SyncJobMessage>, env: Env
         ).bind(key, type, pid, contentHash, sizeBytes).run();
       }
 
-      // Regenerate sidebar for this locale
-      await regenerateSidebar(env, metadata.locale, metadata);
-
       // Mark job complete
       await env.DB.prepare(
         "UPDATE sync_jobs SET status = 'completed', finished_at = datetime('now') WHERE id = ?",
@@ -592,14 +604,27 @@ export async function scheduledHandler(
             "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_rebuilt_at', ?, datetime('now'))",
           ).bind(rebuildStart.t).run();
         }
+      } else if (result.status === "partial") {
+        // Manifest published but sidebar locale writes failed. manifest_dirty is
+        // already restored by regenerateManifest. Record rebuilt_at because
+        // manifests/latest was successfully written — stale-doc sweeping is safe.
+        console.warn(`Cron: manifest rebuilt but sidebar publication partial (${result.sidebarErrorsCount} locale(s) failed: ${result.failedLocales.join(", ")}); retrying next tick`);
+        if (rebuildStart?.t) {
+          await env.DB.prepare(
+            "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_rebuilt_at', ?, datetime('now'))",
+          ).bind(rebuildStart.t).run();
+        }
       } else {
-        // Clobber-refusal or read_errors: the existing manifest is left intact. Restore
-        // the flag so the next tick retries.
+        // Clobber-refusal, read_errors, or locked (another regenerate already
+        // running, e.g. admin-triggered): the existing manifest is left intact.
+        // Restore the flag so the next tick retries.
         await env.DB.prepare(
           "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '1', datetime('now'))",
         ).run();
         if (result.status === "clobbered") {
           console.warn("Cron: refusing to clobber non-empty manifest with 0-doc result; restored manifest_dirty");
+        } else if (result.status === "locked") {
+          console.warn("Cron: manifest regeneration already in progress; restored manifest_dirty");
         } else {
           console.warn(`Cron: ${result.readErrorsCount} transient storage read failures; left old manifest, restored manifest_dirty`);
         }
@@ -711,6 +736,18 @@ async function sweepStaleDocs(env: Env): Promise<void> {
 
 // ── Helpers ──
 
+/** List every key under an R2 prefix, following pagination until exhausted. */
+async function listAllR2(bucket: R2Bucket, prefix: string): Promise<string[]> {
+  const keys: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const res = await bucket.list({ prefix, cursor });
+    for (const o of res.objects) keys.push(o.key);
+    cursor = res.truncated ? res.cursor : undefined;
+  } while (cursor);
+  return keys;
+}
+
 /**
  * Adapt an R2 bucket binding to the runtime-agnostic ManifestStorage interface.
  * R2 paginates `list` at 1000 keys per response, so the adapter loops on
@@ -736,10 +773,59 @@ function r2ManifestStorage(bucket: R2Bucket): ManifestStorage {
 }
 
 interface RegenResult {
-  status: "written" | "clobbered" | "read_errors";
+  status: "written" | "clobbered" | "read_errors" | "partial" | "locked";
   docsCount: number;
   skippedCount: number;
   readErrorsCount: number;
+  /** Set on partial: number of locale sidebar writes that failed. */
+  sidebarErrorsCount: number;
+  /** Set on partial: locales whose sidebar write failed. */
+  failedLocales: string[];
+}
+
+const REGEN_LOCK_KEY = "manifest_regen_lock";
+// Long enough that a normal rebuild (a handful of R2/D1 round trips) never
+// approaches it; short enough that a crashed run doesn't block regeneration
+// forever, and well under the 5-minute cron cadence so a stuck lock self-heals
+// before another tick would need it.
+const REGEN_LOCK_STALE_MS = 4 * 60 * 1000;
+
+/**
+ * Best-effort mutual exclusion around regenerateManifest so the cron tick and
+ * an admin-triggered regenerate can't race and clobber each other's writes —
+ * see the block comment on RegenResult / regenerateManifest for why this PR
+ * widened the blast radius of that race. `INSERT OR IGNORE` is a single
+ * atomic D1 round trip, so "acquire" itself can't double-succeed; the only
+ * residual race is between reading a stale lock and stealing it, which needs
+ * two round trips — an accepted, narrow gap given D1 exposes no CAS primitive.
+ */
+async function acquireRegenLock(db: D1Database): Promise<string | null> {
+  const token = crypto.randomUUID();
+  const insert = await db.prepare(
+    "INSERT OR IGNORE INTO sync_state (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+  ).bind(REGEN_LOCK_KEY, token).run();
+
+  if (insert.meta?.changes === 1) return token; // no prior lock row — acquired
+
+  // A lock row already exists. Steal it only if stale (a crashed/killed run).
+  const existing = await db.prepare(
+    "SELECT updated_at FROM sync_state WHERE key = ?",
+  ).bind(REGEN_LOCK_KEY).first<{ updated_at: string }>();
+  if (!existing) return null; // shouldn't happen, but fail closed
+  const lockedAtMs = Date.parse(`${existing.updated_at}Z`);
+  const isStale = Number.isNaN(lockedAtMs) || Date.now() - lockedAtMs > REGEN_LOCK_STALE_MS;
+  if (!isStale) return null; // held by another active run
+
+  await db.prepare(
+    "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+  ).bind(REGEN_LOCK_KEY, token).run();
+  return token;
+}
+
+async function releaseRegenLock(db: D1Database, token: string): Promise<void> {
+  await db.prepare(
+    "DELETE FROM sync_state WHERE key = ? AND value = ?",
+  ).bind(REGEN_LOCK_KEY, token).run();
 }
 
 /**
@@ -750,104 +836,117 @@ interface RegenResult {
  * manifest with a 0-doc result.
  */
 async function regenerateManifest(env: Env): Promise<RegenResult> {
-  const storage = r2ManifestStorage(env.CONTENT_BUCKET);
-  const { manifest, skipped, readErrors } = await buildManifestFromStorage(storage, {
-    databaseId: env.NOTION_DATABASE_ID,
-    dataSourceId: env.NOTION_DATA_SOURCE_ID,
-  });
-
-  // Transient storage read failures (a `get` threw or returned null): do NOT
-  // publish a partial manifest. A consumer running `docs:pull --clean-orphans`
-  // against a partial manifest would delete the unread-but-valid docs. Leave the
-  // existing manifest intact and let the caller retry next tick.
-  if (readErrors.length > 0) {
-    return {
-      status: "read_errors",
-      docsCount: manifest.docs.length,
-      skippedCount: skipped.length,
-      readErrorsCount: readErrors.length,
-    };
+  const lockToken = await acquireRegenLock(env.DB);
+  if (!lockToken) {
+    return { status: "locked", docsCount: 0, skippedCount: 0, readErrorsCount: 0, sidebarErrorsCount: 0, failedLocales: [] };
   }
+  try {
+    const storage = r2ManifestStorage(env.CONTENT_BUCKET);
+    const { manifest, skipped, readErrors } = await buildManifestFromStorage(storage, {
+      databaseId: env.NOTION_DATABASE_ID,
+      dataSourceId: env.NOTION_DATA_SOURCE_ID,
+    });
 
-  const validated = ContentManifestSchema.parse(manifest);
+    // Transient storage read failures (a `get` threw or returned null): do NOT
+    // publish a partial manifest. A consumer running `docs:pull --clean-orphans`
+    // against a partial manifest would delete the unread-but-valid docs. Leave the
+    // existing manifest intact and let the caller retry next tick.
+    if (readErrors.length > 0) {
+      return {
+        status: "read_errors",
+        docsCount: manifest.docs.length,
+        skippedCount: skipped.length,
+        readErrorsCount: readErrors.length,
+        sidebarErrorsCount: 0,
+        failedLocales: [],
+      };
+    }
 
-  // No-clobber guard: never overwrite a non-empty manifest with a 0-doc result.
-  if (validated.docs.length === 0) {
-    const existing = await env.CONTENT_BUCKET.get(R2_PATHS.manifest);
-    if (existing) {
-      try {
-        const parsed = JSON.parse(await existing.text());
-        if (Array.isArray(parsed.docs) && parsed.docs.length > 0) {
-          return { status: "clobbered", docsCount: 0, skippedCount: skipped.length, readErrorsCount: 0 };
+    const validated = ContentManifestSchema.parse(manifest);
+
+    // No-clobber guard: never overwrite a non-empty manifest with a 0-doc result.
+    if (validated.docs.length === 0) {
+      const existing = await env.CONTENT_BUCKET.get(R2_PATHS.manifest);
+      if (existing) {
+        try {
+          const parsed = JSON.parse(await existing.text());
+          if (Array.isArray(parsed.docs) && parsed.docs.length > 0) {
+            return { status: "clobbered", docsCount: 0, skippedCount: skipped.length, readErrorsCount: 0, sidebarErrorsCount: 0, failedLocales: [] };
+          }
+        } catch { /* unparseable existing manifest — allow overwrite */ }
+      }
+    }
+
+    const body = JSON.stringify(validated, null, 2);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    await Promise.all([
+      env.CONTENT_BUCKET.put(R2_PATHS.manifest, body, { httpMetadata: { contentType: "application/json" } }),
+      env.CONTENT_BUCKET.put(R2_PATHS.manifestVersion(timestamp), body, { httpMetadata: { contentType: "application/json" } }),
+    ]);
+
+    // Publish sidebars from the newly built manifest (not stale copies).
+    // Each locale sidebar is a best-effort write; failure on one locale does
+    // not block the others, but the dirty flag is restored so the next tick
+    // retries the full rebuild.
+    const sidebars = validated.sidebars as Record<string, unknown> | undefined;
+    let sidebarErrors = 0;
+    const failedLocales: string[] = [];
+    const publishedLocales = new Set(Object.keys(sidebars ?? {}));
+    if (sidebars) {
+      for (const [locale, items] of Object.entries(sidebars)) {
+        try {
+          await env.CONTENT_BUCKET.put(
+            R2_PATHS.sidebar(locale),
+            JSON.stringify(items, null, 2),
+            { httpMetadata: { contentType: "application/json" } },
+          );
+        } catch (err) {
+          console.warn(`Failed to write sidebar for locale ${locale}:`, err);
+          sidebarErrors++;
+          failedLocales.push(locale);
         }
-      } catch { /* unparseable existing manifest — allow overwrite */ }
+      }
     }
-  }
 
-  const body = JSON.stringify(validated, null, 2);
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  await Promise.all([
-    env.CONTENT_BUCKET.put(R2_PATHS.manifest, body, { httpMetadata: { contentType: "application/json" } }),
-    env.CONTENT_BUCKET.put(R2_PATHS.manifestVersion(timestamp), body, { httpMetadata: { contentType: "application/json" } }),
-  ]);
-
-  return { status: "written", docsCount: validated.docs.length, skippedCount: skipped.length, readErrorsCount: 0 };
-}
-
-/**
- * Read existing Docusaurus sidebar from R2, upsert the page's entry, write back.
- *
- * Format: `SidebarItem[]` (Docusaurus sidebar JSON).
- * - Uncategorized pages (no section): plain string ID.
- * - Categorized pages: placed inside the matching category's items array.
- */
-async function regenerateSidebar(
-  env: Env,
-  locale: string,
-  metadata: { docusaurus_id: string; slug: string; section: string | null; section_order: number | null; title: string },
-): Promise<void> {
-  const sidebarKey = R2_PATHS.sidebar(locale);
-
-  let items: SidebarItem[];
-  const existing = await env.CONTENT_BUCKET.get(sidebarKey);
-  if (existing) {
-    items = JSON.parse(await existing.text()) as SidebarItem[];
-  } else {
-    items = [];
-  }
-
-  const docId = metadata.docusaurus_id;
-  const section = metadata.section;
-
-  // Remove any previous occurrence of this docId from categories and top-level
-  for (const item of items) {
-    if (typeof item !== "string" && item.type === "category") {
-      item.items = item.items.filter((id) => id !== docId);
+    // A locale whose last content was removed no longer appears in the new
+    // manifest's sidebars map at all, so the write loop above never touches
+    // it — remove any previously-published sidebar for such a locale so it
+    // doesn't keep serving routes that no longer exist.
+    try {
+      const existing = await listAllR2(env.CONTENT_BUCKET, "sidebars/");
+      for (const key of existing) {
+        const m = key.match(/^sidebars\/(.+)\.json$/);
+        const locale = m?.[1];
+        if (!locale || publishedLocales.has(locale)) continue;
+        try {
+          await env.CONTENT_BUCKET.delete(key);
+        } catch (err) {
+          console.warn(`Failed to delete stale sidebar for locale ${locale}:`, err);
+          sidebarErrors++;
+          failedLocales.push(locale);
+        }
+      }
+    } catch (err) {
+      // A failure to even list existing sidebars means stale-locale cleanup
+      // silently didn't run this pass — count it the same as a write/delete
+      // failure so the caller doesn't report full success and skip retrying.
+      console.warn("Failed to list existing sidebars for stale-locale cleanup:", err);
+      sidebarErrors++;
     }
-  }
-  items = items.filter((id) => id !== docId);
 
-  if (section) {
-    // Find or create the category
-    let category = items.find(
-      (item): item is Extract<typeof item, { type: "category" }> =>
-        typeof item !== "string" && item.type === "category" && item.label === section,
-    );
-    if (!category) {
-      category = { type: "category", label: section, items: [] };
-      items.push(category);
+    if (sidebarErrors > 0) {
+      // Partial sidebar failure: manifest is published but sidebars are incomplete.
+      // Restore manifest_dirty so the next tick retries all locale writes.
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('manifest_dirty', '1', datetime('now'))",
+      ).run();
+      return { status: "partial", docsCount: validated.docs.length, skippedCount: skipped.length, readErrorsCount: 0, sidebarErrorsCount: sidebarErrors, failedLocales };
     }
-    category.items.push(docId);
-  } else {
-    // Uncategorized: plain string
-    items.push(docId);
-  }
 
-  await env.CONTENT_BUCKET.put(
-    sidebarKey,
-    JSON.stringify(items, null, 2),
-    { httpMetadata: { contentType: "application/json" } },
-  );
+    return { status: "written", docsCount: validated.docs.length, skippedCount: skipped.length, readErrorsCount: 0, sidebarErrorsCount: 0, failedLocales: [] };
+  } finally {
+    await releaseRegenLock(env.DB, lockToken);
+  }
 }
 
 async function getLastSyncWatermark(db: D1Database): Promise<string | null> {

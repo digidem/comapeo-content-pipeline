@@ -116,3 +116,66 @@ export const SECTION_NAMES = {
  * appears after all explicitly numbered sections.
  */
 export const UNCATEGORIZED_ORDER = 9999;
+
+/**
+ * Read a manifest doc's element_type. Conformant manifests carry a plain string;
+ * manifests generated before the fix carried the raw Notion select object —
+ * keep unwrapping those so older manifests still work.
+ */
+export function manifestElementType(doc: { element_type?: unknown }): string {
+  const et = doc.element_type;
+  if (typeof et === "string") return et;
+  if (et && typeof et === "object") {
+    const o = et as { select?: { name?: string } | null; name?: string };
+    return o.select?.name ?? o.name ?? "";
+  }
+  return "";
+}
+
+/**
+ * Strip number prefix from section name for display labels.
+ * "10-Preparing to use CoMapeo" → "Preparing to use CoMapeo"
+ * "90+ - Miscellaneous" → "Miscellaneous"
+ */
+export function stripSectionPrefix(sectionName: string): string {
+  return sectionName.replace(/^\d+[+-]\s*(?:-\s*)?/, "").trim();
+}
+
+/**
+ * Curated translations for section labels, used as fallback when a locale
+ * lacks a Title or Toggle page providing a translated label.
+ */
+export const CURATED_SECTION_TRANSLATIONS: Record<string, Record<string, string>> = {
+  pt: {
+    "Uncategorized": "Sem Categoria",
+    "Overview": "Visão Geral",
+    "Preparing to use CoMapeo": "Preparando-se para usar o CoMapeo",
+    "Gathering Observations & Tracks": "Coletando Observações e Trilhas",
+    "Reviewing Observations & Tracks": "Revisando Observações e Trilhas",
+    "Exchanging Observations": "Trocando Observações",
+    "Managing Data and Privacy": "Gestão de Privacidade e Segurança de Dados",
+    "Managing Data Privacy and Security": "Gestão de Privacidade de Dados e Segurança",
+    "Managing Projects": "Gerenciando Projetos",
+    "Sharing and Exporting different data types": "Compartilhando e Exportando Diferentes Tipos de Dados",
+    "Troubleshooting": "Solução de Problemas",
+    "Using Exchange Over the Internet": "Usando Exchange pela Internet",
+    "Miscellaneous": "Variado",
+    "Ending a project": "Encerrando um Projeto",
+  },
+  es: {
+    "Uncategorized": "Sin Categoría",
+    "Overview": "Vista General",
+    "Preparing to use CoMapeo": "Preparándose para usar CoMapeo",
+    "Gathering Observations & Tracks": "Registrando Observaciones y Trayectos",
+    "Reviewing Observations & Tracks": "Revisando Observaciones y Trayectos",
+    "Exchanging Observations": "Intercambiando Observaciones",
+    "Managing Data and Privacy": "Gestión de Privacidad y Seguridad de Datos",
+    "Managing Data Privacy and Security": "Gestión de Privacidad de Datos y Seguridad",
+    "Managing Projects": "Gestión de Proyectos",
+    "Sharing and Exporting different data types": "Compartir y Exportar Diferentes Tipos de Datos",
+    "Troubleshooting": "Solución de Problemas",
+    "Using Exchange Over the Internet": "Usando Exchange por Internet",
+    "Miscellaneous": "Misceláneas",
+    "Ending a project": "Finalizar un Proyecto",
+  },
+};

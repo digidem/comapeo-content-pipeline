@@ -69,20 +69,40 @@
     "en": [
       {
         "type": "category",
+        "key": "getting-started",
         "label": "Getting Started",
         "items": [
-          "getting-started"
-        ]
+          "getting-started/getting-started-with-comapeo"
+        ],
+        "collapsed": true,
+        "collapsible": true,
+        "link": {
+          "type": "generated-index",
+          "title": "Getting Started"
+        },
+        "customProps": {
+          "title": null
+        }
       },
       "faq"
     ],
     "es": [
       {
         "type": "category",
+        "key": "getting-started",
         "label": "Primeros pasos",
         "items": [
-          "primeros-pasos"
-        ]
+          "getting-started/getting-started-with-comapeo"
+        ],
+        "collapsed": true,
+        "collapsible": true,
+        "link": {
+          "type": "generated-index",
+          "title": "Primeros pasos"
+        },
+        "customProps": {
+          "title": null
+        }
       }
     ]
   }
