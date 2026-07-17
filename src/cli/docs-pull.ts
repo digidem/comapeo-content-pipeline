@@ -226,14 +226,16 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
     if (cp.customPropsTitle) {
       const quotedTitle = yamlQuote(cp.customPropsTitle);
       if (content.includes("sidebar_custom_props:")) {
+        // Use a replacer function so quotedTitle is inserted literally — a string
+        // replacement would reinterpret $-patterns (e.g. $1, $&) inside the title.
         content = content.replace(
           /^sidebar_custom_props:.*$/m,
-          `sidebar_custom_props:\n  title: "${quotedTitle}"`,
+          () => `sidebar_custom_props:\n  title: "${quotedTitle}"`,
         );
       } else {
         content = content.replace(
           /^(sidebar_position: .*\n)/m,
-          `$1sidebar_custom_props:\n  title: "${quotedTitle}"\n`,
+          (_match, g1: string) => `${g1}sidebar_custom_props:\n  title: "${quotedTitle}"\n`,
         );
       }
     }

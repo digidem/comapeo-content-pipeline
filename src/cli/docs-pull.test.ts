@@ -974,6 +974,34 @@ sidebar_position: 23
     expect((parsed.data.sidebar_custom_props as { title: string }).title).toBe('Configuring "Private" Projects');
   });
 
+  it("preserves a Title heading containing $-pattern sequences instead of reinterpreting them as replace() patterns", async () => {
+    const inputDir = mkdtempSync(join(tmpdir(), "docspull-dollar-heading-"));
+    temps.push(inputDir);
+    const out = freshOut();
+
+    const docs: FixtureDoc[] = [
+      // A Title-type row's title becomes the following content page's
+      // sidebar_custom_props.title — the injection used to pass this string
+      // as the *pattern* argument of String.prototype.replace(), so
+      // sequences like $1 or $& were reinterpreted (capture group / whole
+      // match) instead of being inserted literally.
+      { page_id: "title-dollar", title: "Section $1 Notes $&", locale: "en", section: "10-Basics", section_order: 1, status: "active", slug: "title-dollar", sub_items: [], element_type: TITLE_TYPE },
+      { page_id: "content-page-dollar", title: "Dollar Sign Page", locale: "en", section: "10-Basics", section_order: 2, status: "active", slug: "dollar-sign-page", element_type: PAGE_TYPE },
+    ];
+
+    writeFileSync(join(inputDir, "manifest.json"), JSON.stringify(buildManifest(docs), null, 2));
+    writeFileSync(join(inputDir, "content-page-dollar.md"), sourceMd("Dollar Sign Page", "dollar-sign-page", 2, "Body content."));
+
+    await docsPull({ input: join(inputDir, "manifest.json"), "input-dir": inputDir, out, all: "true" });
+
+    const filePath = join(out, "docs", "basics", "dollar-sign-page.md");
+    expect(existsSync(filePath)).toBe(true);
+    const content = readFileSync(filePath, "utf8");
+
+    // The frontmatter must remain valid YAML — gray-matter must not throw.
+    const parsed = matter(content);
+    expect((parsed.data.sidebar_custom_props as { title: string }).title).toBe("Section $1 Notes $&");
+  });
 
   it("P1: standalone page uses stored doc.slug when it differs from title-derived slug", async () => {
     const inputDir = mkdtempSync(join(tmpdir(), "docspull-stored-slug-"));
