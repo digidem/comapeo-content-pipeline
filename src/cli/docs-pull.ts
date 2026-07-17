@@ -500,9 +500,13 @@ export async function docsPull(args: Record<string, string>): Promise<void> {
       }
     };
     removeOrphans(join(outDir, "docs"));
-    for (const loc of ["es", "pt"]) {
-      const i18nDir = join(outDir, "i18n", loc, "docusaurus-plugin-content-docs", "current");
-      if (existsSync(i18nDir)) removeOrphans(i18nDir);
+    const i18nRoot = join(outDir, "i18n");
+    if (existsSync(i18nRoot)) {
+      for (const entry of readdirSync(i18nRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const i18nDir = join(i18nRoot, entry.name, "docusaurus-plugin-content-docs", "current");
+        if (existsSync(i18nDir)) removeOrphans(i18nDir);
+      }
     }
     if (removed > 0) console.log(`  Removed ${removed} orphaned files`);
   }

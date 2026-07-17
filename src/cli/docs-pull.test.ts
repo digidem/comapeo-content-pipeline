@@ -180,6 +180,20 @@ describe("docsPull", () => {
     expect(existsSync(join(out, "docs", "getting-started", "getting-started.md"))).toBe(true);
   });
 
+  it("--clean-orphans: cleans orphans in locale directories beyond the hardcoded es/pt list", async () => {
+    const { inputDir, manifestPath } = buildFixture();
+    const out = freshOut();
+
+    const frStaleDir = join(out, "i18n", "fr", "docusaurus-plugin-content-docs", "current", "getting-started");
+    mkdirSync(frStaleDir, { recursive: true });
+    const frStalePath = join(frStaleDir, "stale-orphan.md");
+    writeFileSync(frStalePath, "ghost of a deleted fr page");
+
+    await docsPull({ input: manifestPath, "input-dir": inputDir, out, "clean-orphans": "true" });
+
+    expect(existsSync(frStalePath)).toBe(false);
+  });
+
   it("--clean-orphans removes the stale file of a manifest doc excluded by an internal gate", async () => {
     const { inputDir, manifestPath } = buildFixture();
     const out = freshOut();
