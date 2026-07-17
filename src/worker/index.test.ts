@@ -60,7 +60,7 @@ function mockD1Db(_rows: Map<string, MockD1Row[]> = new Map()) {
   };
 
   // Default: `run()` resolves successfully
-  db.run.mockResolvedValue({ success: true });
+  db.run.mockResolvedValue({ success: true, meta: { changes: 1 } });
   db.all.mockResolvedValue({ results: [], success: true });
   db.first.mockResolvedValue(null);
   db.raw.mockResolvedValue([]);
@@ -388,6 +388,62 @@ describe("Worker HTTP routes", () => {
       const puts = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
       expect(puts.find((c) => c[0] === "manifests/latest.json")).toBeUndefined();
       expect(puts.some((c) => (c[0] as string)?.startsWith("manifests/versions/"))).toBe(false);
+    });
+
+    it("returns 409 when another regeneration is already in progress (fresh lock)", async () => {
+      const objects = new Map([["pages/p1/metadata.json", JSON.stringify(validMetadata())]]);
+      env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+      const db = env.DB as ReturnType<typeof mockD1Db>;
+      // INSERT OR IGNORE finds a lock row already present (changes: 0).
+      db.run.mockResolvedValueOnce({ success: true, meta: { changes: 0 } });
+      // Existing lock's updated_at is "now" — fresh, not stale.
+      const nowD1 = new Date().toISOString().slice(0, 19).replace("T", " ");
+      db.first.mockResolvedValueOnce({ updated_at: nowD1 });
+
+      const res = await request(app, "/admin/manifest/regenerate", {
+        method: "POST",
+        headers: { Authorization: "Bearer test-admin-token" },
+      }, env);
+      expect(res.status).toBe(409);
+      const body = await res.json() as { error: string };
+      expect(body.error).toMatch(/already in progress/);
+
+      const puts = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
+      expect(puts.find((c) => c[0] === "manifests/latest.json")).toBeUndefined();
+    });
+
+    it("steals a stale regeneration lock and rebuilds normally", async () => {
+      const objects = new Map([["pages/p1/metadata.json", JSON.stringify(validMetadata())]]);
+      env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+      const db = env.DB as ReturnType<typeof mockD1Db>;
+      db.run.mockResolvedValueOnce({ success: true, meta: { changes: 0 } }); // lock row exists
+      const staleD1 = new Date(Date.now() - 6 * 60 * 1000).toISOString().slice(0, 19).replace("T", " ");
+      db.first.mockResolvedValueOnce({ updated_at: staleD1 }); // stale — steal it
+
+      const res = await request(app, "/admin/manifest/regenerate", {
+        method: "POST",
+        headers: { Authorization: "Bearer test-admin-token" },
+      }, env);
+      expect(res.status).toBe(200);
+      const body = await res.json() as { regenerated: boolean };
+      expect(body.regenerated).toBe(true);
+
+      const puts = (env.CONTENT_BUCKET.put as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
+      expect(puts.find((c) => c[0] === "manifests/latest.json")).toBeDefined();
+    });
+
+    it("releases the regeneration lock after completing", async () => {
+      const objects = new Map([["pages/p1/metadata.json", JSON.stringify(validMetadata())]]);
+      env.CONTENT_BUCKET = mockR2Bucket(objects) as unknown as Env["CONTENT_BUCKET"];
+
+      const res = await request(app, "/admin/manifest/regenerate", {
+        method: "POST",
+        headers: { Authorization: "Bearer test-admin-token" },
+      }, env);
+      expect(res.status).toBe(200);
+
+      const prepareMock = env.DB.prepare as ReturnType<typeof vi.fn>;
+      expect(findPrepareCall(prepareMock, "DELETE FROM sync_state WHERE key = ? AND value = ?")).toBeDefined();
     });
   });
 });
