@@ -95,7 +95,7 @@ cp -r "$COMAPEO_DOCS/static/images/notion" static/images/
 
 ### Gotcha 2 — the `assets/` gitignore trap
 
-`content` branch's `.gitignore` has an **unanchored** `assets/` rule (no leading slash), which matches every `docs/<section>/assets/` and `i18n/<locale>/.../<section>/assets/` folder in the tree — not just a top-level one. `git add docs/ i18n/` silently drops all of them, no error, no warning. The build then fails at MDX compilation with "couldn't be resolved to an existing local image file" for every image in an affected section.
+`content` branch's `.gitignore` has an **unanchored** `assets/` rule (no leading slash), which matches every `docs/<section>/assets/` and `i18n/<locale>/.../<section>/assets/` folder in the tree — not just a top-level one. `git add docs/ i18n/` silently drops all of them, no error, no warning. The build does **not** fail on the missing images — `docusaurus.config.ts` sets `onBrokenMarkdownImages: "warn"`, so it succeeds while emitting one "couldn't be resolved to an existing local image file" warning per dropped image. **A green exit code does NOT prove images resolve**; the warning count is the only gate (see Step 4). The unanchored rule has since been removed from the `content` branch, but still force-add and verify as below — belt-and-suspenders against the rule ever returning.
 
 **Always force-add and verify zero remaining ignored files before committing:**
 
@@ -112,10 +112,18 @@ Don't rely on CI to catch a broken commit — a failed production build run is v
 ```bash
 cd "$WORKTREE"
 ln -s "$COMAPEO_DOCS/node_modules" node_modules   # reuse already-installed deps
-IS_PRODUCTION=true bun run build
+IS_PRODUCTION=true bun run build 2>&1 | tee build.log
 ```
 
-Expect the build to succeed with only the known content-state broken-link/anchor warnings (~180, tracked in `TASKS.md` task 1 — Notion editorial issues, not pipeline bugs). Any MDX compilation error means go back to Gotcha 2. Remove the `node_modules` symlink before committing (don't let it get committed):
+Expect the build to succeed with only the known content-state broken-link/anchor warnings (~180, tracked in `TASKS.md` task 1 — Notion editorial issues, not pipeline bugs). Any MDX compilation error means go back to Gotcha 2.
+
+**Assert zero missing-image warnings, not just a green exit code.** Because `onBrokenMarkdownImages: "warn"`, the build succeeds even with hundreds of broken images — this is the actual Gotcha 2 gate and it must pass *before* pushing to `content`:
+
+```bash
+grep -c "couldn't be resolved to an existing local image file" build.log   # must be 0
+```
+
+Remove the `node_modules` symlink before committing (don't let it get committed):
 
 ```bash
 rm -f node_modules
@@ -148,9 +156,9 @@ gh run list --repo digidem/comapeo-docs --workflow=deploy-production.yml --limit
 gh run watch <run-id> --repo digidem/comapeo-docs --exit-status
 ```
 
-### Known non-blocking failure: "Update Notion status to Published"
+### Known non-blocking step: "Update Notion status to Published"
 
-This step (last in the workflow) currently fails on every run — it references a Notion select option (`"Staging"`) that no longer exists in the live Publish Status vocabulary. It records 0 status changes before failing, so it never touches Notion data. The actual deploy (build → Cloudflare Pages → `content-lock.sha` promotion) completes and reports success in the steps *before* this one. Check those steps (`Build documentation`, `Deploy to Cloudflare Pages`, `Persist promoted content lock SHA`) for the real pass/fail signal, not the job's overall red/green.
+This step (last in the workflow) transitions Notion Publish Status from `Adding to staging site` → `Published` (the source option was renamed from the former `Staging`, which no longer exists). When no pages are currently in the `Adding to staging site` state it records 0 status changes and may exit non-zero — that is a separate Notion-bookkeeping concern, not a deploy failure, and it never corrupts Notion data. The actual deploy (build → Cloudflare Pages → `content-lock.sha` promotion) completes and reports success in the steps *before* this one. Check those steps (`Build documentation`, `Deploy to Cloudflare Pages`, `Persist promoted content lock SHA`) for the real pass/fail signal, not the job's overall red/green.
 
 ## Step 7 — Verify live, don't just trust the green checkmarks
 
