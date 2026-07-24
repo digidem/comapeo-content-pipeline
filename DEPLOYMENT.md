@@ -163,7 +163,12 @@ This step (last in the workflow) transitions Notion Publish Status from `Adding 
 ## Step 7 — Verify live, don't just trust the green checkmarks
 
 ```bash
-# content-lock.sha on main should now be $DEPLOY_SHA
+# content-lock.sha on main should now be $DEPLOY_SHA. Note: since main requires
+# the `test` status check, the deploy promotes the lock via an auto-merged PR
+# (branch `content-lock-promotion`) rather than a direct push — so it lands ~1
+# minute AFTER the Cloudflare deploy completes, once that PR's `test` run passes
+# and it auto-merges. If it still shows the old SHA right after a green deploy,
+# wait for the promotion PR to merge (gh pr list --head content-lock-promotion).
 git fetch origin main && git show origin/main:content-lock.sha
 
 curl -sL -o /dev/null -w "%{http_code}\n" https://docs.comapeo.app/docs/introduction/
