@@ -411,12 +411,29 @@ function convertCallout(
       contentLines = lines.slice(1);
     }
 
-    // Try plain "Title: content" pattern if no bold title found
+    // Try plain "Title: content" pattern if no bold title found.
+    // Mask Markdown links [text](url) and bare URLs so colons inside them
+    // (e.g. "https://...") aren't mistaken for the title separator colon.
     if (!derivedTitle) {
-      const plainMatch = firstLine.match(/^([\p{L}][^:：﹕꞉\n]{0,49}?)\s*[:：﹕꞉]\s*(.*)$/u);
+      const maskedLinks: string[] = [];
+      const maskUrl = (m: string) => {
+        const id = `__MASKED_${maskedLinks.length}__`;
+        maskedLinks.push(m);
+        return id;
+      };
+      // Mask [text](url) — handle one level of nested parens (Wikipedia-style URLs)
+      let maskedLine = firstLine.replace(
+        /\[[^\]]*?\]\([^()]*(?:\([^()]*\)[^()]*)*\)/g,
+        maskUrl,
+      );
+      // Mask bare URLs
+      maskedLine = maskedLine.replace(/(https?:\/\/[^\s<>[\]]+)/g, maskUrl);
+      const plainMatch = maskedLine.match(/^([\p{L}][^:：﹕꞉\n]{0,49}?)\s*[:：﹕꞉]\s*(.*)$/u);
       if (plainMatch && plainMatch[2]) {
-        const titleCandidate = plainMatch[1].trim();
-        const remainder = plainMatch[2].trimStart();
+        const restoreLinks = (s: string) =>
+          s.replace(/__MASKED_(\d+)__/g, (_, i) => maskedLinks[Number(i)]);
+        const titleCandidate = restoreLinks(plainMatch[1].trim());
+        const remainder = restoreLinks(plainMatch[2].trimStart());
         if (titleCandidate && remainder) {
           derivedTitle = icon ? `${icon} ${titleCandidate}` : titleCandidate;
           contentLines = [`${leading}${remainder}`, ...lines.slice(1)];

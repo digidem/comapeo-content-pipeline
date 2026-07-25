@@ -701,6 +701,155 @@ describe("richTextToMarkdown", () => {
     expect(output).not.toMatch(/[^\n]\n:{3,}$/m);
   });
 
+  // ── URL in callout must not be split by title-extraction regex ──
+
+  it("callout with Markdown link: title extraction skips over [text](url) syntax", () => {
+    // This is the real differentiating case: a letter-start line with a mid-line
+    // Markdown link and no title colon before it. Without masking, the regex would
+    // match the colon in "https:" as the title separator, corrupting the URL.
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "callout-mdlink",
+          type: "callout",
+          has_children: false,
+          callout: {
+            rich_text: [
+              {
+                type: "text",
+                plain_text: "Learn more at ",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+              {
+                type: "text",
+                plain_text: "our site",
+                text: { content: "our site", link: { url: "https://example.com" } },
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+              {
+                type: "text",
+                plain_text: " for full details",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+            color: "gray_background",
+          },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    // The URL must remain intact — not split at the colon in "https:"
+    expect(output).toContain("https://example.com");
+    // The link syntax should be preserved
+    expect(output).toMatch(/\[our site\]\(https:\/\/example\.com\)/);
+    // No broken "[https]" fragment
+    expect(output).not.toMatch(/\[https\]/);
+  });
+
+  it("callout with bare URL: unlinked URL is not split by title colon regex", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "callout-bare",
+          type: "callout",
+          has_children: false,
+          callout: {
+            rich_text: [
+              {
+                type: "text",
+                plain_text: "Learn more at https://lab.digital-democracy.org/plugin/ for details",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+            color: "gray_background",
+          },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    // The URL must remain intact
+    expect(output).toContain("https://lab.digital-democracy.org/plugin/");
+    // Must not have broken "https" / "//lab..." split
+    expect(output).not.toMatch(/\bhttps\b[^:]/);
+  });
+
+  it("callout with Wikipedia-style URL (parens in path) is not broken", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "callout-wiki",
+          type: "callout",
+          has_children: false,
+          callout: {
+            rich_text: [
+              {
+                type: "text",
+                plain_text: "See also the article",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+              {
+                type: "text",
+                plain_text: " Foo_(bar)",
+                text: { content: " Foo_(bar)", link: { url: "https://en.wikipedia.org/wiki/Foo_(bar)" } },
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+              {
+                type: "text",
+                plain_text: " on Wikipedia.",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+            color: "gray_background",
+          },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    // The full URL with parens must remain intact
+    expect(output).toContain("https://en.wikipedia.org/wiki/Foo_(bar)");
+    // The link syntax should be preserved
+    expect(output).toMatch(/\[.*?\]\(https:\/\/en\.wikipedia\.org\/wiki\/Foo_\(bar\)\)/);
+  });
+
+  it("callout with parenthesized bare URL is not split", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "callout-paren-url",
+          type: "callout",
+          has_children: false,
+          callout: {
+            rich_text: [
+              {
+                type: "text",
+                plain_text: "See (https://example.com/page) for the reference: details",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+            color: "gray_background",
+          },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    // The URL must remain intact
+    expect(output).toContain("https://example.com/page");
+    // Must not have broken "https" split
+    expect(output).not.toMatch(/\bhttps\b[^:]/);
+  });
+
   it("MD003: top-level divider block does not create setext heading", () => {
     const blockList: NotionBlockList = {
       object: "list",
