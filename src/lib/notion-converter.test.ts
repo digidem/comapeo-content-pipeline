@@ -1052,6 +1052,27 @@ describe("convertBlocks — recovered blocks", () => {
       "[Linked page](https://www.notion.so/abc123def)",
     );
   });
+
+  it("emits a navigable link for child_page", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "cp-123-456",
+          type: "child_page",
+          has_children: false,
+          child_page: { title: "Nested Page" },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    // dashes stripped, title-derived link (was dead "📄 Nested Page" text)
+    expect(output.trim()).toBe(
+      "[📄 Nested Page](https://www.notion.so/cp123456)",
+    );
+  });
 });
 
 // ── Golden fixture tests ──

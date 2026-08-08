@@ -660,7 +660,7 @@ function convertBookmarkOrLinkPreview(block: NotionBlock): string {
 
 function convertChildPage(block: NotionBlock): string {
   const title = (block.child_page as { title?: string })?.title ?? "child page";
-  return `📄 ${title}`;
+  return `[📄 ${title}](https://www.notion.so/${block.id.replace(/-/g, "")})`;
 }
 
 function convertUnsupportedBlock(block: NotionBlock): string {
