@@ -660,10 +660,13 @@ function convertBookmarkOrLinkPreview(block: NotionBlock): string {
 
 function convertChildPage(block: NotionBlock): string {
   const title = (block.child_page as { title?: string })?.title ?? "child page";
-  // Escape "]" (closes the link label early) and "[" (unbalanced brackets are
-  // invalid) so a title can't truncate the label or redefine the link
-  // destination via an embedded "](...)" sequence.
-  const safeTitle = title.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+  // Backslash-escaping "]"/"[" is not enough: resolveInternalLinks (links.ts)
+  // matches links with a plain /\[([^\]]*)\]\(([^)]+)\)/ regex that has no
+  // notion of backslash escapes, so an escaped "]" still ends the label there
+  // — the title-embedded text after it gets read as a second, separately
+  // rewritable link. Strip the bracket characters outright so no regex,
+  // escape-aware or not, can misread the label boundary.
+  const safeTitle = title.replace(/[[\]]/g, "");
   return `[📄 ${safeTitle}](https://www.notion.so/${block.id.replace(/-/g, "")})`;
 }
 

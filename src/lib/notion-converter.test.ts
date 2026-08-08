@@ -1074,7 +1074,7 @@ describe("convertBlocks — recovered blocks", () => {
     );
   });
 
-  it("escapes brackets in child_page titles so they can't break or hijack the link", () => {
+  it("strips brackets from child_page titles so they can't break or hijack the link", () => {
     const blockList: NotionBlockList = {
       object: "list",
       results: [
@@ -1089,8 +1089,11 @@ describe("convertBlocks — recovered blocks", () => {
       children: {},
     };
     const output = convertBlocks(blockList);
+    // brackets removed outright — backslash-escaping isn't enough because
+    // resolveInternalLinks' own link regex has no notion of escapes either
+    // (see links.test.ts for the downstream-safety proof)
     expect(output.trim()).toBe(
-      "[📄 Foo\\](https://evil.example)Bar](https://www.notion.so/cp789)",
+      "[📄 Foo(https://evil.example)Bar](https://www.notion.so/cp789)",
     );
   });
 });

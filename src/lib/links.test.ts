@@ -129,6 +129,21 @@ describe("buildRouteMaps + resolveInternalLinks", () => {
     expect(out).toBe("[x](#adding-photos)");
   });
 
+  it("doesn't misparse a link label containing '](' as two links (child_page titles)", () => {
+    // convertChildPage (notion-converter.ts) strips "[" and "]" from titles
+    // rather than backslash-escaping them, precisely because this regex has
+    // no notion of escapes and would otherwise split an escaped-but-present
+    // "]" into a spurious second link here.
+    const out = resolveInternalLinks(
+      "[📄 Foo(https://evil.example)Bar](https://www.notion.so/26a1b08162d5803991cfec8619e7d676)",
+      { locale: "en", maps },
+    );
+    // one link, unknown page id → target left unchanged, label untouched
+    expect(out).toBe(
+      "[📄 Foo(https://evil.example)Bar](https://www.notion.so/26a1b08162d5803991cfec8619e7d676)",
+    );
+  });
+
   it("leaves images and external links untouched", () => {
     const out = resolveInternalLinks(
       "![alt](/docs/inviting-collaborators) and [ext](https://example.com/docs/x)",
