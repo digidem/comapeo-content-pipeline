@@ -660,7 +660,11 @@ function convertBookmarkOrLinkPreview(block: NotionBlock): string {
 
 function convertChildPage(block: NotionBlock): string {
   const title = (block.child_page as { title?: string })?.title ?? "child page";
-  return `[📄 ${title}](https://www.notion.so/${block.id.replace(/-/g, "")})`;
+  // Escape "]" (closes the link label early) and "[" (unbalanced brackets are
+  // invalid) so a title can't truncate the label or redefine the link
+  // destination via an embedded "](...)" sequence.
+  const safeTitle = title.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+  return `[📄 ${safeTitle}](https://www.notion.so/${block.id.replace(/-/g, "")})`;
 }
 
 function convertUnsupportedBlock(block: NotionBlock): string {

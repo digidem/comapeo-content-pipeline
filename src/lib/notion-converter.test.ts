@@ -1073,6 +1073,26 @@ describe("convertBlocks — recovered blocks", () => {
       "[📄 Nested Page](https://www.notion.so/cp123456)",
     );
   });
+
+  it("escapes brackets in child_page titles so they can't break or hijack the link", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "cp-789",
+          type: "child_page",
+          has_children: false,
+          child_page: { title: "Foo](https://evil.example)Bar" },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    expect(output.trim()).toBe(
+      "[📄 Foo\\](https://evil.example)Bar](https://www.notion.so/cp789)",
+    );
+  });
 });
 
 // ── Golden fixture tests ──
