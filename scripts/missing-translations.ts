@@ -203,11 +203,26 @@ export function buildReport(opts: ReportOptions = {}): TranslationReport {
     const rep = supported.find((m) => m.locale === "en") ?? supported[0];
     const presentMap = new Map(supported.map((m) => [m.locale, m]));
 
-    const present = SUPPORTED_LOCALES.filter((l) => presentMap.has(l));
-    const missing = SUPPORTED_LOCALES.filter((l) => !presentMap.has(l));
-    const englishContent = supported
-      .filter((m) => m.locale !== "en" && (m.languageSource === "fallback" || !m.hasBody))
-      .map((m) => m.locale);
+    // A non-EN member with no real body is only rescued by docs:pull's EN-body
+    // fallback when an EN sibling with a real body exists (enFallbackPageId set —
+    // src/lib/hierarchy.ts). Without that, docs:pull's stub handling skips
+    // writing the file entirely (src/cli/docs-pull.ts), so the locale is
+    // effectively missing from the published site, not present with English
+    // content — report it as missing, matching what actually ships.
+    const present: string[] = [];
+    const missing: string[] = [];
+    const englishContent: string[] = [];
+    for (const l of SUPPORTED_LOCALES) {
+      const m = presentMap.get(l);
+      if (!m || (l !== "en" && !m.hasBody && !m.enFallbackPageId)) {
+        missing.push(l);
+        continue;
+      }
+      present.push(l);
+      if (l !== "en" && (m.languageSource === "fallback" || !m.hasBody)) {
+        englishContent.push(l);
+      }
+    }
 
     for (const l of missing) missingByLocale[l] = (missingByLocale[l] ?? 0) + 1;
     for (const l of englishContent) englishContentByLocale[l] = (englishContentByLocale[l] ?? 0) + 1;
