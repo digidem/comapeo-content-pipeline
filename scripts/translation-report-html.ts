@@ -149,6 +149,7 @@ function esc(s) {
 }
 
 function localeState(page, locale) {
+  if (page.missing && page.missing.indexOf(locale) !== -1) return "miss";
   var m = page.locales[locale];
   if (!m) return "miss";
   if (locale !== "en" && (!m.has_body || m.language_source === "fallback")) return "warn";
@@ -220,7 +221,8 @@ function detailHtml(p) {
   for (var i = 0; i < locales.length; i++) {
     var l = locales[i];
     var m = p.locales[l];
-    var status = !m ? "missing" : (localeState(p, l) === "ok" ? "translated" : "english content");
+    var st = localeState(p, l);
+    var status = st === "miss" ? "missing" : (st === "ok" ? "translated" : "english content");
     h += "<div><b>" + l + "</b> &mdash; " + status +
       (m ? " &middot; Notion page <code>" + esc(m.page_id) + "</code>" : "") +
       "<br><code>" + esc(p.paths[l]) + "</code></div>";
@@ -310,11 +312,10 @@ renderTable();
 `;
 
 function openInBrowser(file: string): void {
-  // win32: go through `cmd /c start "" <file>` — "start" is a cmd builtin,
-  // and the empty title argument keeps a quoted path from being read as one.
+  // On Windows, pass directly to explorer to avoid cmd.exe command parsing metacharacters.
   const isWin = process.platform === "win32";
-  const cmd = process.platform === "darwin" ? "open" : isWin ? "cmd" : "xdg-open";
-  const args = isWin ? ["/c", "start", "", file] : [file];
+  const cmd = process.platform === "darwin" ? "open" : isWin ? "explorer" : "xdg-open";
+  const args = [file];
   spawn(cmd, args, { stdio: "ignore", detached: true }).unref();
 }
 

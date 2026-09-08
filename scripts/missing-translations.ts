@@ -39,9 +39,11 @@ type LanguageSource = "explicit" | "automated" | "fallback";
 function preflight(inputDir: string, docs: ManifestDoc[]): {
   languageSourceById: Record<string, LanguageSource>;
   hasBodyById: Record<string, boolean>;
+  hasSourceById: Record<string, boolean>;
 } {
   const languageSourceById: Record<string, LanguageSource> = {};
   const hasBodyById: Record<string, boolean> = {};
+  const hasSourceById: Record<string, boolean> = {};
 
   for (const doc of docs) {
     if (doc.language_source) {
@@ -70,12 +72,13 @@ function preflight(inputDir: string, docs: ManifestDoc[]): {
     const mdPath = join(inputDir, `${doc.page_id}.md`);
     try {
       if (existsSync(mdPath)) {
+        hasSourceById[doc.page_id] = true;
         hasBodyById[doc.page_id] = !isStubBody(readFileSync(mdPath, "utf8"));
       }
     } catch { /* ignore unreadable body */ }
   }
 
-  return { languageSourceById, hasBodyById };
+  return { languageSourceById, hasBodyById, hasSourceById };
 }
 
 /** Mirror of the docs-pull output path formula (src/cli/docs-pull.ts). */
@@ -164,7 +167,7 @@ export function buildReport(opts: ReportOptions = {}): TranslationReport {
     throw new Error(`Invalid manifest at ${input}: ${detail}`, { cause: err });
   }
 
-  const { languageSourceById, hasBodyById } = preflight(inputDir, manifest.docs);
+  const { languageSourceById, hasBodyById, hasSourceById } = preflight(inputDir, manifest.docs);
   const plan = buildHierarchyPlan({
     docs: manifest.docs,
     includeDrafts,
@@ -209,12 +212,22 @@ export function buildReport(opts: ReportOptions = {}): TranslationReport {
     // writing the file entirely (src/cli/docs-pull.ts), so the locale is
     // effectively missing from the published site, not present with English
     // content — report it as missing, matching what actually ships.
+    //
+    // Similarly, docs:pull checks whether each canonical page's markdown source file
+    // exists on disk before doing any work (and if using EN fallback, that the EN
+    // source file exists too). If a member's source file is missing from inputDir,
+    // docs:pull emits nothing for it, so it must be reported as missing.
     const present: string[] = [];
     const missing: string[] = [];
     const englishContent: string[] = [];
     for (const l of SUPPORTED_LOCALES) {
       const m = presentMap.get(l);
-      if (!m || (l !== "en" && !m.hasBody && !m.enFallbackPageId)) {
+      const hasSource = m ? Boolean(hasSourceById[m.pageId]) : false;
+      const hasEnFallbackSource = m?.enFallbackPageId
+        ? Boolean(hasSourceById[m.enFallbackPageId])
+        : false;
+
+      if (!m || !hasSource || (l !== "en" && !m.hasBody && (!m.enFallbackPageId || !hasEnFallbackSource))) {
         missing.push(l);
         continue;
       }
@@ -241,7 +254,7 @@ export function buildReport(opts: ReportOptions = {}): TranslationReport {
           has_body: m.hasBody,
         }]),
       ),
-      paths: Object.fromEntries(SUPPORTED_LOCALES.map((l) => [l, mdPath(rep, l)])),
+      paths: Object.fromEntries(SUPPORTED_LOCALES.map((l) => [l, mdPath(presentMap.get(l) ?? rep, l)])),
     });
   }
 
