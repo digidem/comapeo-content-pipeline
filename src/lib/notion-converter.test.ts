@@ -1052,6 +1052,50 @@ describe("convertBlocks — recovered blocks", () => {
       "[Linked page](https://www.notion.so/abc123def)",
     );
   });
+
+  it("emits a navigable link for child_page", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "cp-123-456",
+          type: "child_page",
+          has_children: false,
+          child_page: { title: "Nested Page" },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    // dashes stripped, title-derived link (was dead "📄 Nested Page" text)
+    expect(output.trim()).toBe(
+      "[📄 Nested Page](https://www.notion.so/cp123456)",
+    );
+  });
+
+  it("strips brackets from child_page titles so they can't break or hijack the link", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "cp-789",
+          type: "child_page",
+          has_children: false,
+          child_page: { title: "Foo](https://evil.example)Bar" },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    // brackets removed outright — backslash-escaping isn't enough because
+    // resolveInternalLinks' own link regex has no notion of escapes either
+    // (see links.test.ts for the downstream-safety proof)
+    expect(output.trim()).toBe(
+      "[📄 Foo(https://evil.example)Bar](https://www.notion.so/cp789)",
+    );
+  });
 });
 
 // ── Golden fixture tests ──

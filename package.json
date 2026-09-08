@@ -10,10 +10,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint src",
-    "lint:fix": "eslint src --fix",
-    "pipeline": "bun src/cli/index.ts"
+    "typecheck": "tsc --noEmit && tsc -p scripts --noEmit",
+    "lint": "eslint src scripts",
+    "lint:fix": "eslint src scripts --fix",
+    "pipeline": "bun src/cli/index.ts",
+    "translations:missing": "bun scripts/missing-translations.ts --all",
+    "translations:report": "bun scripts/translation-report-html.ts",
+    "translations:check": "bun scripts/translation-report-html.ts --open"
   },
   "dependencies": {
     "@notionhq/client": "^5.12.0",
