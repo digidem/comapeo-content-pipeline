@@ -76,4 +76,12 @@ describe("inlineMarkdownToRichText", () => {
     const backToMd = richTextToMarkdown(richText);
     expect(backToMd).toBe(input);
   });
+
+  it("preserves HTML img tags without parsing underscores in URL as italics", () => {
+    const input = 'Step 2: <img src="https://example.com/public/photo_2026-04-18_09-03-07.jpg" alt="switch" className="emoji" /> **Done**';
+    const richText = inlineMarkdownToRichText(input);
+    const backToMd = richTextToMarkdown(richText);
+    expect(backToMd).toBe(input);
+    expect(backToMd).not.toContain("*2026-04-18*");
+  });
 });

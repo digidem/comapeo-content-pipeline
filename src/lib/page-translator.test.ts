@@ -3,7 +3,7 @@ import type { NotionBlockList } from "./notion-converter.js";
 import type { PageMetadata } from "../schemas/metadata.js";
 import { AITranslator } from "./ai-translator.js";
 import { loadGlossary } from "./glossary.js";
-import { translatePageContent } from "./page-translator.js";
+import { translatePageContent, maskHtmlTags, unmaskHtmlTags } from "./page-translator.js";
 import { findMdxHazards } from "./mdx-safety.js";
 
 describe("translatePageContent", () => {
@@ -133,5 +133,157 @@ describe("translatePageContent", () => {
     // MDX safety check
     const hazards = findMdxHazards(result.translatedMd);
     expect(hazards).toEqual([]);
+  });
+
+  it("rehosts assets and protects inline HTML tags from LLM corruption", async () => {
+    const assetsMeta: PageMetadata = {
+      ...mockEnMetadata,
+      assets: [
+        {
+          original_url: "https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/uuid/switch_projects.jpg?X-Amz-Signature=111",
+          r2_key: "assets/ab2b210fb2fbe7db8225bbd0cefd33bb92d003c9fb8b3ca73a17f3703d2a38d4.jpg",
+          sha256: "sha256:ab2b210fb2fbe7db8225bbd0cefd33bb92d003c9fb8b3ca73a17f3703d2a38d4",
+          mime_type: "image/jpeg",
+        },
+        {
+          original_url: "https://s3-us-west-2.amazonaws.com/public.notion-static.com/uuid/photo_2026-04-18_09-03-07.jpg",
+          r2_key: "assets/ce83f9d3ea687047295a17cb3e9e090b3f7b1e1196ac2c200404927cae1c1a25.jpg",
+          sha256: "sha256:ce83f9d3ea687047295a17cb3e9e090b3f7b1e1196ac2c200404927cae1c1a25",
+          mime_type: "image/jpeg",
+        },
+      ],
+    };
+
+    const blocksWithAssets: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img1",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "file",
+            file: {
+              url: "https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/uuid/switch_projects.jpg?X-Amz-Signature=222",
+              expiry_time: "2026-09-10T12:00:00.000Z",
+            },
+            caption: [],
+          },
+        },
+        {
+          object: "block",
+          id: "p_emoji",
+          type: "paragraph",
+          has_children: false,
+          paragraph: {
+            rich_text: [
+              {
+                type: "text",
+                text: { content: "Click on " },
+                plain_text: "Click on ",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+              {
+                type: "mention",
+                mention: {
+                  type: "custom_emoji",
+                  custom_emoji: {
+                    url: "https://s3-us-west-2.amazonaws.com/public.notion-static.com/uuid/photo_2026-04-18_09-03-07.jpg",
+                    name: "app-icon-comapeo-switch-project",
+                  },
+                },
+                plain_text: "app-icon-comapeo-switch-project",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+              {
+                type: "text",
+                text: { content: " to switch projects." },
+                plain_text: " to switch projects.",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    const mockFetch = vi.fn().mockImplementation(async (_url, options) => {
+      const body = JSON.parse(options.body);
+      const userPrompt = JSON.parse(body.messages[1].content);
+      const blocks = userPrompt.blocks as Array<{ id: string; text: string }>;
+
+      // Verify that HTML tag was masked before reaching the LLM
+      const emojiBlock = blocks.find((b) => b.id === "p_emoji");
+      expect(emojiBlock).toBeDefined();
+      expect(emojiBlock!.text).toContain("⟦TAG_0⟧");
+      expect(emojiBlock!.text).not.toContain("https://");
+
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  __page_title__: "Gravando Trajetos",
+                  p_emoji: "Clique em ⟦TAG_0⟧ para alternar projetos.",
+                }),
+              },
+            },
+          ],
+        }),
+      };
+    });
+
+    const translator = new AITranslator({
+      apiKey: "test-key",
+      fetchFn: mockFetch as unknown as typeof fetch,
+    });
+
+    const result = await translatePageContent({
+      enRawBlocks: blocksWithAssets,
+      enMetadata: assetsMeta,
+      targetLocale: "pt",
+      translator,
+      glossary,
+    });
+
+    // Both the block image and the inline HTML img tag must be rehosted
+    expect(result.translatedMd).toContain("assets/ab2b210fb2fbe7db8225bbd0cefd33bb92d003c9fb8b3ca73a17f3703d2a38d4.jpg");
+    expect(result.translatedMd).toContain('src="assets/ce83f9d3ea687047295a17cb3e9e090b3f7b1e1196ac2c200404927cae1c1a25.jpg"');
+    expect(result.translatedMd).not.toContain("https://prod-files-secure.s3");
+    expect(result.translatedMd).not.toContain("https://s3-us-west-2.amazonaws.com");
+
+    // Metadata assets must be preserved
+    expect(result.translatedMetadata.assets).toHaveLength(2);
+    expect(result.translatedMetadata.assets[0].r2_key).toBe("assets/ab2b210fb2fbe7db8225bbd0cefd33bb92d003c9fb8b3ca73a17f3703d2a38d4.jpg");
+  });
+});
+
+describe("maskHtmlTags / unmaskHtmlTags", () => {
+  it("masks and unmasks <img ... /> tags", () => {
+    const original = 'Select <img src="https://example.com/icon.png" alt="icon" className="emoji" style={{display:"inline"}} /> to proceed';
+    const { masked, tagMap } = maskHtmlTags(original);
+    expect(masked).toBe("Select ⟦TAG_0⟧ to proceed");
+    expect(tagMap.get("⟦TAG_0⟧")).toBe('<img src="https://example.com/icon.png" alt="icon" className="emoji" style={{display:"inline"}} />');
+
+    const restored = unmaskHtmlTags(masked, tagMap);
+    expect(restored).toBe(original);
+  });
+
+  it("handles loose formatting variations from LLM output", () => {
+    const originalTag = '<img src="https://example.com/icon.png" alt="icon" />';
+    const tagMap = new Map([["⟦TAG_0⟧", originalTag]]);
+
+    // Spaced bracket
+    expect(unmaskHtmlTags("Selecione ⟦ TAG_0 ⟧ para prosseguir", tagMap)).toBe(
+      'Selecione <img src="https://example.com/icon.png" alt="icon" /> para prosseguir',
+    );
+
+    // Single square bracket
+    expect(unmaskHtmlTags("Selecione [TAG_0] para prosseguir", tagMap)).toBe(
+      'Selecione <img src="https://example.com/icon.png" alt="icon" /> para prosseguir',
+    );
   });
 });

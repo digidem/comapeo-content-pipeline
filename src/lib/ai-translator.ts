@@ -118,6 +118,7 @@ export class AITranslator {
       `5. Output MUST be a JSON object mapping EVERY input ID to its translated string: { "<id>": "<translated_text>" }.`,
       `6. Return an entry for EVERY block ID. Do not omit any ID and do not add new IDs.`,
       `7. Output valid, raw JSON only. Do not wrap in Markdown fences, do not output explanations or notes.`,
+      `8. Preserve all placeholder tokens formatted like ⟦TAG_0⟧ verbatim and in their exact positions without altering, removing, or translating them.`,
     ].join("\n");
 
     if (request.glossaryPrompt) {

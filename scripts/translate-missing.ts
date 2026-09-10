@@ -23,6 +23,7 @@ import { translatePageContent } from "../src/lib/page-translator.js";
 import { NotionClient } from "../src/lib/notion-client.js";
 import { writeTranslationToNotion } from "../src/lib/notion-writer.js";
 import { buildFrontmatter, serializeDoc } from "../src/lib/frontmatter.js";
+import { rewriteRawImgSrcToStatic } from "../src/lib/img-rewrite.js";
 import type { NotionBlockList } from "../src/lib/notion-converter.js";
 import type { PageMetadata } from "../src/schemas/metadata.js";
 
@@ -293,7 +294,8 @@ async function main() {
       if (outputDir) {
         const docDest = join(outputDir, page.paths[locale]);
         mkdirSync(dirname(docDest), { recursive: true });
-        writeFileSync(docDest, result.translatedMd, "utf8");
+        const docusaurusMd = rewriteRawImgSrcToStatic(result.translatedMd).content;
+        writeFileSync(docDest, docusaurusMd, "utf8");
       }
 
       // Optional Notion Write-Back
@@ -331,7 +333,8 @@ async function main() {
 
             if (outputDir) {
               const docDest = join(outputDir, page.paths[locale]);
-              writeFileSync(docDest, updatedMd, "utf8");
+              const docusaurusMd = rewriteRawImgSrcToStatic(updatedMd).content;
+              writeFileSync(docDest, docusaurusMd, "utf8");
             }
             targetPageId = newId;
           }

@@ -191,3 +191,53 @@ function isNotionUrl(url: string): boolean {
 		return false;
 	}
 }
+
+/**
+ * Strip query-string signature and hash from an expiring or signed asset URL.
+ * Produces a stable base URL (origin + pathname) for matching.
+ */
+export function stripUrlSignature(url: string): string {
+	try {
+		const u = new URL(url);
+		return u.origin + u.pathname;
+	} catch {
+		const i = url.indexOf("?");
+		return i >= 0 ? url.slice(0, i) : url;
+	}
+}
+
+/**
+ * Rehosts asset URLs in markdown by replacing Notion/S3 URLs with their
+ * canonical local asset keys (e.g. assets/<sha256>.<ext>) stored in metadata.
+ */
+export function rehostMarkdownAssets(
+	markdown: string,
+	assets: Array<{ original_url: string; r2_key: string }>,
+): string {
+	if (!assets || assets.length === 0) return markdown;
+
+	let result = markdown;
+	const sorted = [...assets].sort((a, b) => b.original_url.length - a.original_url.length);
+
+	for (const asset of sorted) {
+		if (!asset.original_url || !asset.r2_key) continue;
+
+		const base = stripUrlSignature(asset.original_url);
+		const escaped = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+		// 1. Replace markdown images: ![alt](base?query) or [![alt](base?query)](link)
+		result = result.replace(
+			new RegExp("(!\\[[^\\]]*\\]\\()" + escaped + "(?:\\?[^)]*)?(\\))", "g"),
+			`$1${asset.r2_key}$2`,
+		);
+
+		// 2. Replace HTML img tags: <img ... src="base?query" ...> or src='base'
+		result = result.replace(
+			new RegExp("(<img\\b[^>]*\\ssrc=[\"'])" + escaped + "(?:\\?[^\"']*)?([\"'])", "gi"),
+			`$1${asset.r2_key}$2`,
+		);
+	}
+
+	return result;
+}
+

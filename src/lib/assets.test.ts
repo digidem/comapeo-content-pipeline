@@ -4,6 +4,8 @@ import {
 	rehostAsset,
 	sha256Hex,
 	assetR2Key,
+	stripUrlSignature,
+	rehostMarkdownAssets,
 } from "./assets.js";
 
 // ── extractAssetUrls ──
@@ -360,5 +362,62 @@ describe("assetR2Key", () => {
 		expect(key).toBe(
 			"assets/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.jpg",
 		);
+	});
+});
+
+// ── stripUrlSignature ──
+
+describe("stripUrlSignature", () => {
+	it("strips query string from URL", () => {
+		const url = "https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/uuid/photo.jpg?X-Amz-Algorithm=AWS4&X-Amz-Signature=123";
+		expect(stripUrlSignature(url)).toBe("https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/uuid/photo.jpg");
+	});
+
+	it("returns identical URL if no query string present", () => {
+		const url = "https://example.com/images/icon.png";
+		expect(stripUrlSignature(url)).toBe("https://example.com/images/icon.png");
+	});
+
+	it("handles malformed URLs with question marks gracefully", () => {
+		const malformed = "not-a-valid-url/path?query=val";
+		expect(stripUrlSignature(malformed)).toBe("not-a-valid-url/path");
+	});
+});
+
+// ── rehostMarkdownAssets ──
+
+describe("rehostMarkdownAssets", () => {
+	const assets = [
+		{
+			original_url: "https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/uuid/switch_projects.jpg?X-Amz-Date=20260723T103534Z&X-Amz-Signature=abc",
+			r2_key: "assets/ab2b210fb2fbe7db8225bbd0cefd33bb92d003c9fb8b3ca73a17f3703d2a38d4.jpg",
+		},
+		{
+			original_url: "https://s3-us-west-2.amazonaws.com/public.notion-static.com/uuid/photo_2026-04-18_09-03-07.jpg",
+			r2_key: "assets/ce83f9d3ea687047295a17cb3e9e090b3f7b1e1196ac2c200404927cae1c1a25.jpg",
+		},
+	];
+
+	it("rehosts standard markdown images even with refreshed signature", () => {
+		const md = "![image](https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/uuid/switch_projects.jpg?X-Amz-Date=20260910T120000Z&X-Amz-Signature=xyz)";
+		const result = rehostMarkdownAssets(md, assets);
+		expect(result).toBe("![image](assets/ab2b210fb2fbe7db8225bbd0cefd33bb92d003c9fb8b3ca73a17f3703d2a38d4.jpg)");
+	});
+
+	it("rehosts inline HTML img tags", () => {
+		const md = 'Click on <img src="https://s3-us-west-2.amazonaws.com/public.notion-static.com/uuid/photo_2026-04-18_09-03-07.jpg" alt="switch" className="emoji" style={{display:"inline"}} /> to switch';
+		const result = rehostMarkdownAssets(md, assets);
+		expect(result).toBe('Click on <img src="assets/ce83f9d3ea687047295a17cb3e9e090b3f7b1e1196ac2c200404927cae1c1a25.jpg" alt="switch" className="emoji" style={{display:"inline"}} /> to switch');
+	});
+
+	it("leaves non-matching images untouched", () => {
+		const md = "![other](https://example.com/other.jpg)";
+		const result = rehostMarkdownAssets(md, assets);
+		expect(result).toBe(md);
+	});
+
+	it("returns original text when assets list is empty", () => {
+		const md = "![img](https://example.com/img.png)";
+		expect(rehostMarkdownAssets(md, [])).toBe(md);
 	});
 });

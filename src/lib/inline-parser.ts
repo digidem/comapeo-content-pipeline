@@ -114,7 +114,7 @@ function parseInlineSegments(text: string): IntermediateSpan[] {
 function parseFormatting(text: string, linkUrl: string | null): IntermediateSpan[] {
   const result: IntermediateSpan[] = [];
 
-  const tokenRegex = /(?<code>`[^`]+`)|(?<boldItalic>\*\*\*[^*]+\*\*\*)|(?<bold>\*\*[^*]+\*\*)|(?<italic>\*[^*]+\*|_[^_]+_)|(?<strike>~~[^~]+~~)/g;
+  const tokenRegex = /(?<html><img\b[^>]*\/?>|<br\s*\/?>)|(?<code>`[^`]+`)|(?<boldItalic>\*\*\*[^*]+\*\*\*)|(?<bold>\*\*[^*]+\*\*)|(?<italic>\*[^*]+\*|_[^_]+_)|(?<strike>~~[^~]+~~)/g;
 
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -133,7 +133,16 @@ function parseFormatting(text: string, linkUrl: string | null): IntermediateSpan
     }
 
     const matchedStr = match[0];
-    if (match.groups?.code) {
+    if (match.groups?.html) {
+      result.push({
+        content: matchedStr,
+        bold: false,
+        italic: false,
+        code: false,
+        strikethrough: false,
+        url: linkUrl,
+      });
+    } else if (match.groups?.code) {
       result.push({
         content: matchedStr.slice(1, -1),
         bold: false,

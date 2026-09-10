@@ -13,7 +13,7 @@ import { mapStatus } from "./status.js";
 import { generateSlug, slugToDocusaurusId } from "./slug.js";
 import { buildFrontmatter, serializeDoc } from "./frontmatter.js";
 import type { PageMetadata, PageAsset } from "../schemas/metadata.js";
-import { extractAssetUrls, rehostAsset, sha256Hex, assetR2Key } from "./assets.js";
+import { extractAssetUrls, rehostAsset, sha256Hex, assetR2Key, stripUrlSignature } from "./assets.js";
 
 export interface SyncPageInput {
   pageId: string;
@@ -443,12 +443,4 @@ function escapeRegExp(s: string): string {
  * Origin + pathname stay useful for debugging which asset failed. Falls back to
  * a literal `?` split when the URL won't parse.
  */
-export function stripUrlSignature(url: string): string {
-  try {
-    const u = new URL(url);
-    return u.origin + u.pathname;
-  } catch {
-    const i = url.indexOf("?");
-    return i >= 0 ? url.slice(0, i) : url;
-  }
-}
+export { stripUrlSignature };
