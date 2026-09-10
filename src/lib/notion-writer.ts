@@ -118,17 +118,24 @@ export function prepareBlocksForNotion(
       };
 
       let externalUrl = img.external?.url;
+      const rawUrl = img.file?.url || externalUrl;
 
-      // If missing or pointing to Notion's private/temporary S3, resolve to permanent public URL
-      if ((!externalUrl || externalUrl.includes("prod-files-secure.s3")) && img.file?.url) {
-        const fileUrlPath = img.file.url.split("?")[0];
+      // If missing, pointing to Notion's private/temporary S3, or an inline data URI, resolve to permanent public URL
+      const needsResolution =
+        !externalUrl ||
+        externalUrl.includes("prod-files-secure.s3") ||
+        externalUrl.startsWith("data:");
+
+      if (needsResolution && rawUrl) {
+        const urlPath = rawUrl.split("?")[0];
         const matchedAsset = options.assets?.find((a) => {
+          if (a.original_url === rawUrl) return true;
           const origPath = a.original_url.split("?")[0];
           return (
-            fileUrlPath === origPath ||
-            fileUrlPath.endsWith(origPath) ||
-            origPath.endsWith(fileUrlPath) ||
-            fileUrlPath.split("/").pop() === origPath.split("/").pop()
+            urlPath === origPath ||
+            urlPath.endsWith(origPath) ||
+            origPath.endsWith(urlPath) ||
+            urlPath.split("/").pop() === origPath.split("/").pop()
           );
         });
 
@@ -142,12 +149,13 @@ export function prepareBlocksForNotion(
           externalUrl = sectionDir
             ? `${baseUrl}/docs/${sectionDir}/assets/${filename}`
             : `${baseUrl}/docs/assets/${filename}`;
-        } else {
+        } else if (img.file?.url) {
           externalUrl = img.file.url;
         }
       }
 
-      if (externalUrl) {
+      // If externalUrl is present and not a raw data URI (which Notion rejects), write external image block
+      if (externalUrl && !externalUrl.startsWith("data:")) {
         cleaned.image = {
           type: "external",
           external: { url: externalUrl },

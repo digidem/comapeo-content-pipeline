@@ -178,6 +178,52 @@ describe("prepareBlocksForNotion", () => {
     });
   });
 
+  it("resolves base64 data URI external image blocks to permanent public URLs", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-base64",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "external",
+            external: {
+              url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
+            },
+            caption: [],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const assets = [
+      {
+        original_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
+        r2_key: "assets/17a4cbb2d33868f59af24c6139d2c54efe50ca43a39d1179f8708c427715f584.png",
+        sha256: "sha256:17a4cbb2d33868f59af24c6139d2c54efe50ca43a39d1179f8708c427715f584",
+        mime_type: "image/png",
+      },
+    ];
+
+    const prepared = prepareBlocksForNotion(rawBlocks, {
+      assets,
+      section: "60-Exchanging Observations",
+    });
+
+    expect(prepared[0]).toEqual({
+      object: "block",
+      type: "image",
+      image: {
+        type: "external",
+        external: {
+          url: "https://raw.githubusercontent.com/digidem/comapeo-docs/content/docs/exchanging-observations/assets/17a4cbb2d33868f59af24c6139d2c54efe50ca43a39d1179f8708c427715f584.png",
+        },
+      },
+    });
+  });
+
   it("embeds table_row children inside table blocks", () => {
     const rawBlocks: NotionBlockList = {
       object: "list",
