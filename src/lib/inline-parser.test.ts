@@ -84,4 +84,26 @@ describe("inlineMarkdownToRichText", () => {
     expect(backToMd).toBe(input);
     expect(backToMd).not.toContain("*2026-04-18*");
   });
+
+  it("converts emoji img tags with data-emoji-id into Notion custom_emoji mentions", () => {
+    const input = 'Open <img src="https://example.com/icon.png" alt="menu" data-emoji-id="emoji-123" className="emoji" /> now';
+    const res = inlineMarkdownToRichText(input);
+    expect(res).toHaveLength(3);
+    expect(res[0].type).toBe("text");
+    expect(res[0].text?.content).toBe("Open ");
+    expect(res[1].type).toBe("mention");
+    expect((res[1].mention as { type: string; custom_emoji: { id: string } }).type).toBe("custom_emoji");
+    expect((res[1].mention as { type: string; custom_emoji: { id: string } }).custom_emoji.id).toBe("emoji-123");
+    expect(res[2].type).toBe("text");
+    expect(res[2].text?.content).toBe(" now");
+  });
+
+  it("resolves custom_emoji id from emojiMap when data-emoji-id is absent", () => {
+    const input = 'Open <img src="https://example.com/icon.png" alt="menu" className="emoji" /> now';
+    const emojiMap = new Map([["menu", "emoji-from-map"]]);
+    const res = inlineMarkdownToRichText(input, emojiMap);
+    expect(res).toHaveLength(3);
+    expect(res[1].type).toBe("mention");
+    expect((res[1].mention as { type: string; custom_emoji: { id: string } }).custom_emoji.id).toBe("emoji-from-map");
+  });
 });

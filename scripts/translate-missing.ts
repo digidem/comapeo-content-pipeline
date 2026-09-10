@@ -318,6 +318,8 @@ async function main() {
           parentEnglishPageId: enPageId,
           targetPageId: stubId,
           translatedBlocks: result.translatedBlocks,
+          assets: enMetadata?.assets,
+          section: page.section,
           force,
         });
 

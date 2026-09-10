@@ -131,6 +131,53 @@ describe("prepareBlocksForNotion", () => {
     });
   });
 
+  it("resolves Notion S3 file image blocks to permanent public URLs using assets and section", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-1",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "file",
+            file: {
+              url: "https://prod-files-secure.s3.us-west-2.amazonaws.com/workspace/doc/switch_projects.jpg?X-Amz-Expires=3600",
+              expiry_time: "2026-01-01T00:00:00.000Z",
+            },
+            caption: [],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const assets = [
+      {
+        original_url: "https://prod-files-secure.s3.us-west-2.amazonaws.com/workspace/doc/switch_projects.jpg",
+        r2_key: "assets/ab2b210fb2fbe7db8225bbd0cefd33bb92d003c9fb8b3ca73a17f3703d2a38d4.jpg",
+        sha256: "sha256:ab2b210fb2fbe7db8225bbd0cefd33bb92d003c9fb8b3ca73a17f3703d2a38d4",
+        mime_type: "image/jpeg",
+      },
+    ];
+
+    const prepared = prepareBlocksForNotion(rawBlocks, {
+      assets,
+      section: "50-Managing Projects",
+    });
+
+    expect(prepared[0]).toEqual({
+      object: "block",
+      type: "image",
+      image: {
+        type: "external",
+        external: {
+          url: "https://raw.githubusercontent.com/digidem/comapeo-docs/content/docs/managing-projects/assets/ab2b210fb2fbe7db8225bbd0cefd33bb92d003c9fb8b3ca73a17f3703d2a38d4.jpg",
+        },
+      },
+    });
+  });
+
   it("embeds table_row children inside table blocks", () => {
     const rawBlocks: NotionBlockList = {
       object: "list",

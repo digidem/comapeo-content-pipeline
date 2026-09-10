@@ -9,6 +9,8 @@ import type { NotionBlock, NotionClient, NotionPage } from "./notion-client.js";
 import type { NotionBlockList } from "./notion-converter.js";
 import { NOTION_PROPERTIES } from "./notion-properties.js";
 import { isStubBody } from "./stub-body.js";
+import { toSectionDir } from "./hierarchy.js";
+import type { PageAsset } from "../schemas/manifest.js";
 
 export interface WriteNotionOptions {
   client: NotionClient;
@@ -23,6 +25,9 @@ export interface WriteNotionOptions {
   parentEnglishPageId?: string;
   targetPageId?: string;
   translatedBlocks: NotionBlockList;
+  assets?: PageAsset[];
+  section?: string;
+  assetBaseUrl?: string;
   force?: boolean;
 }
 
@@ -46,7 +51,14 @@ const SKIP_BLOCK_TYPES = new Set([
  * Strips read-only metadata fields, converts Notion S3 images to external URLs,
  * and nests table rows and container children from the children map.
  */
-export function prepareBlocksForNotion(blockList: NotionBlockList): Record<string, unknown>[] {
+export function prepareBlocksForNotion(
+  blockList: NotionBlockList,
+  options: {
+    assets?: PageAsset[];
+    section?: string;
+    assetBaseUrl?: string;
+  } = {},
+): Record<string, unknown>[] {
   const childrenMap = blockList.children || {};
 
   function cleanBlock(block: NotionBlock): Record<string, unknown> | null {
@@ -104,11 +116,44 @@ export function prepareBlocksForNotion(blockList: NotionBlockList): Record<strin
         external?: { url?: string };
         caption?: unknown[];
       };
-      if (img.type === "file" && img.file?.url) {
+
+      let externalUrl = img.external?.url;
+
+      // If missing or pointing to Notion's private/temporary S3, resolve to permanent public URL
+      if ((!externalUrl || externalUrl.includes("prod-files-secure.s3")) && img.file?.url) {
+        const fileUrlPath = img.file.url.split("?")[0];
+        const matchedAsset = options.assets?.find((a) => {
+          const origPath = a.original_url.split("?")[0];
+          return (
+            fileUrlPath === origPath ||
+            fileUrlPath.endsWith(origPath) ||
+            origPath.endsWith(fileUrlPath) ||
+            fileUrlPath.split("/").pop() === origPath.split("/").pop()
+          );
+        });
+
+        if (matchedAsset) {
+          const filename = matchedAsset.r2_key.replace(/^assets\//, "");
+          const baseUrl =
+            options.assetBaseUrl ||
+            process.env.PUBLIC_ASSET_BASE_URL ||
+            "https://raw.githubusercontent.com/digidem/comapeo-docs/content";
+          const sectionDir = options.section ? toSectionDir(options.section) : null;
+          externalUrl = sectionDir
+            ? `${baseUrl}/docs/${sectionDir}/assets/${filename}`
+            : `${baseUrl}/docs/assets/${filename}`;
+        } else {
+          externalUrl = img.file.url;
+        }
+      }
+
+      if (externalUrl) {
         cleaned.image = {
           type: "external",
-          external: { url: img.file.url },
-          ...(img.caption ? { caption: img.caption } : {}),
+          external: { url: externalUrl },
+          ...(img.caption && Array.isArray(img.caption) && img.caption.length > 0
+            ? { caption: sanitizeRichText(img.caption as Array<Record<string, unknown>>) }
+            : {}),
         };
         return cleaned;
       }
@@ -210,7 +255,11 @@ export async function writeTranslationToNotion(
   } = options;
 
   const effectiveParentId = parentItemId;
-  const preparedBlocks = prepareBlocksForNotion(translatedBlocks);
+  const preparedBlocks = prepareBlocksForNotion(translatedBlocks, {
+    assets: options.assets,
+    section: options.section,
+    assetBaseUrl: options.assetBaseUrl,
+  });
   const localeSelectName = targetLocale === "pt" ? "PT - automated" : "ES - automated";
 
   // ── Case 1: Target Page already exists (update stub) ──
@@ -327,6 +376,25 @@ export function sanitizeRichText(
   return richText.map((item) => {
     const cloned = { ...item };
     delete cloned.href;
+
+    // Sanitize custom_emoji mentions for Notion API
+    if (cloned.type === "mention" && cloned.mention && typeof cloned.mention === "object") {
+      delete cloned.plain_text;
+      const mentionObj = cloned.mention as Record<string, unknown>;
+      if (
+        mentionObj.type === "custom_emoji" &&
+        mentionObj.custom_emoji &&
+        typeof mentionObj.custom_emoji === "object"
+      ) {
+        const emojiObj = mentionObj.custom_emoji as Record<string, unknown>;
+        if (emojiObj.id) {
+          cloned.mention = {
+            type: "custom_emoji",
+            custom_emoji: { id: emojiObj.id },
+          };
+        }
+      }
+    }
 
     if (cloned.text && typeof cloned.text === "object") {
       const textObj = { ...(cloned.text as Record<string, unknown>) };

@@ -114,11 +114,12 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
       // (asset pipeline rehosts <img src> URLs to local assets/ paths)
       if (rt.type === "mention") {
         const mention = rt.mention as
-          | { type?: string; custom_emoji?: { url?: string; name?: string } }
+          | { type?: string; custom_emoji?: { url?: string; name?: string; id?: string } }
           | undefined;
         if (mention?.type === "custom_emoji" && mention.custom_emoji?.url) {
           const emojiName = (mention.custom_emoji.name || "emoji").replace(/"/g, "&quot;");
-          return `<img src="${mention.custom_emoji.url}" alt="${emojiName}" className="emoji" style={{display:"inline",height:"1.2em",width:"auto",verticalAlign:"text-bottom",margin:"0 0.1em"}} />`;
+          const emojiIdAttr = mention.custom_emoji.id ? ` data-emoji-id="${mention.custom_emoji.id}"` : "";
+          return `<img src="${mention.custom_emoji.url}" alt="${emojiName}"${emojiIdAttr} className="emoji" style={{display:"inline",height:"1.2em",width:"auto",verticalAlign:"text-bottom",margin:"0 0.1em"}} />`;
         }
       }
 

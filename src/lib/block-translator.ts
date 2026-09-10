@@ -141,6 +141,34 @@ export function applyTranslatedBlocks(
   const visited = new Set<string>();
   const childrenMap = cloned.children ?? {};
 
+  // Build emoji map from original blocks (name/url -> emojiId)
+  const emojiMap = new Map<string, string>();
+  function collectEmojis(blocks: NotionBlock[]): void {
+    for (const b of blocks) {
+      if (!b) continue;
+      const type = b.type;
+      const content = b[type] as (BlockWithRichText & BlockWithCaption) | undefined;
+      const items = [...(content?.rich_text ?? []), ...(content?.caption ?? [])];
+      for (const item of items) {
+        if (item.type === "mention") {
+          const mention = item.mention as
+            | { type?: string; custom_emoji?: { id?: string; name?: string; url?: string } }
+            | undefined;
+          if (mention?.type === "custom_emoji" && mention.custom_emoji?.id) {
+            if (mention.custom_emoji.name) emojiMap.set(mention.custom_emoji.name, mention.custom_emoji.id);
+            if (mention.custom_emoji.url) emojiMap.set(mention.custom_emoji.url, mention.custom_emoji.id);
+          }
+        }
+      }
+    }
+  }
+  collectEmojis(blockList.results);
+  if (blockList.children) {
+    for (const children of Object.values(blockList.children)) {
+      collectEmojis(children);
+    }
+  }
+
   function updateBlock(block: NotionBlock): void {
     if (!block || visited.has(block.id)) return;
     visited.add(block.id);
@@ -154,7 +182,7 @@ export function applyTranslatedBlocks(
           const key = `${block.id}:cell:${index}`;
           const trans = translations[key];
           if (trans !== undefined) {
-            row.cells![index] = inlineMarkdownToRichText(trans);
+            row.cells![index] = inlineMarkdownToRichText(trans, emojiMap);
           }
         });
       }
@@ -163,7 +191,7 @@ export function applyTranslatedBlocks(
       if (trans !== undefined) {
         const codeContent = block.code as BlockWithCaption | undefined;
         if (codeContent) {
-          codeContent.caption = inlineMarkdownToRichText(trans);
+          codeContent.caption = inlineMarkdownToRichText(trans, emojiMap);
         }
       }
     } else if (type === "image" || type === "video" || type === "file") {
@@ -171,7 +199,7 @@ export function applyTranslatedBlocks(
       if (trans !== undefined) {
         const mediaContent = block[type] as BlockWithCaption | undefined;
         if (mediaContent) {
-          mediaContent.caption = inlineMarkdownToRichText(trans);
+          mediaContent.caption = inlineMarkdownToRichText(trans, emojiMap);
         }
       }
     } else {
@@ -179,7 +207,7 @@ export function applyTranslatedBlocks(
       if (trans !== undefined) {
         const content = block[type] as BlockWithRichText | undefined;
         if (content) {
-          content.rich_text = inlineMarkdownToRichText(trans);
+          content.rich_text = inlineMarkdownToRichText(trans, emojiMap);
         }
       }
     }

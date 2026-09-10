@@ -19,16 +19,20 @@ interface IntermediateSpan {
   code: boolean;
   strikethrough: boolean;
   url: string | null;
+  mention?: unknown;
 }
 
 /**
  * Tokenizes and parses inline markdown into Notion rich_text spans.
  */
-export function inlineMarkdownToRichText(markdown: string): NotionTextRichText[] {
+export function inlineMarkdownToRichText(
+  markdown: string,
+  emojiMap?: Map<string, string>,
+): NotionRichText[] {
   if (!markdown) return [];
 
-  const rawSpans = parseInlineSegments(markdown);
-  const result: NotionTextRichText[] = [];
+  const rawSpans = parseInlineSegments(markdown, emojiMap);
+  const result: NotionRichText[] = [];
 
   for (const span of rawSpans) {
     if (!span.content) continue;
@@ -56,7 +60,23 @@ export function inlineMarkdownToRichText(markdown: string): NotionTextRichText[]
   })];
 }
 
-function toNotionRichTextItem(content: string, meta: IntermediateSpan): NotionTextRichText {
+function toNotionRichTextItem(content: string, meta: IntermediateSpan): NotionRichText {
+  if (meta.mention) {
+    return {
+      type: "mention",
+      mention: meta.mention,
+      annotations: {
+        bold: meta.bold,
+        italic: meta.italic,
+        strikethrough: meta.strikethrough,
+        underline: false,
+        code: meta.code,
+        color: "default",
+      },
+      plain_text: content,
+    };
+  }
+
   return {
     type: "text",
     text: {
@@ -79,7 +99,7 @@ function toNotionRichTextItem(content: string, meta: IntermediateSpan): NotionTe
 /**
  * Top-level inline segment parser that handles links, code, bold, italic, and strikethrough.
  */
-function parseInlineSegments(text: string): IntermediateSpan[] {
+function parseInlineSegments(text: string, emojiMap?: Map<string, string>): IntermediateSpan[] {
   const spans: IntermediateSpan[] = [];
 
   // Match links or code blocks or formatting
@@ -91,18 +111,18 @@ function parseInlineSegments(text: string): IntermediateSpan[] {
   while ((match = linkRegex.exec(text)) !== null) {
     if (match.index > lastIndex) {
       const before = text.slice(lastIndex, match.index);
-      spans.push(...parseFormatting(before, null));
+      spans.push(...parseFormatting(before, null, emojiMap));
     }
 
     const linkText = match.groups?.linkText ?? "";
     const linkUrl = match.groups?.linkUrl ?? "";
-    spans.push(...parseFormatting(linkText, linkUrl));
+    spans.push(...parseFormatting(linkText, linkUrl, emojiMap));
 
     lastIndex = linkRegex.lastIndex;
   }
 
   if (lastIndex < text.length) {
-    spans.push(...parseFormatting(text.slice(lastIndex), null));
+    spans.push(...parseFormatting(text.slice(lastIndex), null, emojiMap));
   }
 
   return spans;
@@ -111,7 +131,11 @@ function parseInlineSegments(text: string): IntermediateSpan[] {
 /**
  * Parses inline formatting (code, bold, italic, strike) within a non-link or link segment.
  */
-function parseFormatting(text: string, linkUrl: string | null): IntermediateSpan[] {
+function parseFormatting(
+  text: string,
+  linkUrl: string | null,
+  emojiMap?: Map<string, string>,
+): IntermediateSpan[] {
   const result: IntermediateSpan[] = [];
 
   const tokenRegex = /(?<html><img\b[^>]*\/?>|<br\s*\/?>)|(?<code>`[^`]+`)|(?<boldItalic>\*\*\*[^*]+\*\*\*)|(?<bold>\*\*[^*]+\*\*)|(?<italic>\*[^*]+\*|_[^_]+_)|(?<strike>~~[^~]+~~)/g;
@@ -134,6 +158,39 @@ function parseFormatting(text: string, linkUrl: string | null): IntermediateSpan
 
     const matchedStr = match[0];
     if (match.groups?.html) {
+      if (matchedStr.startsWith("<img")) {
+        const isEmoji = /className=["']emoji["']/.test(matchedStr);
+        if (isEmoji) {
+          const idMatch = matchedStr.match(/data-emoji-id=["']([^"']+)["']/);
+          const altMatch = matchedStr.match(/alt=["']([^"']*)["']/);
+          const srcMatch = matchedStr.match(/src=["']([^"']*)["']/);
+          const alt = altMatch ? altMatch[1] : "";
+          const src = srcMatch ? srcMatch[1] : "";
+
+          const emojiId = idMatch?.[1] || (emojiMap && (emojiMap.get(alt) || emojiMap.get(src)));
+          if (emojiId) {
+            result.push({
+              content: alt ? `:${alt}:` : ":emoji:",
+              bold: false,
+              italic: false,
+              code: false,
+              strikethrough: false,
+              url: linkUrl,
+              mention: {
+                type: "custom_emoji",
+                custom_emoji: {
+                  id: emojiId,
+                  ...(src ? { url: src } : {}),
+                  ...(alt ? { name: alt } : {}),
+                },
+              },
+            });
+            lastIndex = tokenRegex.lastIndex;
+            continue;
+          }
+        }
+      }
+
       result.push({
         content: matchedStr,
         bold: false,
