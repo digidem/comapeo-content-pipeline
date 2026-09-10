@@ -307,6 +307,63 @@ describe("writeTranslationToNotion", () => {
     expect(createArgs.children).toHaveLength(1);
   });
 
+  it("uses parentItemId as relation when creating a new page as a sibling", async () => {
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "sibling-page-id",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Título em Português",
+      parentItemId: "container-parent-row-id",
+      parentEnglishPageId: "en-child-id",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    const createArgs = vi.mocked(mockClient.createPage).mock.calls[0][0];
+    expect(createArgs.properties["Parent item"]).toEqual({
+      relation: [{ id: "container-parent-row-id" }],
+    });
+  });
+
+  it("uses parentItemId as relation when updating an existing stub", async () => {
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "stub-page-id",
+      properties: {
+        "Publish Status": { select: { name: "Automated translations generated" } },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [],
+      children: {},
+    });
+
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "stub-page-id",
+      object: "page",
+    } as unknown as NotionPage);
+
+    await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Título em Português",
+      parentItemId: "container-parent-row-id",
+      targetPageId: "stub-page-id",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    const updateArgs = vi.mocked(mockClient.updatePage).mock.calls[0];
+    expect(updateArgs[1].properties["Parent item"]).toEqual({
+      relation: [{ id: "container-parent-row-id" }],
+    });
+  });
+
   it("updates existing stub page when safe (empty page)", async () => {
     vi.mocked(mockClient.getPage).mockResolvedValueOnce({
       id: "stub-page-id",

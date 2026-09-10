@@ -119,6 +119,7 @@ export interface PageReport {
   slug: string;
   title: string;
   section: string;
+  parentId?: string;
   present: string[];
   missing: string[];
   english_content: string[];
@@ -244,6 +245,7 @@ export function buildReport(opts: ReportOptions = {}): TranslationReport {
       slug: rep.canonicalSlug,
       title: rep.title,
       section: rep.canonicalSection,
+      parentId: rep.parentId,
       present,
       missing,
       english_content: englishContent,

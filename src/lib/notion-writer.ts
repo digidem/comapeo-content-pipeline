@@ -15,7 +15,12 @@ export interface WriteNotionOptions {
   databaseId: string;
   targetLocale: "pt" | "es";
   targetTitle: string;
-  parentEnglishPageId: string;
+  /**
+   * The container/parent row in Notion under which the translation should live as a sibling.
+   * If not provided, falls back to parentEnglishPageId.
+   */
+  parentItemId?: string;
+  parentEnglishPageId?: string;
   targetPageId?: string;
   translatedBlocks: NotionBlockList;
   force?: boolean;
@@ -197,12 +202,14 @@ export async function writeTranslationToNotion(
     databaseId,
     targetLocale,
     targetTitle,
+    parentItemId,
     parentEnglishPageId,
     targetPageId,
     translatedBlocks,
     force = false,
   } = options;
 
+  const effectiveParentId = parentItemId || parentEnglishPageId;
   const preparedBlocks = prepareBlocksForNotion(translatedBlocks);
   const localeSelectName = targetLocale === "pt" ? "PT - automated" : "ES - automated";
 
@@ -234,21 +241,26 @@ export async function writeTranslationToNotion(
     }
 
     // Update page properties
-    await client.updatePage(targetPageId, {
-      properties: {
-        [NOTION_PROPERTIES.TITLE]: {
-          title: [{ type: "text", text: { content: targetTitle } }],
-        },
-        [NOTION_PROPERTIES.LANGUAGE]: {
-          select: { name: localeSelectName },
-        },
-        [NOTION_PROPERTIES.PUBLISH_STATUS]: {
-          select: { name: "Automated translations generated" },
-        },
-        [NOTION_PROPERTIES.PARENT_ITEM]: {
-          relation: [{ id: parentEnglishPageId }],
-        },
+    const updateProperties: Record<string, unknown> = {
+      [NOTION_PROPERTIES.TITLE]: {
+        title: [{ type: "text", text: { content: targetTitle } }],
       },
+      [NOTION_PROPERTIES.LANGUAGE]: {
+        select: { name: localeSelectName },
+      },
+      [NOTION_PROPERTIES.PUBLISH_STATUS]: {
+        select: { name: "Automated translations generated" },
+      },
+    };
+
+    if (effectiveParentId) {
+      updateProperties[NOTION_PROPERTIES.PARENT_ITEM] = {
+        relation: [{ id: effectiveParentId }],
+      };
+    }
+
+    await client.updatePage(targetPageId, {
+      properties: updateProperties,
     });
 
     // Append translated blocks
@@ -279,9 +291,13 @@ export async function writeTranslationToNotion(
       [NOTION_PROPERTIES.PUBLISH_STATUS]: {
         select: { name: "Automated translations generated" },
       },
-      [NOTION_PROPERTIES.PARENT_ITEM]: {
-        relation: [{ id: parentEnglishPageId }],
-      },
+      ...(effectiveParentId
+        ? {
+            [NOTION_PROPERTIES.PARENT_ITEM]: {
+              relation: [{ id: effectiveParentId }],
+            },
+          }
+        : {}),
       [NOTION_PROPERTIES.ELEMENT_TYPE]: {
         select: { name: "Page" },
       },

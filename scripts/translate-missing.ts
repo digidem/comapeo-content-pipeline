@@ -302,11 +302,20 @@ async function main() {
       if (writeNotion && client && databaseId) {
         const stubId = page.locales[locale]?.page_id;
         console.log(`${progress} [Notion] Writing translation to Notion database...`);
+
+        // Resolve Container Parent ID so translations are siblings under the container row
+        const containerParentId =
+          page.parentId ||
+          (enMetadata?.properties?.["Parent item"] as { relation?: Array<{ id: string }> } | undefined)
+            ?.relation?.[0]?.id ||
+          enPageId;
+
         const notionRes = await writeTranslationToNotion({
           client,
           databaseId,
           targetLocale: locale,
           targetTitle: result.title,
+          parentItemId: containerParentId,
           parentEnglishPageId: enPageId,
           targetPageId: stubId,
           translatedBlocks: result.translatedBlocks,
