@@ -30,6 +30,7 @@ export interface TranslatePageResult {
   targetLocale: string;
   targetPageId: string;
   title: string;
+  markdownBody: string;
   translatedMd: string;
   translatedBlocks: NotionBlockList;
   translatedMetadata: PageMetadata;
@@ -111,6 +112,7 @@ export async function translatePageContent(
     targetLocale,
     targetPageId,
     title: translatedTitle,
+    markdownBody,
     translatedMd,
     translatedBlocks,
     translatedMetadata,

@@ -283,7 +283,7 @@ export async function writeTranslationToNotion(
         relation: [{ id: parentEnglishPageId }],
       },
       [NOTION_PROPERTIES.ELEMENT_TYPE]: {
-        select: { name: "page" },
+        select: { name: "Page" },
       },
     },
     children: firstChunk,

@@ -12,7 +12,7 @@
  *   bun scripts/translate-missing.ts --apply --page <slug-or-id>
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { parseArgs } from "./lib/args.js";
 import { buildReport, type PageReport } from "./missing-translations.js";
@@ -22,6 +22,7 @@ import { extractTranslatableBlocks } from "../src/lib/block-translator.js";
 import { translatePageContent } from "../src/lib/page-translator.js";
 import { NotionClient } from "../src/lib/notion-client.js";
 import { writeTranslationToNotion } from "../src/lib/notion-writer.js";
+import { buildFrontmatter, serializeDoc } from "../src/lib/frontmatter.js";
 import type { NotionBlockList } from "../src/lib/notion-converter.js";
 import type { PageMetadata } from "../src/schemas/metadata.js";
 
@@ -172,7 +173,8 @@ async function main() {
 
   for (let i = 0; i < queue.length; i++) {
     const target = queue[i];
-    const { page, locale, enPageId, targetPageId } = target;
+    const { page, locale, enPageId } = target;
+    let { targetPageId } = target;
     const progress = `[${i + 1}/${queue.length}]`;
 
     // A. Load English Blocks
@@ -313,6 +315,26 @@ async function main() {
           console.log(
             `${progress} [Notion] ✓ ${notionRes.action === "created" ? "Created new page" : "Updated stub"} [${notionRes.pageId}]`,
           );
+          if (notionRes.action === "created" && notionRes.pageId && notionRes.pageId !== targetPageId) {
+            const newId = notionRes.pageId;
+            result.translatedMetadata.page_id = newId;
+            const updatedFrontmatter = buildFrontmatter(result.translatedMetadata);
+            const updatedMd = serializeDoc(updatedFrontmatter, result.markdownBody);
+
+            if (existsSync(outMdPath)) unlinkSync(outMdPath);
+            if (existsSync(outMetaPath)) unlinkSync(outMetaPath);
+            if (existsSync(outBlocksPath)) unlinkSync(outBlocksPath);
+
+            writeFileSync(join(inputDir, `${newId}.md`), updatedMd, "utf8");
+            writeFileSync(join(inputDir, `${newId}.metadata.json`), JSON.stringify(result.translatedMetadata, null, 2), "utf8");
+            writeFileSync(join(inputDir, `${newId}.raw-blocks.json`), JSON.stringify(result.translatedBlocks, null, 2), "utf8");
+
+            if (outputDir) {
+              const docDest = join(outputDir, page.paths[locale]);
+              writeFileSync(docDest, updatedMd, "utf8");
+            }
+            targetPageId = newId;
+          }
         } else {
           console.warn(`${progress} [Notion] ⚠ Skipped write-back: ${notionRes.reason}`);
         }
