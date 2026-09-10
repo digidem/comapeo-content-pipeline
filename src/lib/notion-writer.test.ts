@@ -301,9 +301,7 @@ describe("writeTranslationToNotion", () => {
     expect(createArgs.properties["Publish Status"]).toEqual({
       select: { name: "Automated translations generated" },
     });
-    expect(createArgs.properties["Parent item"]).toEqual({
-      relation: [{ id: "en-parent-id" }],
-    });
+    expect(createArgs.properties["Parent item"]).toBeUndefined();
     expect(createArgs.children).toHaveLength(1);
   });
 

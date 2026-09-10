@@ -307,8 +307,7 @@ async function main() {
         const containerParentId =
           page.parentId ||
           (enMetadata?.properties?.["Parent item"] as { relation?: Array<{ id: string }> } | undefined)
-            ?.relation?.[0]?.id ||
-          enPageId;
+            ?.relation?.[0]?.id;
 
         const notionRes = await writeTranslationToNotion({
           client,

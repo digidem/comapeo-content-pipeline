@@ -209,7 +209,7 @@ export async function writeTranslationToNotion(
     force = false,
   } = options;
 
-  const effectiveParentId = parentItemId || parentEnglishPageId;
+  const effectiveParentId = parentItemId;
   const preparedBlocks = prepareBlocksForNotion(translatedBlocks);
   const localeSelectName = targetLocale === "pt" ? "PT - automated" : "ES - automated";
 
