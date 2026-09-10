@@ -118,21 +118,36 @@ export function prepareBlocksForNotion(blockList: NotionBlockList): Record<strin
  * Determines whether an existing Notion page is an empty or unpopulated stub.
  */
 export function isStubPage(
-  page: NotionPage,
+  _page: NotionPage,
   blocks: { results: NotionBlock[]; children?: Record<string, NotionBlock[]> },
 ): boolean {
   if (!blocks.results || blocks.results.length === 0) {
     return true;
   }
 
-  // If there is only 1 block, check if it matches common stub placeholders
-  if (blocks.results.length === 1) {
-    const b = blocks.results[0];
+  // Concatenate all text across all blocks in the page
+  const allText: string[] = [];
+  for (const b of blocks.results) {
     const payload = (b[b.type] as { rich_text?: Array<{ plain_text?: string }> }) || {};
-    const text = (payload.rich_text || []).map((r) => r.plain_text || "").join(" ").trim();
-    if (!text || isStubBody(text) || /\[Insert content here\]/i.test(text) || /Work in progress/i.test(text)) {
-      return true;
+    if (payload.rich_text) {
+      const line = payload.rich_text.map((r) => r.plain_text || "").join("");
+      if (line.trim().length > 0) {
+        allText.push(line.trim());
+      }
     }
+  }
+
+  const combinedText = allText.join("\n").trim();
+  if (combinedText.length === 0) {
+    return true;
+  }
+
+  if (isStubBody(combinedText)) {
+    return true;
+  }
+
+  if (/^(\*\*Work in progress\*\*|Work in progress)[\s\S]*$/i.test(combinedText)) {
+    return true;
   }
 
   return false;
