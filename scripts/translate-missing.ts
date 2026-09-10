@@ -21,6 +21,7 @@ import { AITranslator } from "../src/lib/ai-translator.js";
 import { extractTranslatableBlocks } from "../src/lib/block-translator.js";
 import { translatePageContent } from "../src/lib/page-translator.js";
 import { NotionClient } from "../src/lib/notion-client.js";
+import { writeTranslationToNotion } from "../src/lib/notion-writer.js";
 import type { NotionBlockList } from "../src/lib/notion-converter.js";
 import type { PageMetadata } from "../src/schemas/metadata.js";
 
@@ -38,6 +39,9 @@ async function main() {
   const apply = args.apply === "true";
   const dryRun = args["dry-run"] === "true" || !apply;
   const includeDrafts = args.all === "true";
+  const writeNotion = args["write-notion"] === "true";
+  const force = args.force === "true";
+  const databaseId = args["database-id"] || process.env.NOTION_DATABASE_ID;
   const targetLocaleArg = args.locale as "pt" | "es" | undefined;
   const pageFilter = args.page;
   const limit = args.limit ? parseInt(args.limit, 10) : Infinity;
@@ -51,11 +55,13 @@ async function main() {
   }
 
   console.log(`=== CoMapeo AI Translation Generator ===`);
-  console.log(`Mode:       ${dryRun ? "DRY RUN (preview only)" : "APPLY (writing changes)"}`);
-  if (targetLocaleArg) console.log(`Locale:     ${targetLocaleArg}`);
-  if (pageFilter) console.log(`Filter:     ${pageFilter}`);
-  if (Number.isFinite(limit)) console.log(`Limit:      ${limit}`);
-  console.log(`Input:      ${input}`);
+  console.log(`Mode:         ${dryRun ? "DRY RUN (preview only)" : "APPLY (writing changes)"}`);
+  if (writeNotion) console.log(`Write Notion: ENABLED (target database: ${databaseId || "not set"})`);
+  if (force) console.log(`Force:        ENABLED (override human-edit safety lock)`);
+  if (targetLocaleArg) console.log(`Locale:       ${targetLocaleArg}`);
+  if (pageFilter) console.log(`Filter:       ${pageFilter}`);
+  if (Number.isFinite(limit)) console.log(`Limit:        ${limit}`);
+  console.log(`Input:        ${input}`);
   console.log(``);
 
   // 1. Load Glossary
@@ -135,6 +141,17 @@ async function main() {
     console.error("Error: TRANSLATION_API_KEY or POOLSIDE_API_KEY is required to generate translations with --apply.");
     console.error("Set TRANSLATION_API_KEY in environment or pass --api-key <key>.");
     process.exit(1);
+  }
+
+  if (writeNotion && !dryRun) {
+    if (!notionToken) {
+      console.error("Error: NOTION_TOKEN or NOTION_API_KEY is required to write back to Notion with --write-notion.");
+      process.exit(1);
+    }
+    if (!databaseId) {
+      console.error("Error: NOTION_DATABASE_ID is required to write back to Notion with --write-notion.");
+      process.exit(1);
+    }
   }
 
   const translator = new AITranslator({
@@ -234,6 +251,10 @@ async function main() {
       console.log(`    Target ID:    ${targetPageId}`);
       console.log(`    Doc Path:     ${page.paths[locale]}`);
       console.log(`    Blocks:       ${translatable.length} translatable segments`);
+      if (writeNotion) {
+        const stubId = page.locales[locale]?.page_id;
+        console.log(`    Notion:       Would ${stubId ? `update stub ${stubId}` : "create new page in Notion DB"}`);
+      }
       if (translatable.length > 0) {
         const preview = translatable[0].text.slice(0, 70).replace(/\n/g, " ");
         console.log(`    Sample:       "${preview}..."`);
@@ -271,6 +292,30 @@ async function main() {
         const docDest = join(outputDir, page.paths[locale]);
         mkdirSync(dirname(docDest), { recursive: true });
         writeFileSync(docDest, result.translatedMd, "utf8");
+      }
+
+      // Optional Notion Write-Back
+      if (writeNotion && client && databaseId) {
+        const stubId = page.locales[locale]?.page_id;
+        console.log(`${progress} [Notion] Writing translation to Notion database...`);
+        const notionRes = await writeTranslationToNotion({
+          client,
+          databaseId,
+          targetLocale: locale,
+          targetTitle: result.title,
+          parentEnglishPageId: enPageId,
+          targetPageId: stubId,
+          translatedBlocks: result.translatedBlocks,
+          force,
+        });
+
+        if (notionRes.written) {
+          console.log(
+            `${progress} [Notion] ✓ ${notionRes.action === "created" ? "Created new page" : "Updated stub"} [${notionRes.pageId}]`,
+          );
+        } else {
+          console.warn(`${progress} [Notion] ⚠ Skipped write-back: ${notionRes.reason}`);
+        }
       }
 
       console.log(

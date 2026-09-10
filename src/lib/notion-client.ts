@@ -463,6 +463,75 @@ export class NotionClient {
 
     return all;
   }
+
+  /**
+   * Create a new page in a Notion database or as a child of another page.
+   */
+  async createPage(params: {
+    parent: { database_id: string } | { page_id: string };
+    properties: Record<string, unknown>;
+    children?: unknown[];
+  }): Promise<NotionPage> {
+    return this.request<NotionPage>("/pages", {
+      method: "POST",
+      body: params,
+    });
+  }
+
+  /**
+   * Update page properties or archive status.
+   */
+  async updatePage(
+    pageId: string,
+    params: {
+      properties?: Record<string, unknown>;
+      archived?: boolean;
+    },
+  ): Promise<NotionPage> {
+    return this.request<NotionPage>(`/pages/${pageId}`, {
+      method: "PATCH",
+      body: params,
+    });
+  }
+
+  /**
+   * Append block children to an existing block or page.
+   * Chunks requests automatically into batches of 100 blocks (Notion API max).
+   */
+  async appendBlockChildren(
+    blockId: string,
+    children: unknown[],
+  ): Promise<NotionBlockResponse> {
+    const allResults: NotionBlock[] = [];
+    const chunkSize = 100;
+
+    for (let i = 0; i < children.length; i += chunkSize) {
+      const chunk = children.slice(i, i + chunkSize);
+      const resp = await this.request<NotionBlockResponse>(`/blocks/${blockId}/children`, {
+        method: "PATCH",
+        body: { children: chunk },
+      });
+      if (resp.results) {
+        allResults.push(...resp.results);
+      }
+    }
+
+    return {
+      object: "list",
+      results: allResults,
+      next_cursor: null,
+      has_more: false,
+    };
+  }
+
+  /**
+   * Delete (archive) a block by ID.
+   */
+  async deleteBlock(blockId: string): Promise<{ object: "block"; id: string; archived: true }> {
+    return this.request<{ object: "block"; id: string; archived: true }>(`/blocks/${blockId}`, {
+      method: "DELETE",
+    });
+  }
 }
 
 function sleep(ms: number): Promise<void> {
