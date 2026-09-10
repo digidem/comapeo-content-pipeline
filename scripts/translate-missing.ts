@@ -79,7 +79,7 @@ async function main() {
   const report = buildReport({
     input,
     inputDir,
-    onlyMissing: true,
+    onlyMissing: !force && !pageFilter,
     includeDrafts,
   });
 
@@ -109,7 +109,7 @@ async function main() {
     for (const loc of localesToProcess) {
       const isMissing = p.missing.includes(loc);
       const isStub = p.english_content.includes(loc);
-      if (isMissing || isStub) {
+      if (isMissing || isStub || force) {
         const stubPageId = p.locales[loc]?.page_id;
         targets.push({
           page: p,

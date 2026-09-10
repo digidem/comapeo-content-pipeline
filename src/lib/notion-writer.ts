@@ -58,6 +58,39 @@ export function prepareBlocksForNotion(blockList: NotionBlockList): Record<strin
     const typePayload = (block[block.type] as Record<string, unknown>) || {};
     const cleanedPayload: Record<string, unknown> = { ...typePayload };
 
+    // Strip null properties from block payload (e.g. icon: null, which Notion rejects on create/append)
+    for (const [key, val] of Object.entries(cleanedPayload)) {
+      if (val === null) {
+        delete cleanedPayload[key];
+      }
+    }
+
+    // icon is only valid on callout blocks; strip from any other block type
+    if (block.type !== "callout" && "icon" in cleanedPayload) {
+      delete cleanedPayload.icon;
+    }
+
+    // Sanitize rich_text arrays (ensures absolute link URLs and removes read-only href)
+    if (Array.isArray(cleanedPayload.rich_text)) {
+      cleanedPayload.rich_text = sanitizeRichText(
+        cleanedPayload.rich_text as Array<Record<string, unknown>>,
+      );
+    }
+
+    // Sanitize media captions
+    if (Array.isArray(cleanedPayload.caption)) {
+      cleanedPayload.caption = sanitizeRichText(
+        cleanedPayload.caption as Array<Record<string, unknown>>,
+      );
+    }
+
+    // Sanitize table_row cells
+    if (block.type === "table_row" && Array.isArray(cleanedPayload.cells)) {
+      cleanedPayload.cells = (
+        cleanedPayload.cells as Array<Array<Record<string, unknown>>>
+      ).map((cell) => (Array.isArray(cell) ? sanitizeRichText(cell) : cell));
+    }
+
     // Handle Image Blocks: Convert S3 internal file to external URL
     if (block.type === "image") {
       const img = typePayload as {
@@ -265,4 +298,41 @@ export async function writeTranslationToNotion(
     action: "created",
     pageId: newPage.id,
   };
+}
+
+/**
+ * Sanitizes rich_text items for Notion API create/append calls.
+ * Ensures relative links (e.g. /docs/...) are converted to absolute URLs,
+ * and strips read-only fields like href.
+ */
+export function sanitizeRichText(
+  richText: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  return richText.map((item) => {
+    const cloned = { ...item };
+    delete cloned.href;
+
+    if (cloned.text && typeof cloned.text === "object") {
+      const textObj = { ...(cloned.text as Record<string, unknown>) };
+      if (textObj.link && typeof textObj.link === "object") {
+        const linkObj = { ...(textObj.link as Record<string, unknown>) };
+        const rawUrl = typeof linkObj.url === "string" ? linkObj.url.trim() : "";
+        if (!rawUrl) {
+          textObj.link = null;
+        } else if (rawUrl.startsWith("/")) {
+          linkObj.url = `https://docs.comapeo.app${rawUrl}`;
+          textObj.link = linkObj;
+        } else if (rawUrl.startsWith("#")) {
+          linkObj.url = `https://docs.comapeo.app/${rawUrl}`;
+          textObj.link = linkObj;
+        } else if (!/^(https?|mailto):/i.test(rawUrl)) {
+          linkObj.url = `https://${rawUrl}`;
+          textObj.link = linkObj;
+        }
+      }
+      cloned.text = textObj;
+    }
+
+    return cloned;
+  });
 }

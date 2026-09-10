@@ -41,6 +41,61 @@ describe("prepareBlocksForNotion", () => {
     expect((prepared[0] as Record<string, unknown>).parent).toBeUndefined();
   });
 
+  it("strips null properties like icon: null from block payloads", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "p-1",
+          type: "paragraph",
+          paragraph: {
+            rich_text: [{ type: "text", text: { content: "Text" } }],
+            icon: null,
+            color: "default",
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const prepared = prepareBlocksForNotion(rawBlocks);
+    expect((prepared[0] as { paragraph: Record<string, unknown> }).paragraph.icon).toBeUndefined();
+  });
+
+  it("converts relative link URLs in rich_text to absolute URLs for Notion API compatibility", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "p-1",
+          type: "paragraph",
+          paragraph: {
+            rich_text: [
+              {
+                type: "text",
+                text: {
+                  content: "Link Text",
+                  link: { url: "/docs/planning-and-preparing" },
+                },
+                href: "/docs/planning-and-preparing",
+              },
+            ],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const prepared = prepareBlocksForNotion(rawBlocks);
+    const p = prepared[0] as {
+      paragraph: { rich_text: Array<{ text: { link: { url: string } }; href?: string }> };
+    };
+    expect(p.paragraph.rich_text[0].text.link.url).toBe(
+      "https://docs.comapeo.app/docs/planning-and-preparing",
+    );
+    expect(p.paragraph.rich_text[0].href).toBeUndefined();
+  });
+
   it("converts Notion S3 file image blocks to external image blocks", () => {
     const rawBlocks: NotionBlockList = {
       object: "list",
