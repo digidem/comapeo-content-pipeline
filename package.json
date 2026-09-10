@@ -15,6 +15,7 @@
     "lint:fix": "eslint src scripts --fix",
     "pipeline": "bun src/cli/index.ts",
     "translations:missing": "bun scripts/missing-translations.ts --all",
+    "translations:generate": "bun scripts/translate-missing.ts",
     "translations:report": "bun scripts/translation-report-html.ts",
     "translations:check": "bun scripts/translation-report-html.ts --open"
   },
