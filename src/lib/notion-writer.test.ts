@@ -168,6 +168,27 @@ describe("prepareBlocksForNotion", () => {
       },
     });
   });
+
+  it("skips unsupported and structural blocks like child_page and child_database", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        { object: "block", id: "cp-1", type: "child_page", child_page: { title: "Subpage" } } as unknown as NotionBlock,
+        { object: "block", id: "cd-1", type: "child_database", child_database: { title: "DB" } } as unknown as NotionBlock,
+        { object: "block", id: "u-1", type: "unsupported" } as unknown as NotionBlock,
+        {
+          object: "block",
+          id: "p-1",
+          type: "paragraph",
+          paragraph: { rich_text: [{ type: "text", text: { content: "Valid" } }] },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const prepared = prepareBlocksForNotion(rawBlocks);
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0].type).toBe("paragraph");
+  });
 });
 
 describe("writeTranslationToNotion", () => {
@@ -419,5 +440,151 @@ describe("writeTranslationToNotion", () => {
     expect(result.written).toBe(true);
     expect(result.action).toBe("updated");
     expect(mockClient.deleteBlock).toHaveBeenCalledWith("b1");
+  });
+
+  it("chunks children during page creation when blocks exceed 100", async () => {
+    const manyBlocks: NotionBlockList = {
+      object: "list",
+      results: Array.from({ length: 130 }, (_, i) => ({
+        object: "block",
+        id: `block-${i}`,
+        type: "paragraph",
+        has_children: false,
+        paragraph: { rich_text: [{ type: "text", text: { content: `Paragraph ${i}` } }] },
+      })) as unknown as NotionBlock[],
+    };
+
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "big-page-id",
+      object: "page",
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Big Page",
+      parentEnglishPageId: "en-parent-id",
+      translatedBlocks: manyBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(mockClient.createPage).toHaveBeenCalledTimes(1);
+    const createArgs = vi.mocked(mockClient.createPage).mock.calls[0][0];
+    expect(createArgs.children).toHaveLength(100);
+
+    expect(mockClient.appendBlockChildren).toHaveBeenCalledTimes(1);
+    const [appendId, appendBlocks] = vi.mocked(mockClient.appendBlockChildren).mock.calls[0];
+    expect(appendId).toBe("big-page-id");
+    expect(appendBlocks).toHaveLength(30);
+  });
+
+  it("safely re-translates a page when Publish Status is Automated translations generated", async () => {
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "automated-stub-id",
+      properties: {
+        "Publish Status": { select: { name: "Automated translations generated" } },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [
+        { id: "old-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+        { id: "old-2", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      children: {},
+    });
+
+    vi.mocked(mockClient.deleteBlock).mockResolvedValue({
+      id: "del",
+      object: "block",
+      archived: true,
+    });
+
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "automated-stub-id",
+      object: "page",
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Re-translated Title",
+      parentEnglishPageId: "en-parent-id",
+      targetPageId: "automated-stub-id",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("updated");
+    expect(mockClient.deleteBlock).toHaveBeenCalledTimes(2);
+  });
+
+  it("detects placeholder stub text like [Insert content here] as safe to overwrite", async () => {
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "stub-with-placeholder",
+      properties: {
+        "Publish Status": { select: { name: "Draft published" } },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [
+        {
+          id: "placeholder-block",
+          type: "paragraph",
+          object: "block",
+          paragraph: { rich_text: [{ plain_text: "[Insert content here]" }] },
+        } as unknown as NotionBlock,
+      ],
+      children: {},
+    });
+
+    vi.mocked(mockClient.deleteBlock).mockResolvedValueOnce({
+      id: "placeholder-block",
+      object: "block",
+      archived: true,
+    });
+
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "stub-with-placeholder",
+      object: "page",
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Novo Conteúdo",
+      parentEnglishPageId: "en-parent-id",
+      targetPageId: "stub-with-placeholder",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("updated");
+    expect(mockClient.deleteBlock).toHaveBeenCalledWith("placeholder-block");
   });
 });
