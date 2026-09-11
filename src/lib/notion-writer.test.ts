@@ -540,6 +540,40 @@ describe("prepareBlocksForNotion", () => {
     });
   });
 
+  it("omits image block with inline data URI when no matching rehosted asset is found", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-unmatched-data",
+          type: "image",
+          image: {
+            type: "file",
+            file: {
+              url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+            },
+          },
+        } as unknown as NotionBlock,
+        {
+          object: "block",
+          id: "p-after",
+          type: "paragraph",
+          paragraph: { rich_text: [{ type: "text", text: { content: "Valid block following image" } }] },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const prepared = prepareBlocksForNotion(rawBlocks, {
+      assets: [],
+      section: "60-Exchanging Observations",
+    });
+
+    // The data URI image should be omitted so Notion does not reject the payload
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0].type).toBe("paragraph");
+  });
+
   it("embeds table_row children inside table blocks", () => {
     const rawBlocks: NotionBlockList = {
       object: "list",

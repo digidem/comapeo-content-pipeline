@@ -313,7 +313,6 @@ export function extractEquationsFromText(text: string): ParsedEquation[] {
 export function extractEquationsFromRichText(items?: NotionRichText[]): ParsedEquation[] {
   if (!items || items.length === 0) return [];
   const equations: ParsedEquation[] = [];
-  const seen = new Set<string>();
 
   for (const item of items) {
     if (item.type === "equation") {
@@ -322,68 +321,31 @@ export function extractEquationsFromRichText(items?: NotionRichText[]): ParsedEq
         item.plain_text ??
         ""
       ).trim();
-      if (expr && !seen.has(expr)) {
-        seen.add(expr);
+      if (expr) {
         equations.push({
           raw: `$${expr}$`,
           expression: expr,
           isDisplay: false,
         });
       }
-    }
-  }
-
-  // Also check if richTextToMarkdown serialized equations into $...$ or $$...$$
-  const md = richTextToMarkdown(items);
-  for (const eq of extractEquationsFromText(md)) {
-    if (!seen.has(eq.expression)) {
-      seen.add(eq.expression);
-      equations.push(eq);
+    } else if (item.plain_text) {
+      for (const eq of extractEquationsFromText(item.plain_text)) {
+        equations.push(eq);
+      }
     }
   }
 
   return equations;
 }
 
-function restoreEquationInProse(prose: string, eq: ParsedEquation): string {
-  const expr = eq.expression;
-  if (!expr) return prose;
-
-  const escaped = escapeRegExp(expr);
-  const isDisplay = eq.isDisplay;
-
-
-  // Build boundary pattern to safely match un-delimited occurrences of the expression
-  const startsWithWord = /^\w/.test(expr);
-  const endsWithWord = /\w$/.test(expr);
-
-  const prefix = startsWithWord ? "(?<![\\w$])" : "(?<!\\$)";
-  const suffix = endsWithWord ? "(?![\\w$])" : "(?!\\$)";
-
-  const searchRegex = new RegExp(`${prefix}${escaped}${suffix}`, "g");
-
-  // If the expression is a single vowel stop word (e.g. 'a', 'e', 'o'),
-  // only restore if there is a single standalone occurrence to avoid corrupting articles/prepositions
-  const isSingleVowelStopWord = expr.length === 1 && /^[aeoAEIOU]$/.test(expr);
-  if (isSingleVowelStopWord) {
-    const matches = prose.match(searchRegex);
-    if (!matches || matches.length !== 1) {
-      return prose;
-    }
-  }
-
-  const delimiter = isDisplay ? `$$${expr}$$` : `$${expr}$`;
-  return prose.replace(searchRegex, delimiter);
+interface Segment {
+  text: string;
+  isProse: boolean;
 }
 
-function restoreInNonLinkText(text: string, equations: ParsedEquation[]): string {
+function collectNonLinkSegments(text: string): Segment[] {
   const NON_PROSE_REGEX =
     /(?<code>```[\s\S]*?```|`[^`\n]+`)|(?<html><[^>]+>)|(?<equationDisplay>(?<!\\)\$\$[^$\n]+?\$\$)|(?<equationInline>(?<![\w\\$])\$(?!\s)[^$\n]+?(?<![\s\\$])\$(?!\d))/g;
-
-  interface Segment {
-    text: string;
-    isProse: boolean;
-  }
 
   const segments: Segment[] = [];
   let lastIdx = 0;
@@ -410,21 +372,49 @@ function restoreInNonLinkText(text: string, equations: ParsedEquation[]): string
     });
   }
 
-  for (const eq of equations) {
-    for (const seg of segments) {
-      if (seg.isProse) {
-        seg.text = restoreEquationInProse(seg.text, eq);
-      }
+  return segments;
+}
+
+function collectAllSegments(text: string): Segment[] {
+  const segments: Segment[] = [];
+  let currentIndex = 0;
+
+  while (currentIndex < text.length) {
+    const linkMatch = findNextLink(text, currentIndex);
+    if (!linkMatch) {
+      segments.push(...collectNonLinkSegments(text.slice(currentIndex)));
+      break;
     }
+
+    if (linkMatch.linkStart > currentIndex) {
+      segments.push(...collectNonLinkSegments(text.slice(currentIndex, linkMatch.linkStart)));
+    }
+
+    if (linkMatch.isImage) {
+      // For markdown images ![alt](url), treat whole token as non-prose to preserve image syntax intact
+      segments.push({
+        text: text.slice(linkMatch.linkStart, linkMatch.linkEnd),
+        isProse: false,
+      });
+    } else {
+      // For markdown links [linkText](linkUrl), linkText can be prose, linkUrl is non-prose
+      segments.push({ text: "[", isProse: false });
+      segments.push(...collectNonLinkSegments(linkMatch.linkText));
+      segments.push({ text: `](${linkMatch.linkUrl})`, isProse: false });
+    }
+
+    currentIndex = linkMatch.linkEnd;
   }
 
-  return segments.map((s) => s.text).join("");
+  return segments;
 }
 
 /**
  * Restores dropped equation delimiters ($...$ or $$...$$) in translated text
  * if the original source contained equations and the translation dropped their delimiters.
  * Uses token/word boundary checks to prevent corrupting ordinary prose words,
+ * limits replacements strictly to the number of missing equations, protects single-letter
+ * target language words (e.g. Spanish 'y', Portuguese 'e', 'a', 'o', Spanish 'u'),
  * and preserves code spans, HTML tags, and link destinations untouched.
  */
 export function restoreEquationDelimiters(
@@ -439,30 +429,94 @@ export function restoreEquationDelimiters(
 
   if (originalEquations.length === 0) return translatedText;
 
-  let result = "";
-  let currentIndex = 0;
-
-  while (currentIndex < translatedText.length) {
-    const linkMatch = findNextLink(translatedText, currentIndex);
-    if (!linkMatch) {
-      result += restoreInNonLinkText(translatedText.slice(currentIndex), originalEquations);
-      break;
-    }
-
-    if (linkMatch.linkStart > currentIndex) {
-      result += restoreInNonLinkText(
-        translatedText.slice(currentIndex, linkMatch.linkStart),
-        originalEquations,
-      );
-    }
-
-    const restoredLinkText = restoreInNonLinkText(linkMatch.linkText, originalEquations);
-    const prefix = linkMatch.isImage ? "!" : "";
-    result += `${prefix}[${restoredLinkText}](${linkMatch.linkUrl})`;
-    currentIndex = linkMatch.linkEnd;
+  // Extract all equations that are ALREADY delimited in the translated text
+  const existingEquations = extractEquationsFromText(translatedText);
+  const existingCounts = new Map<string, number>();
+  for (const eq of existingEquations) {
+    existingCounts.set(eq.expression, (existingCounts.get(eq.expression) ?? 0) + 1);
   }
 
-  return result;
+  // Count occurrences of each equation in the original source
+  const origCounts = new Map<string, { count: number; isDisplay: boolean }>();
+  for (const eq of originalEquations) {
+    const entry = origCounts.get(eq.expression) ?? { count: 0, isDisplay: eq.isDisplay };
+    entry.count += 1;
+    origCounts.set(eq.expression, entry);
+  }
+
+  // Identify equations that actually lost delimiters
+  const equationsToRestore: Array<{ expression: string; isDisplay: boolean; needed: number }> = [];
+  for (const [expr, orig] of origCounts.entries()) {
+    const existing = existingCounts.get(expr) ?? 0;
+    const needed = orig.count - existing;
+    if (needed > 0) {
+      // Single-letter target language words / stop words (Spanish 'y', Portuguese 'e', 'a', 'o', Spanish 'u', etc.)
+      // must never be recovered from bare prose. If an LLM dropped delimiters for a single-letter word,
+      // attempting to wrap bare letters in prose will corrupt ordinary conjunctions and articles.
+      if (expr.length === 1 && /^[aeiouyAEIOUY]$/.test(expr)) {
+        continue;
+      }
+      equationsToRestore.push({
+        expression: expr,
+        isDisplay: orig.isDisplay,
+        needed,
+      });
+    }
+  }
+
+  if (equationsToRestore.length === 0) {
+    return translatedText;
+  }
+
+  // Segment translatedText across links, code blocks, HTML tags, and equations
+  const segments = collectAllSegments(translatedText);
+
+  for (const eq of equationsToRestore) {
+    const expr = eq.expression;
+    if (!expr) continue;
+
+    const escaped = escapeRegExp(expr);
+    const startsWithWord = /^\w/.test(expr);
+    const endsWithWord = /\w$/.test(expr);
+    const prefix = startsWithWord ? "(?<![\\w$])" : "(?<!\\$)";
+    const suffix = endsWithWord ? "(?![\\w$])" : "(?!\\$)";
+    const searchRegex = new RegExp(`${prefix}${escaped}${suffix}`, "g");
+
+    // Count how many standalone matches exist across all prose segments
+    let matchCount = 0;
+    for (const seg of segments) {
+      if (seg.isProse) {
+        const m = seg.text.match(searchRegex);
+        if (m) matchCount += m.length;
+      }
+    }
+
+    if (matchCount === 0) continue;
+
+    // For single-letter equations (e.g. 'x'):
+    // If the number of standalone occurrences does not exactly match the number of missing equations,
+    // it is ambiguous and could be unrelated characters or duplicate terms. Do not replace.
+    if (expr.length === 1 && matchCount !== eq.needed) {
+      continue;
+    }
+
+    // Replace at most eq.needed occurrences across the prose segments (never unbounded global replace)
+    let remainingNeeded = eq.needed;
+    const delimiter = eq.isDisplay ? `$$${expr}$$` : `$${expr}$`;
+
+    for (const seg of segments) {
+      if (!seg.isProse || remainingNeeded <= 0) continue;
+      seg.text = seg.text.replace(searchRegex, (matched) => {
+        if (remainingNeeded > 0) {
+          remainingNeeded -= 1;
+          return delimiter;
+        }
+        return matched;
+      });
+    }
+  }
+
+  return segments.map((s) => s.text).join("");
 }
 
 

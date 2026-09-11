@@ -167,6 +167,11 @@ export function prepareBlocksForNotion(
             `[notion-writer] Image at ${rawUrl} was not found in rehosted assets; omitting external block to avoid expired link.`,
           );
           return null;
+        } else if (rawUrl.startsWith("data:")) {
+          console.warn(
+            `[notion-writer] Image with inline data URI was not found in rehosted assets; omitting external block because Notion rejects data: URLs.`,
+          );
+          return null;
         } else {
           externalUrl = rawUrl;
         }
@@ -252,6 +257,13 @@ export function prepareBlocksForNotion(
         };
         return cleaned;
       }
+
+      // If the image block could not be converted to a valid external URL (e.g. data URI without rehosted asset,
+      // expired S3 link, or empty URL), omit it so page creation/append does not fail Notion API validation.
+      console.warn(
+        `[notion-writer] Omitting image block [${block.id}] because it could not be resolved to a valid external URL: ${rawUrl || "(none)"}`,
+      );
+      return null;
     }
 
     // Handle Table Blocks: embed table_row children from childrenMap

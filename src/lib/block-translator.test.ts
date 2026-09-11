@@ -943,5 +943,33 @@ describe("applyTranslatedBlocks", () => {
     const restored = restoreEquationDelimiters(translatedWithLostSecond, originalText);
     expect(restored).toBe("Primeira equação $x$ e segunda equação $x$.");
   });
+
+  it("does not wrap target language single-letter words (such as Spanish 'y') when equation delimiters are preserved", () => {
+    const originalText = "Calculate $x$ and $y$ to obtain the final total.";
+    const translatedText = "Calcula $x$ e $y$ y luego suma todos los resultados.";
+
+    const restored = restoreEquationDelimiters(translatedText, originalText);
+    // Spanish conjunction 'y' must NOT be converted to $y$
+    expect(restored).toBe("Calcula $x$ e $y$ y luego suma todos los resultados.");
+  });
+
+  it("does not wrap target language single-letter words (such as Spanish 'y') when equation delimiters were dropped", () => {
+    const originalText = "Calculate $y$ to obtain the final total.";
+    const translatedText = "Calcula y y luego suma todos los resultados.";
+
+    const restored = restoreEquationDelimiters(translatedText, originalText);
+    // Ordinary Spanish conjunctions must NOT be corrupted into equations
+    expect(restored).toBe("Calcula y y luego suma todos los resultados.");
+  });
+
+  it("does not corrupt prose when single-letter equation match count is ambiguous", () => {
+    const originalText = "Variable $x$ is defined.";
+    const translatedWithMultipleX = "Variável x e parâmetro x com valor x.";
+
+    const restored = restoreEquationDelimiters(translatedWithMultipleX, originalText);
+    // 3 occurrences of 'x' in prose with only 1 equation in source is ambiguous; do not wrap
+    expect(restored).toBe("Variável x e parâmetro x com valor x.");
+  });
 });
+
 
