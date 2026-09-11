@@ -6,7 +6,7 @@
  */
 
 import type { NotionBlock, NotionClient, NotionPage } from "./notion-client.js";
-import type { NotionBlockList } from "./notion-converter.js";
+import { extractCaptionLink, type NotionBlockList, type NotionRichText } from "./notion-converter.js";
 import { NOTION_PROPERTIES, DEAD_STATUSES, normalizeLocale } from "./notion-properties.js";
 import { mapStatus } from "./status.js";
 import { isStubBody } from "./stub-body.js";
@@ -188,20 +188,19 @@ export function prepareBlocksForNotion(
         // Notion API block creation/append schema accepts only external.url and caption.
         // It rejects unknown properties such as `image.link` or `image.external.link`.
         // To preserve clickable image destinations across write-back without failing Notion schema validation,
-        // attach the link destination to caption rich text if not already linked.
+        // attach the link destination to caption rich text.
+        // If the caption already contains a different hyperlink or no link, ensure the image destination
+        // (sanitizedLink) is preserved on the caption so it is not lost or replaced by other URLs.
         if (sanitizedLink) {
-          const hasCaptionLink = captionRichText.some(
-            (rt) =>
-              (rt.text as Record<string, unknown> | undefined)?.link ||
-              rt.href,
-          );
-          if (!hasCaptionLink) {
+          const existingCaptionLink = extractCaptionLink(captionRichText as unknown as NotionRichText[]);
+          if (existingCaptionLink !== sanitizedLink) {
             if (captionRichText.length > 0) {
               captionRichText = captionRichText.map((rt) => {
                 const cloned = { ...rt };
                 const textObj = { ...((cloned.text as Record<string, unknown>) || { content: "" }) };
                 textObj.link = { url: sanitizedLink };
                 cloned.text = textObj;
+                delete cloned.href;
                 return cloned;
               });
             } else {

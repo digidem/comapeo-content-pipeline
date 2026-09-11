@@ -206,6 +206,57 @@ describe("prepareBlocksForNotion", () => {
     });
   });
 
+  it("preserves image click destination when caption already contains a different hyperlink", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-link-diff-caption",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "external",
+            external: {
+              url: "https://example.com/images/diagram.png",
+            },
+            link: { url: "https://example.com/image-target" },
+            caption: [
+              {
+                type: "text",
+                text: {
+                  content: "Photo by Jane",
+                  link: { url: "https://unsplash.com/@jane" },
+                },
+              },
+            ],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const prepared = prepareBlocksForNotion(rawBlocks);
+    expect(prepared[0]).toEqual({
+      object: "block",
+      type: "image",
+      image: {
+        type: "external",
+        external: {
+          url: "https://example.com/images/diagram.png",
+        },
+        caption: [
+          {
+            type: "text",
+            text: {
+              content: "Photo by Jane",
+              link: { url: "https://example.com/image-target" },
+            },
+          },
+        ],
+      },
+    });
+  });
+
   it("preserves clickable links on image blocks from block.image.external.link", () => {
     const rawBlocks: NotionBlockList = {
       object: "list",

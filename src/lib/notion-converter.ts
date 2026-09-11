@@ -588,7 +588,7 @@ function convertImage(block: NotionBlock): string {
 }
 
 /** Extract the first hyperlink URL from caption rich text, if any. */
-function extractCaptionLink(caption: NotionRichText[]): string | null {
+export function extractCaptionLink(caption: NotionRichText[]): string | null {
   if (!caption || caption.length === 0) return null;
 
   for (const rt of caption) {
