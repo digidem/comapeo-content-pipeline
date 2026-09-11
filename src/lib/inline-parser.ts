@@ -53,11 +53,10 @@ const VALID_NOTION_COLORS = new Set<NotionRichText["annotations"]["color"]>([
 export function inlineMarkdownToRichText(
   markdown: string,
   emojiMap?: Map<string, string>,
-  knownEquations?: Set<string>,
 ): NotionRichText[] {
   if (!markdown) return [];
 
-  const rawSpans = parseInlineSegments(markdown, emojiMap, knownEquations);
+  const rawSpans = parseInlineSegments(markdown, emojiMap);
   const result: NotionRichText[] = [];
 
   for (const span of rawSpans) {
@@ -219,27 +218,23 @@ function findNextLink(
 /**
  * Top-level inline segment parser that handles links, code, bold, italic, and strikethrough.
  */
-function parseInlineSegments(
-  text: string,
-  emojiMap?: Map<string, string>,
-  knownEquations?: Set<string>,
-): IntermediateSpan[] {
+function parseInlineSegments(text: string, emojiMap?: Map<string, string>): IntermediateSpan[] {
   const spans: IntermediateSpan[] = [];
   let currentIndex = 0;
 
   while (currentIndex < text.length) {
     const linkMatch = findNextLink(text, currentIndex);
     if (!linkMatch) {
-      spans.push(...parseFormatting(text.slice(currentIndex), null, emojiMap, knownEquations));
+      spans.push(...parseFormatting(text.slice(currentIndex), null, emojiMap));
       break;
     }
 
     if (linkMatch.linkStart > currentIndex) {
       const before = text.slice(currentIndex, linkMatch.linkStart);
-      spans.push(...parseFormatting(before, null, emojiMap, knownEquations));
+      spans.push(...parseFormatting(before, null, emojiMap));
     }
 
-    spans.push(...parseFormatting(linkMatch.linkText, linkMatch.linkUrl, emojiMap, knownEquations));
+    spans.push(...parseFormatting(linkMatch.linkText, linkMatch.linkUrl, emojiMap));
     currentIndex = linkMatch.linkEnd;
   }
 
@@ -262,81 +257,22 @@ function parseFormatting(
   text: string,
   linkUrl: string | null,
   emojiMap?: Map<string, string>,
-  knownEquations?: Set<string>,
   ctx: FormatContext = {},
 ): IntermediateSpan[] {
   const result: IntermediateSpan[] = [];
 
   const pushPlainText = (plain: string) => {
     if (!plain) return;
-    if (!knownEquations || knownEquations.size === 0) {
-      result.push({
-        content: plain,
-        bold: !!ctx.bold,
-        italic: !!ctx.italic,
-        code: !!ctx.code,
-        strikethrough: !!ctx.strikethrough,
-        underline: !!ctx.underline,
-        color: ctx.color ?? "default",
-        url: linkUrl,
-      });
-      return;
-    }
-
-    const sortedEquations = Array.from(knownEquations).sort((a, b) => b.length - a.length);
-    let remaining = plain;
-    while (remaining.length > 0) {
-      let earliestIndex = -1;
-      let matchedEq = "";
-      for (const eq of sortedEquations) {
-        const idx = remaining.indexOf(eq);
-        if (idx !== -1 && (earliestIndex === -1 || idx < earliestIndex)) {
-          earliestIndex = idx;
-          matchedEq = eq;
-        }
-      }
-
-      if (earliestIndex === -1) {
-        result.push({
-          content: remaining,
-          bold: !!ctx.bold,
-          italic: !!ctx.italic,
-          code: !!ctx.code,
-          strikethrough: !!ctx.strikethrough,
-          underline: !!ctx.underline,
-          color: ctx.color ?? "default",
-          url: linkUrl,
-        });
-        break;
-      }
-
-      if (earliestIndex > 0) {
-        result.push({
-          content: remaining.slice(0, earliestIndex),
-          bold: !!ctx.bold,
-          italic: !!ctx.italic,
-          code: !!ctx.code,
-          strikethrough: !!ctx.strikethrough,
-          underline: !!ctx.underline,
-          color: ctx.color ?? "default",
-          url: linkUrl,
-        });
-      }
-
-      result.push({
-        content: matchedEq,
-        bold: !!ctx.bold,
-        italic: !!ctx.italic,
-        code: !!ctx.code,
-        strikethrough: !!ctx.strikethrough,
-        underline: !!ctx.underline,
-        color: ctx.color ?? "default",
-        url: linkUrl,
-        equation: { expression: matchedEq },
-      });
-
-      remaining = remaining.slice(earliestIndex + matchedEq.length);
-    }
+    result.push({
+      content: plain,
+      bold: !!ctx.bold,
+      italic: !!ctx.italic,
+      code: !!ctx.code,
+      strikethrough: !!ctx.strikethrough,
+      underline: !!ctx.underline,
+      color: ctx.color ?? "default",
+      url: linkUrl,
+    });
   };
 
   const tokenRegex =
@@ -354,7 +290,7 @@ function parseFormatting(
     if (match.groups?.underline) {
       const inner = matchedStr.slice(3, -4);
       result.push(
-        ...parseFormatting(inner, linkUrl, emojiMap, knownEquations, { ...ctx, underline: true }),
+        ...parseFormatting(inner, linkUrl, emojiMap, { ...ctx, underline: true }),
       );
     } else if (match.groups?.colorSpan) {
       const rawColor = (
@@ -371,7 +307,7 @@ function parseFormatting(
         : (ctx.color ?? "default");
       const inner = match.groups.colorSpanInner ?? "";
       result.push(
-        ...parseFormatting(inner, linkUrl, emojiMap, knownEquations, { ...ctx, color: mappedColor }),
+        ...parseFormatting(inner, linkUrl, emojiMap, { ...ctx, color: mappedColor }),
       );
     } else if (match.groups?.equationDisplay || match.groups?.equationInline) {
       const rawExpr = match.groups.equationDisplayInner || match.groups.equationInlineInner || "";
@@ -449,7 +385,7 @@ function parseFormatting(
       });
     } else if (match.groups?.boldItalic) {
       result.push(
-        ...parseFormatting(matchedStr.slice(3, -3), linkUrl, emojiMap, knownEquations, {
+        ...parseFormatting(matchedStr.slice(3, -3), linkUrl, emojiMap, {
           ...ctx,
           bold: true,
           italic: true,
@@ -457,21 +393,21 @@ function parseFormatting(
       );
     } else if (match.groups?.bold) {
       result.push(
-        ...parseFormatting(matchedStr.slice(2, -2), linkUrl, emojiMap, knownEquations, {
+        ...parseFormatting(matchedStr.slice(2, -2), linkUrl, emojiMap, {
           ...ctx,
           bold: true,
         }),
       );
     } else if (match.groups?.italic) {
       result.push(
-        ...parseFormatting(matchedStr.slice(1, -1), linkUrl, emojiMap, knownEquations, {
+        ...parseFormatting(matchedStr.slice(1, -1), linkUrl, emojiMap, {
           ...ctx,
           italic: true,
         }),
       );
     } else if (match.groups?.strike) {
       result.push(
-        ...parseFormatting(matchedStr.slice(2, -2), linkUrl, emojiMap, knownEquations, {
+        ...parseFormatting(matchedStr.slice(2, -2), linkUrl, emojiMap, {
           ...ctx,
           strikethrough: true,
         }),

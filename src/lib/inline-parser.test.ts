@@ -205,17 +205,20 @@ describe("inlineMarkdownToRichText", () => {
     expect(res[0].text?.content).toBe("The price ranges from $50 to $100 total.");
   });
 
-  it("restores known equations from knownEquations even if dollar signs were omitted by translation", () => {
-    const input = "La fórmula E=mc^2 representa la energía.";
-    const knownEquations = new Set(["E=mc^2"]);
-    const res = inlineMarkdownToRichText(input, undefined, knownEquations);
-    expect(res).toHaveLength(3);
+  it("parses single-letter equations like $x$ and $a$ without corrupting surrounding prose words", () => {
+    const input = "Para calcular a taxa, usamos $x$ e $a$.";
+    const res = inlineMarkdownToRichText(input);
+    expect(res).toHaveLength(5);
     expect(res[0].type).toBe("text");
-    expect(res[0].text?.content).toBe("La fórmula ");
+    expect(res[0].text?.content).toBe("Para calcular a taxa, usamos ");
     expect(res[1].type).toBe("equation");
-    expect(res[1].equation).toEqual({ expression: "E=mc^2" });
+    expect(res[1].equation).toEqual({ expression: "x" });
     expect(res[2].type).toBe("text");
-    expect(res[2].text?.content).toBe(" representa la energía.");
+    expect(res[2].text?.content).toBe(" e ");
+    expect(res[3].type).toBe("equation");
+    expect(res[3].equation).toEqual({ expression: "a" });
+    expect(res[4].type).toBe("text");
+    expect(res[4].text?.content).toBe(".");
   });
 
   it("preserves annotations around inline equations like bold **$E=mc^2$**", () => {
