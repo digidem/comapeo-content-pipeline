@@ -551,6 +551,77 @@ describe("writeTranslationToNotion", () => {
     });
   });
 
+  it("does not misrank canonical candidate when getPageBlocks fails during reconciliation", async () => {
+    vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
+      results: [
+        {
+          id: "canonical-id",
+          object: "page",
+          properties: {
+            [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Target Title" }] },
+            [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES" } },
+            [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Published" } },
+          },
+        } as unknown as NotionPage,
+        {
+          id: "automated-id",
+          object: "page",
+          properties: {
+            [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Target Title" }] },
+            [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES - automated" } },
+            [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+          },
+        } as unknown as NotionPage,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    vi.mocked(mockClient.getPageBlocks)
+      .mockRejectedValueOnce(new Error("Transient Notion 500 error"))
+      .mockResolvedValueOnce({
+        results: [
+          {
+            id: "b1",
+            type: "paragraph",
+            object: "block",
+            paragraph: { rich_text: [{ plain_text: "Content" }] },
+          } as unknown as NotionBlock,
+        ],
+        children: {},
+      })
+      .mockResolvedValueOnce({
+        results: [],
+        children: {},
+      });
+
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "canonical-id",
+      properties: {
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Published" } },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "canonical-id",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Target Title",
+      parentEnglishPageId: "en-family-root",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("updated");
+    expect(result.pageId).toBe("canonical-id");
+    expect(mockClient.createPage).not.toHaveBeenCalled();
+  });
+
   it("reconciles existing page via parentEnglishPageId sub-items even if title differs", async () => {
     vi.mocked(mockClient.getPage)
       // Call 1: parentEnglishPageId
@@ -1920,6 +1991,33 @@ describe("writeTranslationToNotion", () => {
         { "stub-id": false, "body-id": true },
       );
       expect(ranked[0].id).toBe("body-id");
+    });
+
+    it("treats unavailable candidate bodies (undefined) as unknown rather than stubs, avoiding demoting candidate", () => {
+      const failedFetchCanonical = {
+        id: "canonical-id",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Target" }] },
+          [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES" } }, // explicit source
+        },
+      } as unknown as NotionPage;
+
+      const automatedWithBody = {
+        id: "auto-id",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Target" }] },
+          [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES - automated" } }, // automated source
+        },
+      } as unknown as NotionPage;
+
+      // When canonical's body is undefined (fetch failed), it should not be treated as a stub (false)
+      // and thus does not get demoted below the automated candidate by body presence.
+      const ranked = rankTranslationCandidates(
+        [failedFetchCanonical, automatedWithBody],
+        "Target",
+        { "canonical-id": undefined, "auto-id": true },
+      );
+      expect(ranked[0].id).toBe("canonical-id");
     });
 
     it("ranks explicit language source over automated over fallback", () => {

@@ -391,7 +391,7 @@ const STAGING_SUFFIX = /[-_]\s*\d{4}-\d{2}-\d{2}\s*translation/i;
 export function rankTranslationCandidates(
   candidates: NotionPage[],
   targetTitle: string,
-  hasBodyById?: Record<string, boolean>,
+  hasBodyById?: Record<string, boolean | undefined>,
 ): NotionPage[] {
   const alive = candidates.filter((p) => !isDeadPage(p));
   if (alive.length <= 1) return alive;
@@ -399,11 +399,13 @@ export function rankTranslationCandidates(
   const srcRank: Record<string, number> = { explicit: 0, automated: 1, fallback: 2 };
 
   return [...alive].sort((a, b) => {
-    // 1. Real body over stub
+    // 1. Real body over stub: only compare if both candidates have known body status
     if (hasBodyById) {
-      const aBody = hasBodyById[a.id] ? 0 : 1;
-      const bBody = hasBodyById[b.id] ? 0 : 1;
-      if (aBody !== bBody) return aBody - bBody;
+      const aBody = hasBodyById[a.id];
+      const bBody = hasBodyById[b.id];
+      if (typeof aBody === "boolean" && typeof bBody === "boolean" && aBody !== bBody) {
+        return (aBody ? 0 : 1) - (bBody ? 0 : 1);
+      }
     }
 
     // 2. Language source: explicit > automated > fallback
@@ -804,18 +806,27 @@ export async function writeTranslationToNotion(
           return normalizeLocale(lang) === targetLocale;
         });
         if (candidates.length > 0) {
-          const hasBodyById: Record<string, boolean> = {};
+          let hasBodyById: Record<string, boolean | undefined> | undefined;
           if (candidates.length > 1 && typeof client.getPageBlocks === "function") {
+            const bodies: Record<string, boolean | undefined> = {};
+            let fetchFailed = false;
             await Promise.all(
               candidates.map(async (cand) => {
                 try {
                   const blocks = await client.getPageBlocks(cand.id);
-                  hasBodyById[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
-                } catch {
-                  hasBodyById[cand.id] = false;
+                  bodies[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
+                } catch (fetchErr) {
+                  console.warn(
+                    `[notion-writer] Failed to fetch blocks for candidate [${cand.id}]: ${fetchErr}`,
+                  );
+                  fetchFailed = true;
+                  bodies[cand.id] = undefined;
                 }
               }),
             );
+            if (!fetchFailed) {
+              hasBodyById = bodies;
+            }
           }
           const ranked = rankTranslationCandidates(candidates, targetTitle, hasBodyById);
           if (ranked.length > 0) {
@@ -866,18 +877,27 @@ export async function writeTranslationToNotion(
       });
 
       if (candidates.length > 0) {
-        const hasBodyById: Record<string, boolean> = {};
+        let hasBodyById: Record<string, boolean | undefined> | undefined;
         if (candidates.length > 1 && typeof client.getPageBlocks === "function") {
+          const bodies: Record<string, boolean | undefined> = {};
+          let fetchFailed = false;
           await Promise.all(
             candidates.map(async (cand) => {
               try {
                 const blocks = await client.getPageBlocks(cand.id);
-                hasBodyById[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
-              } catch {
-                hasBodyById[cand.id] = false;
+                bodies[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
+              } catch (fetchErr) {
+                console.warn(
+                  `[notion-writer] Failed to fetch blocks for candidate [${cand.id}]: ${fetchErr}`,
+                );
+                fetchFailed = true;
+                bodies[cand.id] = undefined;
               }
             }),
           );
+          if (!fetchFailed) {
+            hasBodyById = bodies;
+          }
         }
         const ranked = rankTranslationCandidates(candidates, targetTitle, hasBodyById);
         if (ranked.length > 0) {
@@ -919,18 +939,27 @@ export async function writeTranslationToNotion(
         }
       }
       if (subItemPages.length > 0) {
-        const hasBodyById: Record<string, boolean> = {};
+        let hasBodyById: Record<string, boolean | undefined> | undefined;
         if (subItemPages.length > 1 && typeof client.getPageBlocks === "function") {
+          const bodies: Record<string, boolean | undefined> = {};
+          let fetchFailed = false;
           await Promise.all(
             subItemPages.map(async (cand) => {
               try {
                 const blocks = await client.getPageBlocks(cand.id);
-                hasBodyById[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
-              } catch {
-                hasBodyById[cand.id] = false;
+                bodies[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
+              } catch (fetchErr) {
+                console.warn(
+                  `[notion-writer] Failed to fetch blocks for candidate [${cand.id}]: ${fetchErr}`,
+                );
+                fetchFailed = true;
+                bodies[cand.id] = undefined;
               }
             }),
           );
+          if (!fetchFailed) {
+            hasBodyById = bodies;
+          }
         }
         const ranked = rankTranslationCandidates(subItemPages, targetTitle, hasBodyById);
         if (ranked.length > 0) {
