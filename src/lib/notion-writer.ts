@@ -383,75 +383,141 @@ export async function writeTranslationToNotion(
 
       // Atomic replacement: Append new blocks first so if it fails, old content is preserved
       const newlyAppended: NotionBlock[] = [];
-    try {
-      if (preparedBlocks.length > 0) {
-        const appendRes = await client.appendBlockChildren(targetPageId, preparedBlocks);
-        if (appendRes?.results) newlyAppended.push(...appendRes.results);
+
+      // Snapshot original properties before updating so we can restore them if deletion fails
+      const originalPropertiesToRestore: Record<string, unknown> = {};
+      if (page.properties?.[NOTION_PROPERTIES.TITLE]) {
+        originalPropertiesToRestore[NOTION_PROPERTIES.TITLE] = page.properties[NOTION_PROPERTIES.TITLE];
+      }
+      if (page.properties?.[NOTION_PROPERTIES.LANGUAGE]) {
+        originalPropertiesToRestore[NOTION_PROPERTIES.LANGUAGE] = page.properties[NOTION_PROPERTIES.LANGUAGE];
+      }
+      if (page.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS]) {
+        originalPropertiesToRestore[NOTION_PROPERTIES.PUBLISH_STATUS] = page.properties[NOTION_PROPERTIES.PUBLISH_STATUS];
+      }
+      if (page.properties?.[NOTION_PROPERTIES.PARENT_ITEM]) {
+        originalPropertiesToRestore[NOTION_PROPERTIES.PARENT_ITEM] = page.properties[NOTION_PROPERTIES.PARENT_ITEM];
       }
 
-      // Update page properties
-      const updateProperties: Record<string, unknown> = {
-        [NOTION_PROPERTIES.TITLE]: {
-          title: [{ type: "text", text: { content: targetTitle } }],
-        },
-        [NOTION_PROPERTIES.LANGUAGE]: {
-          select: { name: localeSelectName },
-        },
-        [NOTION_PROPERTIES.PUBLISH_STATUS]: {
-          select: { name: "Automated translations generated" },
-        },
-      };
+      try {
+        if (preparedBlocks.length > 0) {
+          const appendRes = await client.appendBlockChildren(targetPageId, preparedBlocks);
+          if (appendRes?.results) newlyAppended.push(...appendRes.results);
+        }
 
-      if (effectiveParentId) {
-        updateProperties[NOTION_PROPERTIES.PARENT_ITEM] = {
-          relation: [{ id: effectiveParentId }],
+        // Update page properties
+        const updateProperties: Record<string, unknown> = {
+          [NOTION_PROPERTIES.TITLE]: {
+            title: [{ type: "text", text: { content: targetTitle } }],
+          },
+          [NOTION_PROPERTIES.LANGUAGE]: {
+            select: { name: localeSelectName },
+          },
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: {
+            select: { name: "Automated translations generated" },
+          },
         };
-      }
 
-      await client.updatePage(targetPageId, {
-        properties: updateProperties,
-      });
-    } catch (err) {
-      // Rollback newly appended blocks on error to keep existing content intact
-      for (const b of newlyAppended) {
-        try {
-          await client.deleteBlock(b.id);
-        } catch {
-          // ignore secondary errors during rollback
+        if (effectiveParentId) {
+          updateProperties[NOTION_PROPERTIES.PARENT_ITEM] = {
+            relation: [{ id: effectiveParentId }],
+          };
         }
-      }
-      throw err;
-    }
 
-    // Delete old blocks only after new blocks and properties have committed successfully.
-    // If deletion fails, rollback newly appended blocks so the page is not left containing both versions.
-    try {
-      for (const b of existingBlocks.results) {
-        await client.deleteBlock(b.id);
-      }
-    } catch (deleteErr) {
-      for (const b of newlyAppended) {
-        try {
-          await client.deleteBlock(b.id);
-        } catch {
-          // ignore secondary errors during rollback
+        await client.updatePage(targetPageId, {
+          properties: updateProperties,
+        });
+      } catch (err) {
+        // Rollback newly appended blocks on error to keep existing content intact
+        for (const b of newlyAppended) {
+          try {
+            await client.deleteBlock(b.id);
+          } catch {
+            // ignore secondary errors during rollback
+          }
         }
+        throw err;
       }
-      throw new Error(
-        `Failed to delete old blocks during atomic replacement on ${targetPageId}. Rolled back newly appended blocks. Error: ${String(deleteErr)}`,
-        { cause: deleteErr },
-      );
-    }
 
-    return {
-      written: true,
-      action: "updated",
-      pageId: targetPageId,
-    };
+      // Delete old blocks only after new blocks and properties have committed successfully.
+      // If deletion fails, rollback newly appended blocks and restore original properties so the page is not left in a corrupted hybrid state.
+      try {
+        for (const b of existingBlocks.results) {
+          await client.deleteBlock(b.id);
+        }
+      } catch (deleteErr) {
+        for (const b of newlyAppended) {
+          try {
+            await client.deleteBlock(b.id);
+          } catch {
+            // ignore secondary errors during rollback
+          }
+        }
+        if (Object.keys(originalPropertiesToRestore).length > 0) {
+          try {
+            await client.updatePage(targetPageId, {
+              properties: originalPropertiesToRestore,
+            });
+          } catch {
+            // ignore secondary errors during rollback
+          }
+        }
+        throw new Error(
+          `Failed to delete old blocks during atomic replacement on ${targetPageId}. Rolled back newly appended blocks and restored original page properties. Error: ${String(deleteErr)}`,
+          { cause: deleteErr },
+        );
+      }
+
+      return {
+        written: true,
+        action: "updated",
+        pageId: targetPageId,
+      };
     }
   }
 
   // ── Case 2: Target Page does NOT exist (create new page in Notion DB) ──
+  // Reconcile ambiguous responses and prevent duplicate page creation:
+  // Query Notion database to check if a translation page already exists for this family and locale.
+  if (typeof client.queryDatabase === "function") {
+    try {
+      const filterConditions: Record<string, unknown>[] = [
+        {
+          property: NOTION_PROPERTIES.LANGUAGE,
+          select: { equals: localeSelectName },
+        },
+      ];
+      if (effectiveParentId) {
+        filterConditions.push({
+          property: NOTION_PROPERTIES.PARENT_ITEM,
+          relation: { contains: effectiveParentId },
+        });
+      } else {
+        filterConditions.push({
+          property: NOTION_PROPERTIES.TITLE,
+          title: { equals: targetTitle },
+        });
+      }
+
+      const existing = await client.queryDatabase({
+        filter: { and: filterConditions },
+        pageSize: 1,
+      });
+
+      if (existing?.results && existing.results.length > 0) {
+        const found = existing.results[0];
+        console.warn(
+          `[notion-writer] Found existing translation page [${found.id}] matching ${targetLocale}. Reusing instead of creating duplicate.`,
+        );
+        return writeTranslationToNotion({
+          ...options,
+          targetPageId: found.id,
+        });
+      }
+    } catch (queryErr) {
+      console.warn(`[notion-writer] Could not query for existing translation before creation: ${queryErr}`);
+    }
+  }
   const firstChunk = preparedBlocks.slice(0, 100);
   const remainingChunks = preparedBlocks.slice(100);
 

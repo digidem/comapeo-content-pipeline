@@ -386,6 +386,7 @@ describe("writeTranslationToNotion", () => {
       appendBlockChildren: vi.fn(),
       getPage: vi.fn(),
       getPageBlocks: vi.fn(),
+      queryDatabase: vi.fn().mockResolvedValue({ results: [], next_cursor: null, has_more: false }),
     } as unknown as NotionClient;
   });
 
@@ -422,6 +423,53 @@ describe("writeTranslationToNotion", () => {
       relation: [{ id: "container-parent-id" }],
     });
     expect(createArgs.children).toHaveLength(1);
+  });
+
+  it("reconciles and updates existing page when queryDatabase finds a matching translation during page creation", async () => {
+    vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
+      results: [
+        {
+          id: "already-created-id",
+          object: "page",
+          properties: {
+            "Publish Status": { select: { name: "Automated translations generated" } },
+          },
+        } as unknown as NotionPage,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "already-created-id",
+      properties: {
+        "Publish Status": { select: { name: "Automated translations generated" } },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [],
+      children: {},
+    });
+
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "already-created-id",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Título Reconciliado",
+      parentItemId: "container-parent-id",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("updated");
+    expect(result.pageId).toBe("already-created-id");
+    expect(mockClient.createPage).not.toHaveBeenCalled();
   });
 
   it("falls back to parentEnglishPageId when parentItemId is not provided", async () => {
@@ -1015,6 +1063,13 @@ describe("writeTranslationToNotion", () => {
 
     // Must attempt to delete the newly appended block during rollback
     expect(mockClient.deleteBlock).toHaveBeenCalledWith("new-block-1");
+    // Must restore original page properties
+    expect(mockClient.updatePage).toHaveBeenCalledTimes(2);
+    expect(mockClient.updatePage).toHaveBeenLastCalledWith("stub-page-rollback", {
+      properties: {
+        "Publish Status": { select: { name: "Automated translations generated" } },
+      },
+    });
   });
 
   describe("isStubPage block type checks", () => {
