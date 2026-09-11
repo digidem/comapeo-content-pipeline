@@ -20,9 +20,13 @@ export interface WriteNotionOptions {
   targetTitle: string;
   /**
    * The container/parent row in Notion under which the translation should live as a sibling.
-   * If not provided, falls back to parentEnglishPageId.
+   * If not provided, leaves Parent item unset so root pages remain unparented.
    */
   parentItemId?: string;
+  /**
+   * @deprecated Do not use parentEnglishPageId as Parent item relation;
+   * translations are siblings under parentItemId, not children of the English page.
+   */
   parentEnglishPageId?: string;
   targetPageId?: string;
   translatedBlocks: NotionBlockList;
@@ -244,8 +248,24 @@ function extractBlockText(
     }
   }
 
-  // Media and interactive elements indicate non-empty content
-  if (["image", "video", "file", "pdf", "embed", "audio"].includes(block.type)) {
+  if (typeof payload.url === "string" && payload.url.trim().length > 0) {
+    texts.push(payload.url.trim());
+  }
+
+  // Media, interactive elements, bookmarks, and links indicate non-empty content
+  if (
+    [
+      "image",
+      "video",
+      "file",
+      "pdf",
+      "embed",
+      "audio",
+      "bookmark",
+      "link_preview",
+      "link_to_page",
+    ].includes(block.type)
+  ) {
     texts.push(`[${block.type}]`);
   }
 
@@ -302,13 +322,13 @@ export async function writeTranslationToNotion(
     targetLocale,
     targetTitle,
     parentItemId,
-    parentEnglishPageId,
+    parentEnglishPageId: _parentEnglishPageId,
     targetPageId,
     translatedBlocks,
     force = false,
   } = options;
 
-  const effectiveParentId = parentItemId || parentEnglishPageId;
+  const effectiveParentId = parentItemId;
   const preparedBlocks = prepareBlocksForNotion(translatedBlocks, {
     assets: options.assets,
     section: options.section,

@@ -12,7 +12,7 @@
  *   bun scripts/translate-missing.ts --apply --page <slug-or-id>
  */
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { parseArgs } from "./lib/args.js";
 import { buildReport, type PageReport } from "./missing-translations.js";
@@ -27,6 +27,7 @@ import { rewriteRawImgSrcToStatic } from "../src/lib/img-rewrite.js";
 import type { NotionBlockList } from "../src/lib/notion-converter.js";
 import type { PageMetadata, PageAsset } from "../src/schemas/metadata.js";
 import type { ManifestDoc } from "../src/schemas/manifest.js";
+import { R2_PATHS } from "../src/persistence/r2.js";
 
 interface TranslationTarget {
   page: PageReport;
@@ -282,48 +283,10 @@ async function main() {
         glossary,
       });
 
-      // Write output files in inputDir (pipeline output dir)
-      const outMdPath = join(inputDir, `${targetPageId}.md`);
-      const outMetaPath = join(inputDir, `${targetPageId}.metadata.json`);
-      const outBlocksPath = join(inputDir, `${targetPageId}.raw-blocks.json`);
-
-      writeFileSync(outMdPath, result.translatedMd, "utf8");
-      writeFileSync(outMetaPath, JSON.stringify(result.translatedMetadata, null, 2), "utf8");
-      writeFileSync(outBlocksPath, JSON.stringify(result.translatedBlocks, null, 2), "utf8");
-
-      // If outputDir or Docusaurus path specified, write there too
-      if (outputDir) {
-        const docDest = join(outputDir, page.paths[locale]);
-        mkdirSync(dirname(docDest), { recursive: true });
-        const rewritten = rewriteRawImgSrcToStatic(result.translatedMd);
-        writeFileSync(docDest, rewritten.content, "utf8");
-        copyReferencedAssets(outputDir, inputDir, page.paths[locale], rewritten.assets, enMetadata?.assets);
-      }
-
-      // Update manifest.json with initial translation entry
-      const buildManifestEntry = (id: string, meta: PageMetadata): ManifestDoc => ({
-        page_id: id,
-        title: meta.title,
-        locale,
-        section: meta.section,
-        section_order: meta.section_order,
-        element_type: meta.element_type ?? "Page",
-        drafting_status: meta.drafting_status ?? "automated translations generated",
-        slug: meta.slug,
-        docusaurus_id: meta.docusaurus_id,
-        docusaurus_path: page.paths[locale],
-        r2_doc_key: `docs/${id}.md`,
-        r2_metadata_key: `metadata/${id}.json`,
-        source_url: meta.source_url,
-        notion_last_edited_time: meta.notion_last_edited_time,
-        content_hash: meta.content_hash,
-        status: "draft",
-        language_source: "automated",
-      });
-
-      updateManifestWithDoc(input, buildManifestEntry(targetPageId, result.translatedMetadata), enPageId);
-
-      // Optional Notion Write-Back
+      // Optional Notion Write-Back: Run first if enabled so the final page ID is known
+      // before local artifacts and manifest are committed. If Notion creation fails,
+      // the error is caught, no provisional manifest entry is recorded, and the locale
+      // remains eligible for future retry.
       if (writeNotion && client && databaseId) {
         const stubId = page.locales[locale]?.page_id;
         console.log(`${progress} [Notion] Writing translation to Notion database...`);
@@ -353,33 +316,58 @@ async function main() {
           console.log(
             `${progress} [Notion] ✓ ${notionRes.action === "created" ? "Created new page" : "Updated stub"} [${notionRes.pageId}]`,
           );
-          if (notionRes.action === "created" && notionRes.pageId && notionRes.pageId !== targetPageId) {
-            const newId = notionRes.pageId;
-            result.translatedMetadata.page_id = newId;
+          if (notionRes.pageId && notionRes.pageId !== targetPageId) {
+            targetPageId = notionRes.pageId;
+            result.translatedMetadata.page_id = targetPageId;
+            result.translatedMetadata.source_url = `https://notion.so/${targetPageId.replace(/-/g, "")}`;
             const updatedFrontmatter = buildFrontmatter(result.translatedMetadata);
-            const updatedMd = serializeDoc(updatedFrontmatter, result.markdownBody);
-
-            if (existsSync(outMdPath)) unlinkSync(outMdPath);
-            if (existsSync(outMetaPath)) unlinkSync(outMetaPath);
-            if (existsSync(outBlocksPath)) unlinkSync(outBlocksPath);
-
-            writeFileSync(join(inputDir, `${newId}.md`), updatedMd, "utf8");
-            writeFileSync(join(inputDir, `${newId}.metadata.json`), JSON.stringify(result.translatedMetadata, null, 2), "utf8");
-            writeFileSync(join(inputDir, `${newId}.raw-blocks.json`), JSON.stringify(result.translatedBlocks, null, 2), "utf8");
-
-            if (outputDir) {
-              const docDest = join(outputDir, page.paths[locale]);
-              const rewritten = rewriteRawImgSrcToStatic(updatedMd);
-              writeFileSync(docDest, rewritten.content, "utf8");
-              copyReferencedAssets(outputDir, inputDir, page.paths[locale], rewritten.assets, enMetadata?.assets);
-            }
-            targetPageId = newId;
-            updateManifestWithDoc(input, buildManifestEntry(newId, result.translatedMetadata), enPageId);
+            result.translatedMd = serializeDoc(updatedFrontmatter, result.markdownBody);
           }
         } else {
           console.warn(`${progress} [Notion] ⚠ Skipped write-back: ${notionRes.reason}`);
         }
       }
+
+      // Write output files in inputDir (pipeline output dir) using final targetPageId
+      const outMdPath = join(inputDir, `${targetPageId}.md`);
+      const outMetaPath = join(inputDir, `${targetPageId}.metadata.json`);
+      const outBlocksPath = join(inputDir, `${targetPageId}.raw-blocks.json`);
+
+      writeFileSync(outMdPath, result.translatedMd, "utf8");
+      writeFileSync(outMetaPath, JSON.stringify(result.translatedMetadata, null, 2), "utf8");
+      writeFileSync(outBlocksPath, JSON.stringify(result.translatedBlocks, null, 2), "utf8");
+
+      // If outputDir or Docusaurus path specified, write there too
+      if (outputDir) {
+        const docDest = join(outputDir, page.paths[locale]);
+        mkdirSync(dirname(docDest), { recursive: true });
+        const rewritten = rewriteRawImgSrcToStatic(result.translatedMd);
+        writeFileSync(docDest, rewritten.content, "utf8");
+        copyReferencedAssets(outputDir, inputDir, page.paths[locale], rewritten.assets, enMetadata?.assets);
+      }
+
+      // Update manifest.json with the finalized translation entry using canonical R2 paths
+      const buildManifestEntry = (id: string, meta: PageMetadata): ManifestDoc => ({
+        page_id: id,
+        title: meta.title,
+        locale,
+        section: meta.section,
+        section_order: meta.section_order,
+        element_type: meta.element_type ?? "Page",
+        drafting_status: meta.drafting_status ?? "automated translations generated",
+        slug: meta.slug,
+        docusaurus_id: meta.docusaurus_id,
+        docusaurus_path: page.paths[locale],
+        r2_doc_key: R2_PATHS.doc(locale, meta.section, meta.slug),
+        r2_metadata_key: R2_PATHS.metadata(id),
+        source_url: meta.source_url,
+        notion_last_edited_time: meta.notion_last_edited_time,
+        content_hash: meta.content_hash,
+        status: "draft",
+        language_source: "automated",
+      });
+
+      updateManifestWithDoc(input, buildManifestEntry(targetPageId, result.translatedMetadata), enPageId);
 
       console.log(
         `${progress} ✓ Success! Translated "${page.title}" -> "${result.title}" [${targetPageId}]\n`,
@@ -398,7 +386,7 @@ async function main() {
   console.log(`Failed:         ${failureCount}`);
 
   if (failureCount > 0) {
-    process.exitCode = 1;
+    process.exit(1);
   }
 
   if (dryRun) {
@@ -417,10 +405,12 @@ function updateManifestWithDoc(manifestPath: string, doc: ManifestDoc, enPageId?
     };
     if (!Array.isArray(data.docs)) return;
 
+    let previousPageId: string | null = null;
     const existingIdx = data.docs.findIndex(
       (d) => d.page_id === doc.page_id || (d.slug === doc.slug && d.locale === doc.locale),
     );
     if (existingIdx >= 0) {
+      previousPageId = data.docs[existingIdx].page_id;
       data.docs[existingIdx] = doc;
     } else {
       data.docs.push(doc);
@@ -430,6 +420,9 @@ function updateManifestWithDoc(manifestPath: string, doc: ManifestDoc, enPageId?
       const enDoc = data.docs.find((d) => d.page_id === enPageId);
       if (enDoc) {
         if (!Array.isArray(enDoc.sub_items)) enDoc.sub_items = [];
+        if (previousPageId && previousPageId !== doc.page_id) {
+          enDoc.sub_items = enDoc.sub_items.filter((id) => id !== previousPageId);
+        }
         if (!enDoc.sub_items.includes(doc.page_id)) {
           enDoc.sub_items.push(doc.page_id);
         }

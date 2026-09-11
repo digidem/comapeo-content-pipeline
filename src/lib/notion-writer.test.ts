@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { prepareBlocksForNotion, writeTranslationToNotion } from "./notion-writer.js";
+import { prepareBlocksForNotion, writeTranslationToNotion, isStubPage } from "./notion-writer.js";
 import type { NotionBlockList } from "./notion-converter.js";
 import type { NotionBlock, NotionClient, NotionPage } from "./notion-client.js";
 
@@ -376,7 +376,7 @@ describe("writeTranslationToNotion", () => {
       databaseId: "db-123",
       targetLocale: "pt",
       targetTitle: "Título em Português",
-      parentEnglishPageId: "en-parent-id",
+      parentItemId: "container-parent-id",
       translatedBlocks: mockTranslatedBlocks,
     });
 
@@ -395,12 +395,12 @@ describe("writeTranslationToNotion", () => {
       select: { name: "Automated translations generated" },
     });
     expect(createArgs.properties["Parent item"]).toEqual({
-      relation: [{ id: "en-parent-id" }],
+      relation: [{ id: "container-parent-id" }],
     });
     expect(createArgs.children).toHaveLength(1);
   });
 
-  it("leaves Parent item undefined when neither parentItemId nor parentEnglishPageId is provided", async () => {
+  it("leaves Parent item undefined when parentItemId is not provided, even if parentEnglishPageId is passed", async () => {
     vi.mocked(mockClient.createPage).mockResolvedValueOnce({
       id: "root-page-id",
       object: "page",
@@ -411,6 +411,7 @@ describe("writeTranslationToNotion", () => {
       databaseId: "db-123",
       targetLocale: "pt",
       targetTitle: "Título Raiz",
+      parentEnglishPageId: "en-parent-id",
       translatedBlocks: mockTranslatedBlocks,
     });
 
@@ -901,5 +902,52 @@ describe("writeTranslationToNotion", () => {
 
     expect(result.written).toBe(true);
     expect(callOrder).toEqual(["append", "update", "delete"]);
+  });
+
+  describe("isStubPage block type checks", () => {
+    it("recognizes bookmark blocks as non-stub content", () => {
+      const page = { id: "p1" } as unknown as NotionPage;
+      const blocks = {
+        results: [
+          {
+            id: "b1",
+            type: "bookmark",
+            object: "block",
+            bookmark: { url: "https://example.com/docs" },
+          } as unknown as NotionBlock,
+        ],
+      };
+      expect(isStubPage(page, blocks)).toBe(false);
+    });
+
+    it("recognizes link_preview blocks as non-stub content", () => {
+      const page = { id: "p2" } as unknown as NotionPage;
+      const blocks = {
+        results: [
+          {
+            id: "b2",
+            type: "link_preview",
+            object: "block",
+            link_preview: { url: "https://example.com/preview" },
+          } as unknown as NotionBlock,
+        ],
+      };
+      expect(isStubPage(page, blocks)).toBe(false);
+    });
+
+    it("recognizes truly empty pages as stubs", () => {
+      const page = { id: "p3" } as unknown as NotionPage;
+      const blocks = {
+        results: [
+          {
+            id: "b3",
+            type: "paragraph",
+            object: "block",
+            paragraph: { rich_text: [] },
+          } as unknown as NotionBlock,
+        ],
+      };
+      expect(isStubPage(page, blocks)).toBe(true);
+    });
   });
 });

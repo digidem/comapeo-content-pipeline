@@ -524,4 +524,33 @@ describe("NotionClient write operations", () => {
     expect(url).toBe("https://api.notion.com/v1/blocks/block-to-delete");
     expect(init.method).toBe("DELETE");
   });
+
+  it("createPage does NOT retry on 429 rate limits (single-attempt non-idempotent write)", async () => {
+    fetchMock.mockResolvedValueOnce(rateLimitedResponse(1));
+
+    await expect(
+      client.createPage({
+        parent: { database_id: "db-123" },
+        properties: {},
+      }),
+    ).rejects.toThrow();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("appendBlockChildren does NOT retry on 529 or network errors (single-attempt non-idempotent write)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: "Notion is overloaded" }), {
+        status: 529,
+        statusText: "Site Overloaded",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(
+      client.appendBlockChildren("block-123", [{ object: "block", type: "paragraph" }]),
+    ).rejects.toThrow();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

@@ -172,7 +172,10 @@ export class NotionClient {
       "Content-Type": "application/json",
     };
 
-    for (let attempt = 0; attempt <= retries; attempt++) {
+    const shouldRetry = options.retry !== false;
+    const effectiveRetries = shouldRetry ? retries : 0;
+
+    for (let attempt = 0; attempt <= effectiveRetries; attempt++) {
       try {
         const resp = await fetch(url, {
           method: options.method || "GET",
@@ -184,7 +187,7 @@ export class NotionClient {
           return (await resp.json()) as T;
         }
 
-        if (resp.status === 429) {
+        if (shouldRetry && resp.status === 429) {
           const retryAfter = resp.headers.get("Retry-After");
           const waitSeconds = retryAfter ? parseInt(retryAfter, 10) : 1;
           if (_retryAfterCallback) _retryAfterCallback(waitSeconds);
@@ -192,14 +195,14 @@ export class NotionClient {
           continue;
         }
 
-        if (resp.status === 529) {
+        if (shouldRetry && resp.status === 529) {
           // Exponential backoff
           const waitMs = Math.min(1000 * Math.pow(2, attempt), 30000);
           await sleep(waitMs);
           continue;
         }
 
-        // Non-retryable error
+        // Non-retryable error (or retries explicitly disabled for non-idempotent writes)
         const errorBody = await resp.text().catch(() => "");
         throw classifyError(
           new Error(`Notion API error ${resp.status}: ${resp.statusText} — ${errorBody}`),
@@ -207,11 +210,11 @@ export class NotionClient {
         );
       } catch (err) {
         const classified = classifyError(err, `Notion ${path}`);
-        if (attempt >= retries) throw classified;
+        if (attempt >= effectiveRetries) throw classified;
 
         // Only retry network / timeout errors if retries are not disabled for this request
         if (
-          options.retry !== false &&
+          shouldRetry &&
           (classified.category === ErrorCategory.NETWORK ||
             classified.category === ErrorCategory.TIMEOUT)
         ) {
