@@ -169,6 +169,7 @@ async function main() {
     model: args.model || process.env.TRANSLATION_MODEL,
     batchSize: args["batch-size"] ? parseInt(args["batch-size"], 10) : undefined,
     timeoutMs: args.timeout ? parseInt(args.timeout, 10) : undefined,
+    env: process.env,
   });
 
   // 5. Execute translations

@@ -20,12 +20,11 @@ export interface WriteNotionOptions {
   targetTitle: string;
   /**
    * The container/parent row in Notion under which the translation should live as a sibling.
-   * If not provided, leaves Parent item unset so root pages remain unparented.
+   * If not provided, falls back to parentEnglishPageId for standalone translation family linkage.
    */
   parentItemId?: string;
   /**
-   * @deprecated Do not use parentEnglishPageId as Parent item relation;
-   * translations are siblings under parentItemId, not children of the English page.
+   * English page ID used as the family root when no container parent exists.
    */
   parentEnglishPageId?: string;
   targetPageId?: string;
@@ -325,13 +324,13 @@ export async function writeTranslationToNotion(
     targetLocale,
     targetTitle,
     parentItemId,
-    parentEnglishPageId: _parentEnglishPageId,
+    parentEnglishPageId,
     targetPageId,
     translatedBlocks,
     force = false,
   } = options;
 
-  const effectiveParentId = parentItemId;
+  const effectiveParentId = parentItemId || parentEnglishPageId;
   const preparedBlocks = prepareBlocksForNotion(translatedBlocks, {
     assets: options.assets,
     section: options.section,
@@ -395,14 +394,33 @@ export async function writeTranslationToNotion(
     } catch (err) {
       // Rollback newly appended blocks on error to keep existing content intact
       for (const b of newlyAppended) {
-        await client.deleteBlock(b.id).catch(() => {});
+        try {
+          await client.deleteBlock(b.id);
+        } catch {
+          // ignore secondary errors during rollback
+        }
       }
       throw err;
     }
 
-    // Delete old blocks only after new blocks and properties have committed successfully
-    for (const b of existingBlocks.results) {
-      await client.deleteBlock(b.id);
+    // Delete old blocks only after new blocks and properties have committed successfully.
+    // If deletion fails, rollback newly appended blocks so the page is not left containing both versions.
+    try {
+      for (const b of existingBlocks.results) {
+        await client.deleteBlock(b.id);
+      }
+    } catch (deleteErr) {
+      for (const b of newlyAppended) {
+        try {
+          await client.deleteBlock(b.id);
+        } catch {
+          // ignore secondary errors during rollback
+        }
+      }
+      throw new Error(
+        `Failed to delete old blocks during atomic replacement on ${targetPageId}. Rolled back newly appended blocks. Error: ${String(deleteErr)}`,
+        { cause: deleteErr },
+      );
     }
 
     return {

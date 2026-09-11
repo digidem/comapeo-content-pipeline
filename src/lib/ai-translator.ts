@@ -13,6 +13,8 @@ export interface AITranslatorConfig {
   timeoutMs?: number;
   batchSize?: number;
   fetchFn?: typeof fetch;
+  /** Explicit environment variables record for runtime portability (Worker/Node agnostic). */
+  env?: Record<string, string | undefined>;
 }
 
 export interface TranslationBlock {
@@ -49,11 +51,7 @@ export class AITranslator {
       throw new Error(`batchSize must be a positive integer, got ${config.batchSize}`);
     }
 
-    const globalProcess =
-      typeof globalThis !== "undefined" && "process" in globalThis
-        ? (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
-        : undefined;
-    const env = globalProcess?.env ?? {};
+    const env = config.env ?? {};
 
     const poolsideKey = env.POOLSIDE_API_KEY;
     this.apiKey =

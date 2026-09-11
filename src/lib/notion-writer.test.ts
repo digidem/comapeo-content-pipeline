@@ -424,7 +424,7 @@ describe("writeTranslationToNotion", () => {
     expect(createArgs.children).toHaveLength(1);
   });
 
-  it("leaves Parent item undefined when parentItemId is not provided, even if parentEnglishPageId is passed", async () => {
+  it("falls back to parentEnglishPageId when parentItemId is not provided", async () => {
     vi.mocked(mockClient.createPage).mockResolvedValueOnce({
       id: "root-page-id",
       object: "page",
@@ -441,8 +441,30 @@ describe("writeTranslationToNotion", () => {
 
     expect(result.written).toBe(true);
     const createArgs = vi.mocked(mockClient.createPage).mock.calls[0][0];
+    expect(createArgs.properties["Parent item"]).toEqual({
+      relation: [{ id: "en-parent-id" }],
+    });
+  });
+
+  it("leaves Parent item undefined when neither parentItemId nor parentEnglishPageId is provided", async () => {
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "root-page-id",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Título Raiz",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    const createArgs = vi.mocked(mockClient.createPage).mock.calls[0][0];
     expect(createArgs.properties["Parent item"]).toBeUndefined();
   });
+
 
   it("uses parentItemId as relation when creating a new page as a sibling", async () => {
     vi.mocked(mockClient.createPage).mockResolvedValueOnce({
@@ -926,6 +948,51 @@ describe("writeTranslationToNotion", () => {
 
     expect(result.written).toBe(true);
     expect(callOrder).toEqual(["append", "update", "delete"]);
+  });
+
+  it("rolls back newly appended blocks if deleting old blocks fails during atomic replacement", async () => {
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "stub-page-rollback",
+      properties: {
+        "Publish Status": { select: { name: "Automated translations generated" } },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [
+        { id: "old-block-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      children: {},
+    });
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "new-block-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "stub-page-rollback",
+      object: "page",
+    } as unknown as NotionPage);
+    vi.mocked(mockClient.deleteBlock).mockRejectedValueOnce(new Error("Notion API delete failure"));
+
+    await expect(
+      writeTranslationToNotion({
+        client: mockClient,
+        databaseId: "db-123",
+        targetLocale: "pt",
+        targetTitle: "Falha de Rollback",
+        parentEnglishPageId: "en-parent-id",
+        targetPageId: "stub-page-rollback",
+        translatedBlocks: mockTranslatedBlocks,
+      }),
+    ).rejects.toThrow("Failed to delete old blocks during atomic replacement");
+
+    // Must attempt to delete the newly appended block during rollback
+    expect(mockClient.deleteBlock).toHaveBeenCalledWith("new-block-1");
   });
 
   describe("isStubPage block type checks", () => {
