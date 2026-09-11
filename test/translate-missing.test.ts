@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { copyReferencedAssets, updateManifestWithDoc, buildManifestDoc } from "../scripts/translate-missing.js";
+import { copyReferencedAssets, updateManifestWithDoc, buildManifestDoc, restoreFileBackups } from "../scripts/translate-missing.js";
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -445,5 +445,118 @@ describe("buildManifestDoc", () => {
       status: "draft",
       language_source: "automated",
     });
+  });
+});
+
+describe("restoreFileBackups", () => {
+  const testDir = join(tmpdir(), "test-restore-backups-" + Date.now());
+
+  beforeEach(() => {
+    mkdirSync(testDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it("removes newly created files whose pre-attempt original content was null", () => {
+    const fileBackups = new Map<string, Buffer | null>();
+    const newFile = join(testDir, "new-file.md");
+
+    // Track as not existing before attempt
+    fileBackups.set(newFile, null);
+    writeFileSync(newFile, "created content");
+
+    expect(readFileSync(newFile, "utf8")).toBe("created content");
+
+    restoreFileBackups(fileBackups);
+
+    let exists = true;
+    try {
+      readFileSync(newFile);
+    } catch {
+      exists = false;
+    }
+    expect(exists).toBe(false);
+  });
+
+  it("restores pre-existing files to their pre-attempt original content", () => {
+    const fileBackups = new Map<string, Buffer | null>();
+    const existingFile = join(testDir, "existing.json");
+    const originalContent = JSON.stringify({ version: 1 });
+
+    writeFileSync(existingFile, originalContent);
+    fileBackups.set(existingFile, Buffer.from(originalContent));
+
+    // Overwrite during attempt
+    writeFileSync(existingFile, JSON.stringify({ version: 2 }));
+    expect(readFileSync(existingFile, "utf8")).toBe(JSON.stringify({ version: 2 }));
+
+    restoreFileBackups(fileBackups);
+
+    expect(readFileSync(existingFile, "utf8")).toBe(originalContent);
+  });
+
+  it("reverts all pre-attempt backups when retained-translation recovery manifest sync fails", () => {
+    const manifestPath = join(testDir, "manifest.json");
+    const initialManifest = JSON.stringify({ docs: [{ page_id: "en-1" }] }, null, 2);
+    writeFileSync(manifestPath, initialManifest);
+
+    const translatedMd = join(testDir, "translated.md");
+    const translatedMeta = join(testDir, "translated.metadata.json");
+
+    const fileBackups = new Map<string, Buffer | null>();
+
+    // Initial attempt tracks pre-attempt state
+    fileBackups.set(translatedMd, null);
+    writeFileSync(translatedMd, "# Translated Content");
+
+    fileBackups.set(translatedMeta, null);
+    writeFileSync(translatedMeta, JSON.stringify({ page_id: "pt-1" }));
+
+    fileBackups.set(manifestPath, Buffer.from(initialManifest));
+
+    // Simulate recovery branch: retained translation attempts to preserve files
+    // trackRecovery preserves original pre-attempt backup if key is already present
+    const trackRecovery = (filePath: string, content: string | Buffer) => {
+      if (!fileBackups.has(filePath)) {
+        fileBackups.set(filePath, Buffer.from("existing"));
+      }
+      writeFileSync(filePath, content);
+    };
+
+    // Re-writing during recovery does not clobber initial null backup in fileBackups
+    trackRecovery(translatedMd, "# Recovery Translated Content");
+    trackRecovery(translatedMeta, JSON.stringify({ page_id: "pt-1", recovery: true }));
+
+    // Pre-attempt backups still record translatedMd and translatedMeta as null
+    expect(fileBackups.get(translatedMd)).toBeNull();
+    expect(fileBackups.get(translatedMeta)).toBeNull();
+
+    // Recovery manifest update fails
+    const recoveryCommitted = false;
+    if (!recoveryCommitted) {
+      restoreFileBackups(fileBackups);
+    }
+
+    // Both files must be removed so no unrecorded files remain on disk
+    let mdExists = true;
+    try {
+      readFileSync(translatedMd);
+    } catch {
+      mdExists = false;
+    }
+    expect(mdExists).toBe(false);
+
+    let metaExists = true;
+    try {
+      readFileSync(translatedMeta);
+    } catch {
+      metaExists = false;
+    }
+    expect(metaExists).toBe(false);
+
+    // Manifest must be preserved in its initial state
+    expect(readFileSync(manifestPath, "utf8")).toBe(initialManifest);
   });
 });

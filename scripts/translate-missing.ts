@@ -503,36 +503,26 @@ async function main() {
         }
       }
 
+      const restorePreAttemptBackups = () => {
+        restoreFileBackups(fileBackups, progress);
+      };
+
       if (!rollbackNotion || notionRolledBack) {
         // Notion was either never touched or was cleanly rolled back.
         // Revert local files and manifest to avoid orphaned/partial artifacts.
-        for (const [filePath, originalContent] of fileBackups.entries()) {
-          try {
-            if (originalContent === null) {
-              if (existsSync(filePath)) {
-                rmSync(filePath, { force: true });
-                console.log(`${progress} [Cleanup] Removed orphaned file: ${filePath}`);
-              }
-            } else {
-              writeFileSync(filePath, originalContent);
-              console.log(`${progress} [Cleanup] Restored previous file: ${filePath}`);
-            }
-          } catch (cleanupErr) {
-            console.error(`${progress} Failed to clean up file ${filePath}:`, cleanupErr);
-          }
-        }
+        restorePreAttemptBackups();
       } else {
         // Rollback was declined or failed: Notion retained the translation.
-        // Preserve generated local files and synchronize manifest so local state
+        // Attempt to preserve generated local files and synchronize manifest so local state
         // remains consistent with Notion and avoids duplicate creation on retry.
         console.warn(
           `${progress} [Warning] Notion retained translation for [${targetPageId}]. Preserving local files and synchronizing manifest to prevent divergent state.`,
         );
+        let recoveryCommitted = false;
         if (result) {
-          const recoveryFiles = new Map<string, Buffer | null>();
           const trackRecovery = (filePath: string, content: string | Buffer) => {
-            if (!recoveryFiles.has(filePath)) {
-              recoveryFiles.set(filePath, existsSync(filePath) ? readFileSync(filePath) : null);
+            if (!fileBackups.has(filePath)) {
+              fileBackups.set(filePath, existsSync(filePath) ? readFileSync(filePath) : null);
             }
             mkdirSync(dirname(filePath), { recursive: true });
             writeFileSync(filePath, content);
@@ -563,6 +553,9 @@ async function main() {
               }
             }
 
+            if (!fileBackups.has(input)) {
+              fileBackups.set(input, existsSync(input) ? readFileSync(input) : null);
+            }
             updateManifestWithDoc(
               input,
               buildManifestDoc(finalPageId, result.translatedMetadata, locale),
@@ -573,6 +566,7 @@ async function main() {
                 includeDrafts,
               },
             );
+            recoveryCommitted = true;
             console.log(
               `${progress} [Recovery] Successfully recorded retained translation [${finalPageId}] in manifest and local storage.`,
             );
@@ -581,19 +575,13 @@ async function main() {
               `${progress} Failed to persist retained translation [${targetPageId ?? "unknown"}] to manifest:`,
               syncErr,
             );
-            // Restore or remove recovery files when manifest update cannot be committed
-            for (const [filePath, orig] of recoveryFiles.entries()) {
-              try {
-                if (orig === null) {
-                  if (existsSync(filePath)) rmSync(filePath, { force: true });
-                } else {
-                  writeFileSync(filePath, orig);
-                }
-              } catch (recErr) {
-                console.error(`${progress} Failed to clean up recovery file ${filePath}:`, recErr);
-              }
-            }
           }
+        }
+
+        // If manifest update could not be committed during recovery, restore pre-attempt backups
+        // so no untracked/unrecorded files remain on disk without a manifest entry
+        if (!recoveryCommitted) {
+          restorePreAttemptBackups();
         }
       }
       fileBackups.clear();
@@ -616,6 +604,33 @@ async function main() {
   if (dryRun) {
     console.log(`\nTo generate and write translated files, run with --apply:`);
     console.log(`  bun scripts/translate-missing.ts --apply`);
+  }
+}
+
+export function restoreFileBackups(
+  fileBackups: Map<string, Buffer | null>,
+  logPrefix?: string,
+): void {
+  for (const [filePath, originalContent] of fileBackups.entries()) {
+    try {
+      if (originalContent === null) {
+        if (existsSync(filePath)) {
+          rmSync(filePath, { force: true });
+          if (logPrefix) {
+            console.log(`${logPrefix} [Cleanup] Removed orphaned file: ${filePath}`);
+          }
+        }
+      } else {
+        writeFileSync(filePath, originalContent);
+        if (logPrefix) {
+          console.log(`${logPrefix} [Cleanup] Restored previous file: ${filePath}`);
+        }
+      }
+    } catch (cleanupErr) {
+      if (logPrefix) {
+        console.error(`${logPrefix} Failed to clean up file ${filePath}:`, cleanupErr);
+      }
+    }
   }
 }
 
