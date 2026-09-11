@@ -551,7 +551,7 @@ describe("writeTranslationToNotion", () => {
     });
   });
 
-  it("does not misrank canonical candidate when getPageBlocks fails during reconciliation", async () => {
+  it("ranks candidate with unavailable body ahead of confirmed stub during reconciliation", async () => {
     vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
       results: [
         {
@@ -560,11 +560,11 @@ describe("writeTranslationToNotion", () => {
           properties: {
             [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Target Title" }] },
             [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES" } },
-            [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Published" } },
+            [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
           },
         } as unknown as NotionPage,
         {
-          id: "automated-id",
+          id: "stub-id",
           object: "page",
           properties: {
             [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Target Title" }] },
@@ -580,14 +580,7 @@ describe("writeTranslationToNotion", () => {
     vi.mocked(mockClient.getPageBlocks)
       .mockRejectedValueOnce(new Error("Transient Notion 500 error"))
       .mockResolvedValueOnce({
-        results: [
-          {
-            id: "b1",
-            type: "paragraph",
-            object: "block",
-            paragraph: { rich_text: [{ plain_text: "Content" }] },
-          } as unknown as NotionBlock,
-        ],
+        results: [],
         children: {},
       })
       .mockResolvedValueOnce({
@@ -598,7 +591,7 @@ describe("writeTranslationToNotion", () => {
     vi.mocked(mockClient.getPage).mockResolvedValueOnce({
       id: "canonical-id",
       properties: {
-        [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Published" } },
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
       },
     } as unknown as NotionPage);
 
@@ -2010,17 +2003,31 @@ describe("writeTranslationToNotion", () => {
         },
       } as unknown as NotionPage;
 
-      // When canonical's body is undefined (fetch failed), it should not be treated as a stub (false)
-      // and thus does not get demoted below the automated candidate by body presence.
+      // A candidate known to contain content (auto-id, true) ranks ahead of unavailable candidate (canonical-id, undefined)
       const ranked = rankTranslationCandidates(
         [failedFetchCanonical, automatedWithBody],
         "Target",
         { "canonical-id": undefined, "auto-id": true },
       );
-      expect(ranked[0].id).toBe("canonical-id");
+      expect(ranked[0].id).toBe("auto-id");
+
+      // An unavailable candidate (canonical-id, undefined) ranks ahead of a confirmed stub (stub-id, false)
+      const confirmedStub = {
+        id: "stub-id",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Target" }] },
+          [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES" } },
+        },
+      } as unknown as NotionPage;
+      const rankedWithStub = rankTranslationCandidates(
+        [failedFetchCanonical, confirmedStub],
+        "Target",
+        { "canonical-id": undefined, "stub-id": false },
+      );
+      expect(rankedWithStub[0].id).toBe("canonical-id");
     });
 
-    it("ranks automated candidate with real body ahead of explicit stub even when another candidate has undefined body status", () => {
+    it("ranks candidates according to 3-tier body presence: true > undefined > false", () => {
       const failedFetch = {
         id: "failed-id",
         properties: {
@@ -2055,7 +2062,8 @@ describe("writeTranslationToNotion", () => {
         },
       );
 
-      expect(ranked.map((p) => p.id)).toEqual(["failed-id", "auto-body-id", "explicit-stub-id"]);
+      // auto-body-id (true) > failed-id (undefined) > explicit-stub-id (false)
+      expect(ranked.map((p) => p.id)).toEqual(["auto-body-id", "failed-id", "explicit-stub-id"]);
     });
 
     it("ranks explicit language source over automated over fallback", () => {

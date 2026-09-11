@@ -399,21 +399,19 @@ export function rankTranslationCandidates(
   const srcRank: Record<string, number> = { explicit: 0, automated: 1, fallback: 2 };
 
   return [...alive].sort((a, b) => {
-    // 1. Real body over stub:
-    // Confirmed non-stubs (true or unknown/undefined) rank ahead of confirmed empty stubs (false).
-    // When comparing a confirmed body (true) vs an unknown body (undefined), neither is penalized
-    // so canonical metadata (language source, element type, title) decides.
+    // 1. Real body over unknown over stub:
+    // A candidate confirmed to contain content (true) ranks first.
+    // An unavailable/unknown candidate (undefined) ranks second (never demoted to a confirmed stub).
+    // A confirmed empty stub (false) ranks last.
     if (hasBodyById) {
-      const aBody = hasBodyById[a.id];
-      const bBody = hasBodyById[b.id];
-      if (typeof aBody === "boolean" && typeof bBody === "boolean") {
-        if (aBody !== bBody) {
-          return (aBody ? 0 : 1) - (bBody ? 0 : 1);
-        }
-      } else if (aBody !== bBody) {
-        if (aBody === false) return 1;
-        if (bBody === false) return -1;
-      }
+      const getBodyRank = (body: boolean | undefined): number => {
+        if (body === true) return 0;
+        if (body === undefined) return 1;
+        return 2;
+      };
+      const aRank = getBodyRank(hasBodyById[a.id]);
+      const bRank = getBodyRank(hasBodyById[b.id]);
+      if (aRank !== bRank) return aRank - bRank;
     }
 
     // 2. Language source: explicit > automated > fallback
