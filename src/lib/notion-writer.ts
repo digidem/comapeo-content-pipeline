@@ -42,6 +42,7 @@ export interface WriteNotionResult {
   action: "created" | "updated" | "skipped";
   pageId?: string;
   reason?: string;
+  rollback?: () => Promise<void>;
 }
 
 const SKIP_BLOCK_TYPES = new Set([
@@ -515,10 +516,39 @@ export async function writeTranslationToNotion(
         );
       }
 
+      const rollback = async (): Promise<void> => {
+        if (typeof client.restoreBlock === "function") {
+          for (const b of existingBlocks.results) {
+            try {
+              await client.restoreBlock(b.id);
+            } catch {
+              // ignore secondary errors during rollback
+            }
+          }
+        }
+        for (const b of newlyAppended) {
+          try {
+            await client.deleteBlock(b.id);
+          } catch {
+            // ignore secondary errors during rollback
+          }
+        }
+        if (Object.keys(originalPropertiesToRestore).length > 0) {
+          try {
+            await client.updatePage(targetPageId, {
+              properties: originalPropertiesToRestore,
+            });
+          } catch {
+            // ignore secondary errors during rollback
+          }
+        }
+      };
+
       return {
         written: true,
         action: "updated",
         pageId: targetPageId,
+        rollback,
       };
     }
   }
@@ -606,10 +636,21 @@ export async function writeTranslationToNotion(
     throw err;
   }
 
+  const rollback = async (): Promise<void> => {
+    if (newPage?.id) {
+      try {
+        await client.deleteBlock(newPage.id);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
   return {
     written: true,
     action: "created",
     pageId: newPage.id,
+    rollback,
   };
 }
 

@@ -54,6 +54,13 @@ async function main() {
   const databaseId = args["database-id"] || process.env.NOTION_DATABASE_ID;
   const targetLocaleArg = args.locale as "pt" | "es" | undefined;
   const pageFilter = args.page;
+  if (args.limit !== undefined) {
+    const parsedLimit = Number(args.limit);
+    if (!Number.isInteger(parsedLimit) || parsedLimit <= 0) {
+      console.error(`Invalid --limit: "${args.limit}". Must be a positive integer.`);
+      process.exit(1);
+    }
+  }
   const limit = args.limit ? parseInt(args.limit, 10) : Infinity;
   const input = args.input || join(process.cwd(), "output/manifest.json");
   const inputDir = args["input-dir"] || join(process.cwd(), "output");
@@ -282,7 +289,7 @@ async function main() {
     }
 
     // D. Apply Mode
-    let createdNotionPageId: string | undefined;
+    let rollbackNotion: (() => Promise<void>) | undefined;
     try {
       console.log(
         `${progress} Translating "${page.title}" to ${locale.toUpperCase()} (${translatable.length} blocks)...`,
@@ -330,12 +337,10 @@ async function main() {
         });
 
         if (notionRes.written) {
+          rollbackNotion = notionRes.rollback;
           console.log(
             `${progress} [Notion] ✓ ${notionRes.action === "created" ? "Created new page" : "Updated stub"} [${notionRes.pageId}]`,
           );
-          if (notionRes.action === "created" && notionRes.pageId) {
-            createdNotionPageId = notionRes.pageId;
-          }
           if (notionRes.pageId && notionRes.pageId !== targetPageId) {
             targetPageId = notionRes.pageId;
             result.translatedMetadata.page_id = targetPageId;
@@ -402,21 +407,22 @@ async function main() {
       updateManifestWithDoc(input, buildManifestEntry(targetPageId, result.translatedMetadata), enPageId);
 
       // Successfully saved locally and in manifest; clear rollback tracking
-      createdNotionPageId = undefined;
+      rollbackNotion = undefined;
 
       console.log(
         `${progress} ✓ Success! Translated "${page.title}" -> "${result.title}" [${targetPageId}]\n`,
       );
       successCount++;
     } catch (err) {
-      if (createdNotionPageId && client) {
+      if (rollbackNotion) {
         console.warn(
-          `${progress} Rolling back created Notion page [${createdNotionPageId}] due to persistence failure...`,
+          `${progress} Rolling back Notion changes on [${targetPageId}] due to persistence failure...`,
         );
         try {
-          await client.deleteBlock(createdNotionPageId);
-        } catch (delErr) {
-          console.error(`${progress} Failed to rollback created Notion page [${createdNotionPageId}]:`, delErr);
+          await rollbackNotion();
+          console.log(`${progress} ✓ Rollback of Notion changes complete.`);
+        } catch (rollErr) {
+          console.error(`${progress} Failed to rollback Notion changes on [${targetPageId}]:`, rollErr);
         }
       }
       console.error(`${progress} ✗ Translation failed for "${page.title}":`, err);

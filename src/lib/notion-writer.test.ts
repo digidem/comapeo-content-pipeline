@@ -408,7 +408,7 @@ describe("writeTranslationToNotion", () => {
       translatedBlocks: mockTranslatedBlocks,
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       written: true,
       action: "created",
       pageId: "new-notion-page-id",
@@ -661,7 +661,7 @@ describe("writeTranslationToNotion", () => {
       translatedBlocks: mockTranslatedBlocks,
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       written: true,
       action: "updated",
       pageId: "stub-page-id",
@@ -1199,6 +1199,83 @@ describe("writeTranslationToNotion", () => {
     ).rejects.toThrow("Append chunk 2 failed");
 
     expect(mockClient.deleteBlock).toHaveBeenCalledWith("chunk1-b1");
+  });
+
+  it("provides a rollback function when creating a new page that deletes the created page", async () => {
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "created-page-to-rollback",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Rollback Test",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("created");
+    expect(typeof result.rollback).toBe("function");
+
+    await result.rollback!();
+    expect(mockClient.deleteBlock).toHaveBeenCalledWith("created-page-to-rollback");
+  });
+
+  it("provides a rollback function when updating an existing page that restores old blocks and original properties", async () => {
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "updated-page-to-rollback",
+      properties: {
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [
+        { id: "old-block-a", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      children: {},
+    });
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "new-block-a", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+    vi.mocked(mockClient.updatePage).mockResolvedValue({
+      id: "updated-page-to-rollback",
+      object: "page",
+    } as unknown as NotionPage);
+    vi.mocked(mockClient.deleteBlock).mockResolvedValue({ id: "old-block-a", object: "block", archived: true });
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Update Rollback",
+      targetPageId: "updated-page-to-rollback",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("updated");
+    expect(typeof result.rollback).toBe("function");
+
+    await result.rollback!();
+
+    expect(mockClient.restoreBlock).toHaveBeenCalledWith("old-block-a");
+    expect(mockClient.deleteBlock).toHaveBeenCalledWith("new-block-a");
+    expect(mockClient.updatePage).toHaveBeenLastCalledWith("updated-page-to-rollback", {
+      properties: {
+        [NOTION_PROPERTIES.TITLE]: { title: [] },
+        [NOTION_PROPERTIES.LANGUAGE]: { select: null },
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+      },
+    });
   });
 
   describe("isStubPage block type checks", () => {
