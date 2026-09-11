@@ -197,6 +197,7 @@ function isNotionUrl(url: string): boolean {
  * Produces a stable base URL (origin + pathname) for matching.
  */
 export function stripUrlSignature(url: string): string {
+	if (url.startsWith("data:")) return url;
 	try {
 		const u = new URL(url);
 		return u.origin + u.pathname;

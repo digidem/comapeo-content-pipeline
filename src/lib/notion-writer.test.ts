@@ -394,8 +394,29 @@ describe("writeTranslationToNotion", () => {
     expect(createArgs.properties["Publish Status"]).toEqual({
       select: { name: "Automated translations generated" },
     });
-    expect(createArgs.properties["Parent item"]).toBeUndefined();
+    expect(createArgs.properties["Parent item"]).toEqual({
+      relation: [{ id: "en-parent-id" }],
+    });
     expect(createArgs.children).toHaveLength(1);
+  });
+
+  it("leaves Parent item undefined when neither parentItemId nor parentEnglishPageId is provided", async () => {
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "root-page-id",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Título Raiz",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    const createArgs = vi.mocked(mockClient.createPage).mock.calls[0][0];
+    expect(createArgs.properties["Parent item"]).toBeUndefined();
   });
 
   it("uses parentItemId as relation when creating a new page as a sibling", async () => {
@@ -789,5 +810,96 @@ describe("writeTranslationToNotion", () => {
     expect(result.written).toBe(true);
     expect(result.action).toBe("updated");
     expect(mockClient.deleteBlock).toHaveBeenCalledWith("placeholder-block");
+  });
+
+  it("does not classify pages with nested table rows or toggle children as stubs", async () => {
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "nested-content-page",
+      properties: {
+        "Publish Status": { select: { name: "Draft published" } },
+      },
+    } as unknown as NotionPage);
+
+    // Top-level block has no rich_text (e.g. table), but nested child has text
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [
+        {
+          id: "table-1",
+          type: "table",
+          object: "block",
+          table: {},
+        } as unknown as NotionBlock,
+      ],
+      children: {
+        "table-1": [
+          {
+            id: "row-1",
+            type: "table_row",
+            object: "block",
+            table_row: {
+              cells: [[{ plain_text: "Nested table cell content" }]],
+            },
+          } as unknown as NotionBlock,
+        ],
+      },
+    });
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Tentativa de sobrescrever",
+      parentEnglishPageId: "en-parent-id",
+      targetPageId: "nested-content-page",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    // Should be protected by Human-Edit Safety Lock
+    expect(result.written).toBe(false);
+    expect(result.action).toBe("skipped");
+    expect(mockClient.deleteBlock).not.toHaveBeenCalled();
+  });
+
+  it("appends new blocks BEFORE deleting old blocks (atomic replacement)", async () => {
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "stub-page-123",
+      properties: {
+        "Publish Status": { select: { name: "Draft published" } },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [
+        { id: "old-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      children: {},
+    });
+
+    const callOrder: string[] = [];
+    vi.mocked(mockClient.appendBlockChildren).mockImplementationOnce(async () => {
+      callOrder.push("append");
+      return { object: "list", results: [], next_cursor: null, has_more: false };
+    });
+    vi.mocked(mockClient.updatePage).mockImplementationOnce(async () => {
+      callOrder.push("update");
+      return { id: "stub-page-123", object: "page" } as unknown as NotionPage;
+    });
+    vi.mocked(mockClient.deleteBlock).mockImplementationOnce(async () => {
+      callOrder.push("delete");
+      return { id: "old-1", object: "block", archived: true };
+    });
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Novo",
+      parentEnglishPageId: "en-parent-id",
+      targetPageId: "stub-page-123",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(callOrder).toEqual(["append", "update", "delete"]);
   });
 });

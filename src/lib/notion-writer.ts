@@ -11,6 +11,7 @@ import { NOTION_PROPERTIES } from "./notion-properties.js";
 import { isStubBody } from "./stub-body.js";
 import { toSectionDir } from "./hierarchy.js";
 import type { PageAsset } from "../schemas/metadata.js";
+import { stripUrlSignature } from "./assets.js";
 
 export interface WriteNotionOptions {
   client: NotionClient;
@@ -27,7 +28,9 @@ export interface WriteNotionOptions {
   translatedBlocks: NotionBlockList;
   assets?: PageAsset[];
   section?: string;
+  toggleDir?: string;
   assetBaseUrl?: string;
+  canonicalUrl?: string;
   force?: boolean;
 }
 
@@ -56,7 +59,9 @@ export function prepareBlocksForNotion(
   options: {
     assets?: PageAsset[];
     section?: string;
+    toggleDir?: string;
     assetBaseUrl?: string;
+    canonicalUrl?: string;
   } = {},
 ): Record<string, unknown>[] {
   const childrenMap = blockList.children || {};
@@ -91,6 +96,7 @@ export function prepareBlocksForNotion(
     if (Array.isArray(cleanedPayload.rich_text)) {
       cleanedPayload.rich_text = sanitizeRichText(
         cleanedPayload.rich_text as Array<Record<string, unknown>>,
+        options.canonicalUrl,
       );
     }
 
@@ -98,6 +104,7 @@ export function prepareBlocksForNotion(
     if (Array.isArray(cleanedPayload.caption)) {
       cleanedPayload.caption = sanitizeRichText(
         cleanedPayload.caption as Array<Record<string, unknown>>,
+        options.canonicalUrl,
       );
     }
 
@@ -105,7 +112,7 @@ export function prepareBlocksForNotion(
     if (block.type === "table_row" && Array.isArray(cleanedPayload.cells)) {
       cleanedPayload.cells = (
         cleanedPayload.cells as Array<Array<Record<string, unknown>>>
-      ).map((cell) => (Array.isArray(cell) ? sanitizeRichText(cell) : cell));
+      ).map((cell) => (Array.isArray(cell) ? sanitizeRichText(cell, options.canonicalUrl) : cell));
     }
 
     // Handle Image Blocks: Convert S3 internal file to external URL
@@ -127,30 +134,32 @@ export function prepareBlocksForNotion(
         externalUrl.startsWith("data:");
 
       if (needsResolution && rawUrl) {
-        const urlPath = rawUrl.split("?")[0];
+        const rawNoSig = stripUrlSignature(rawUrl);
         const matchedAsset = options.assets?.find((a) => {
           if (a.original_url === rawUrl) return true;
-          const origPath = a.original_url.split("?")[0];
-          return (
-            urlPath === origPath ||
-            urlPath.endsWith(origPath) ||
-            origPath.endsWith(urlPath) ||
-            urlPath.split("/").pop() === origPath.split("/").pop()
-          );
+          return stripUrlSignature(a.original_url) === rawNoSig;
         });
 
         if (matchedAsset) {
           const filename = matchedAsset.r2_key.replace(/^assets\//, "");
           const baseUrl =
             options.assetBaseUrl ||
-            process.env.PUBLIC_ASSET_BASE_URL ||
             "https://raw.githubusercontent.com/digidem/comapeo-docs/content";
           const sectionDir = options.section ? toSectionDir(options.section) : null;
+          const togglePath = options.toggleDir ? `/${options.toggleDir}` : "";
           externalUrl = sectionDir
-            ? `${baseUrl}/docs/${sectionDir}/assets/${filename}`
+            ? `${baseUrl}/docs/${sectionDir}${togglePath}/assets/${filename}`
             : `${baseUrl}/docs/assets/${filename}`;
-        } else if (img.file?.url) {
-          externalUrl = img.file.url;
+        } else if (
+          options.assets &&
+          (rawUrl.includes("prod-files-secure.s3") || rawUrl.includes("s3.us-west-2.amazonaws.com"))
+        ) {
+          console.warn(
+            `[notion-writer] Image at ${rawUrl} was not found in rehosted assets; omitting external block to avoid expired link.`,
+          );
+          return null;
+        } else {
+          externalUrl = rawUrl;
         }
       }
 
@@ -160,7 +169,7 @@ export function prepareBlocksForNotion(
           type: "external",
           external: { url: externalUrl },
           ...(img.caption && Array.isArray(img.caption) && img.caption.length > 0
-            ? { caption: sanitizeRichText(img.caption as Array<Record<string, unknown>>) }
+            ? { caption: sanitizeRichText(img.caption as Array<Record<string, unknown>>, options.canonicalUrl) }
             : {}),
         };
         return cleaned;
@@ -205,6 +214,50 @@ export function prepareBlocksForNotion(
   return result;
 }
 
+function extractBlockText(
+  block: NotionBlock,
+  childrenMap?: Record<string, NotionBlock[]>,
+): string[] {
+  const texts: string[] = [];
+  const payload = (block[block.type] as Record<string, unknown>) || {};
+
+  if (Array.isArray(payload.rich_text)) {
+    const line = (payload.rich_text as Array<{ plain_text?: string }>).map((r) => r.plain_text || "").join("");
+    if (line.trim().length > 0) texts.push(line.trim());
+  }
+
+  if (Array.isArray(payload.caption)) {
+    const line = (payload.caption as Array<{ plain_text?: string }>).map((r) => r.plain_text || "").join("");
+    if (line.trim().length > 0) texts.push(line.trim());
+  }
+
+  if (typeof payload.expression === "string" && payload.expression.trim().length > 0) {
+    texts.push(payload.expression.trim());
+  }
+
+  if (block.type === "table_row" && Array.isArray(payload.cells)) {
+    for (const cell of payload.cells as Array<Array<{ plain_text?: string }>>) {
+      if (Array.isArray(cell)) {
+        const line = cell.map((r) => r.plain_text || "").join("");
+        if (line.trim().length > 0) texts.push(line.trim());
+      }
+    }
+  }
+
+  // Media and interactive elements indicate non-empty content
+  if (["image", "video", "file", "pdf", "embed", "audio"].includes(block.type)) {
+    texts.push(`[${block.type}]`);
+  }
+
+  if (childrenMap && childrenMap[block.id]) {
+    for (const child of childrenMap[block.id]) {
+      texts.push(...extractBlockText(child, childrenMap));
+    }
+  }
+
+  return texts;
+}
+
 /**
  * Determines whether an existing Notion page is an empty or unpopulated stub.
  */
@@ -216,16 +269,9 @@ export function isStubPage(
     return true;
   }
 
-  // Concatenate all text across all blocks in the page
   const allText: string[] = [];
   for (const b of blocks.results) {
-    const payload = (b[b.type] as { rich_text?: Array<{ plain_text?: string }> }) || {};
-    if (payload.rich_text) {
-      const line = payload.rich_text.map((r) => r.plain_text || "").join("");
-      if (line.trim().length > 0) {
-        allText.push(line.trim());
-      }
-    }
+    allText.push(...extractBlockText(b, blocks.children));
   }
 
   const combinedText = allText.join("\n").trim();
@@ -256,17 +302,19 @@ export async function writeTranslationToNotion(
     targetLocale,
     targetTitle,
     parentItemId,
-    parentEnglishPageId: _parentEnglishPageId,
+    parentEnglishPageId,
     targetPageId,
     translatedBlocks,
     force = false,
   } = options;
 
-  const effectiveParentId = parentItemId;
+  const effectiveParentId = parentItemId || parentEnglishPageId;
   const preparedBlocks = prepareBlocksForNotion(translatedBlocks, {
     assets: options.assets,
     section: options.section,
+    toggleDir: options.toggleDir,
     assetBaseUrl: options.assetBaseUrl,
+    canonicalUrl: options.canonicalUrl,
   });
   const localeSelectName = targetLocale === "pt" ? "PT - automated" : "ES - automated";
 
@@ -280,11 +328,10 @@ export async function writeTranslationToNotion(
       | undefined;
     const publishStatus = publishStatusProp?.select?.name ?? "";
 
-    const isAutomated = publishStatus === "Automated translations generated";
     const stub = isStubPage(page, existingBlocks);
 
-    // Human-Edit Safety Lock
-    if (!stub && !isAutomated && !force) {
+    // Human-Edit Safety Lock: require force to overwrite any page with non-stub content
+    if (!stub && !force) {
       return {
         written: false,
         action: "skipped",
@@ -292,9 +339,9 @@ export async function writeTranslationToNotion(
       };
     }
 
-    // Safe to overwrite: delete existing top-level blocks
-    for (const b of existingBlocks.results) {
-      await client.deleteBlock(b.id);
+    // Atomic replacement: Append new blocks first so if it fails, old content is preserved
+    if (preparedBlocks.length > 0) {
+      await client.appendBlockChildren(targetPageId, preparedBlocks);
     }
 
     // Update page properties
@@ -320,9 +367,9 @@ export async function writeTranslationToNotion(
       properties: updateProperties,
     });
 
-    // Append translated blocks
-    if (preparedBlocks.length > 0) {
-      await client.appendBlockChildren(targetPageId, preparedBlocks);
+    // Delete old blocks only after new blocks and properties have committed successfully
+    for (const b of existingBlocks.results) {
+      await client.deleteBlock(b.id);
     }
 
     return {
@@ -380,6 +427,7 @@ export async function writeTranslationToNotion(
  */
 export function sanitizeRichText(
   richText: Array<Record<string, unknown>>,
+  canonicalUrl?: string,
 ): Array<Record<string, unknown>> {
   return richText.map((item) => {
     const cloned = { ...item };
@@ -415,7 +463,9 @@ export function sanitizeRichText(
           linkObj.url = `https://docs.comapeo.app${rawUrl}`;
           textObj.link = linkObj;
         } else if (rawUrl.startsWith("#")) {
-          linkObj.url = `https://docs.comapeo.app/${rawUrl}`;
+          linkObj.url = canonicalUrl
+            ? `${canonicalUrl.replace(/\/+$/, "")}${rawUrl}`
+            : `https://docs.comapeo.app/${rawUrl}`;
           textObj.link = linkObj;
         } else if (!/^(https?|mailto):/i.test(rawUrl)) {
           linkObj.url = `https://${rawUrl}`;

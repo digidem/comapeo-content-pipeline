@@ -143,8 +143,17 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
         // delimiter between an alphanumeric and punctuation is not left-flanking
         // — the markers render literally. Styling bare punctuation is visually
         // meaningless, so drop the markers (keep color spans, which still work).
-        if (!/[\p{L}\p{N}]/u.test(segment) && !rt.annotations.code) {
-          const color = rt.annotations.color;
+        const ann = rt.annotations || {
+          bold: false,
+          italic: false,
+          strikethrough: false,
+          underline: false,
+          code: false,
+          color: "default",
+        };
+
+        if (!/[\p{L}\p{N}]/u.test(segment) && !ann.code) {
+          const color = ann.color;
           if (color && color !== "default" && !color.endsWith("_background")) {
             return `<span style={{color:"${color}"}}>${segment}</span>`;
           }
@@ -159,28 +168,27 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
         const trailingWs = trailMatch ? trailMatch[1] : "";
         let s = segment.slice(leadingWs.length, segment.length - trailingWs.length);
 
-        if (rt.annotations.bold) {
+        if (ann.bold) {
           s = `**${s}**`;
         }
-        if (rt.annotations.italic) {
+        if (ann.italic) {
           s = `*${s}*`;
         }
-        if (rt.annotations.strikethrough) {
+        if (ann.strikethrough) {
           s = `~~${s}~~`;
         }
-        if (rt.annotations.underline) {
+        if (ann.underline) {
           s = `<u>${s}</u>`;
         }
-        if (rt.annotations.code) {
+        if (ann.code) {
           // For code spans, hoist surrounding whitespace but preserve interior.
           s = "`" + s + "`";
         }
 
         // Color (foreground only — skip "default" and background colors).
         // Docusaurus parses .md as MDX, so the style prop must be a JSX object
-        // (style={{color:"red"}}), not an HTML string — a string style throws
-        // at static-site-generation time.
-        const color = rt.annotations.color;
+        // expression (style={{color:"..."}}) rather than an HTML string (style="...").
+        const color = ann.color;
         if (color && color !== "default" && !color.endsWith("_background")) {
           s = `<span style={{color:"${color}"}}>${s}</span>`;
         }

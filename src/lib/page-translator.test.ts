@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import type { NotionBlockList } from "./notion-converter.js";
+import type { NotionBlock } from "./notion-client.js";
 import type { PageMetadata } from "../schemas/metadata.js";
 import { AITranslator } from "./ai-translator.js";
 import { loadGlossary } from "./glossary.js";
@@ -258,6 +259,116 @@ describe("translatePageContent", () => {
     // Metadata assets must be preserved
     expect(result.translatedMetadata.assets).toHaveLength(2);
     expect(result.translatedMetadata.assets[0].r2_key).toBe("assets/ab2b210fb2fbe7db8225bbd0cefd33bb92d003c9fb8b3ca73a17f3703d2a38d4.jpg");
+    expect(result.translatedMetadata.status).toBe("draft");
+  });
+
+  it("throws error when translation drops required HTML placeholder", async () => {
+    const blocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "p1",
+          type: "paragraph",
+          has_children: false,
+          paragraph: {
+            rich_text: [
+              {
+                type: "text",
+                text: { content: 'Click <img src="https://example.com/icon.png" alt="icon" /> to start' },
+                plain_text: 'Click <img src="https://example.com/icon.png" alt="icon" /> to start',
+              },
+            ],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                __page_title__: "Título",
+                p1: "Clique para começar sem tag", // Dropped ⟦TAG_0⟧!
+              }),
+            },
+          },
+        ],
+      }),
+    });
+
+    const translator = new AITranslator({
+      apiKey: "test-key",
+      fetchFn: mockFetch as unknown as typeof fetch,
+    });
+
+    await expect(
+      translatePageContent({
+        enRawBlocks: blocks,
+        enMetadata: mockEnMetadata,
+        targetLocale: "pt",
+        translator,
+        glossary,
+      }),
+    ).rejects.toThrow("Translation validation failed: block \"p1\" dropped required tag placeholder");
+  });
+
+  it("throws error when translated markdown contains MDX hazards", async () => {
+    const blocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "p1",
+          type: "paragraph",
+          has_children: false,
+          paragraph: {
+            rich_text: [
+              {
+                type: "text",
+                text: { content: "Text" },
+                plain_text: "Text",
+              },
+            ],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    // LLM outputs HTML style string attribute which breaks MDX build
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                __page_title__: "Título",
+                p1: '<div style="background: red">Hazard text</div>',
+              }),
+            },
+          },
+        ],
+      }),
+    });
+
+    const translator = new AITranslator({
+      apiKey: "test-key",
+      fetchFn: mockFetch as unknown as typeof fetch,
+    });
+
+    await expect(
+      translatePageContent({
+        enRawBlocks: blocks,
+        enMetadata: mockEnMetadata,
+        targetLocale: "pt",
+        translator,
+        glossary,
+      }),
+    ).rejects.toThrow("MDX safety verification failed");
   });
 });
 
@@ -283,6 +394,11 @@ describe("maskHtmlTags / unmaskHtmlTags", () => {
 
     // Single square bracket
     expect(unmaskHtmlTags("Selecione [TAG_0] para prosseguir", tagMap)).toBe(
+      'Selecione <img src="https://example.com/icon.png" alt="icon" /> para prosseguir',
+    );
+
+    // Double square bracket
+    expect(unmaskHtmlTags("Selecione [[TAG_0]] para prosseguir", tagMap)).toBe(
       'Selecione <img src="https://example.com/icon.png" alt="icon" /> para prosseguir',
     );
   });

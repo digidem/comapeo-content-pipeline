@@ -25,7 +25,8 @@ import { writeTranslationToNotion } from "../src/lib/notion-writer.js";
 import { buildFrontmatter, serializeDoc } from "../src/lib/frontmatter.js";
 import { rewriteRawImgSrcToStatic } from "../src/lib/img-rewrite.js";
 import type { NotionBlockList } from "../src/lib/notion-converter.js";
-import type { PageMetadata } from "../src/schemas/metadata.js";
+import type { PageMetadata, PageAsset } from "../src/schemas/metadata.js";
+import type { ManifestDoc } from "../src/schemas/manifest.js";
 
 interface TranslationTarget {
   page: PageReport;
@@ -294,9 +295,33 @@ async function main() {
       if (outputDir) {
         const docDest = join(outputDir, page.paths[locale]);
         mkdirSync(dirname(docDest), { recursive: true });
-        const docusaurusMd = rewriteRawImgSrcToStatic(result.translatedMd).content;
-        writeFileSync(docDest, docusaurusMd, "utf8");
+        const rewritten = rewriteRawImgSrcToStatic(result.translatedMd);
+        writeFileSync(docDest, rewritten.content, "utf8");
+        copyReferencedAssets(outputDir, inputDir, page.paths[locale], rewritten.assets, enMetadata?.assets);
       }
+
+      // Update manifest.json with initial translation entry
+      const buildManifestEntry = (id: string, meta: PageMetadata): ManifestDoc => ({
+        page_id: id,
+        title: meta.title,
+        locale,
+        section: meta.section,
+        section_order: meta.section_order,
+        element_type: meta.element_type ?? "Page",
+        drafting_status: meta.drafting_status ?? "automated translations generated",
+        slug: meta.slug,
+        docusaurus_id: meta.docusaurus_id,
+        docusaurus_path: page.paths[locale],
+        r2_doc_key: `docs/${id}.md`,
+        r2_metadata_key: `metadata/${id}.json`,
+        source_url: meta.source_url,
+        notion_last_edited_time: meta.notion_last_edited_time,
+        content_hash: meta.content_hash,
+        status: "draft",
+        language_source: "automated",
+      });
+
+      updateManifestWithDoc(input, buildManifestEntry(targetPageId, result.translatedMetadata), enPageId);
 
       // Optional Notion Write-Back
       if (writeNotion && client && databaseId) {
@@ -320,6 +345,7 @@ async function main() {
           translatedBlocks: result.translatedBlocks,
           assets: enMetadata?.assets,
           section: page.section,
+          assetBaseUrl: process.env.PUBLIC_ASSET_BASE_URL,
           force,
         });
 
@@ -343,10 +369,12 @@ async function main() {
 
             if (outputDir) {
               const docDest = join(outputDir, page.paths[locale]);
-              const docusaurusMd = rewriteRawImgSrcToStatic(updatedMd).content;
-              writeFileSync(docDest, docusaurusMd, "utf8");
+              const rewritten = rewriteRawImgSrcToStatic(updatedMd);
+              writeFileSync(docDest, rewritten.content, "utf8");
+              copyReferencedAssets(outputDir, inputDir, page.paths[locale], rewritten.assets, enMetadata?.assets);
             }
             targetPageId = newId;
+            updateManifestWithDoc(input, buildManifestEntry(newId, result.translatedMetadata), enPageId);
           }
         } else {
           console.warn(`${progress} [Notion] ⚠ Skipped write-back: ${notionRes.reason}`);
@@ -369,9 +397,91 @@ async function main() {
   console.log(`Skipped:        ${skippedCount}`);
   console.log(`Failed:         ${failureCount}`);
 
+  if (failureCount > 0) {
+    process.exitCode = 1;
+  }
+
   if (dryRun) {
     console.log(`\nTo generate and write translated files, run with --apply:`);
     console.log(`  bun scripts/translate-missing.ts --apply`);
+  }
+}
+
+function updateManifestWithDoc(manifestPath: string, doc: ManifestDoc, enPageId?: string): void {
+  if (!existsSync(manifestPath)) return;
+  try {
+    const raw = readFileSync(manifestPath, "utf8");
+    const data = JSON.parse(raw) as {
+      docs?: ManifestDoc[];
+      [key: string]: unknown;
+    };
+    if (!Array.isArray(data.docs)) return;
+
+    const existingIdx = data.docs.findIndex(
+      (d) => d.page_id === doc.page_id || (d.slug === doc.slug && d.locale === doc.locale),
+    );
+    if (existingIdx >= 0) {
+      data.docs[existingIdx] = doc;
+    } else {
+      data.docs.push(doc);
+    }
+
+    if (enPageId) {
+      const enDoc = data.docs.find((d) => d.page_id === enPageId);
+      if (enDoc) {
+        if (!Array.isArray(enDoc.sub_items)) enDoc.sub_items = [];
+        if (!enDoc.sub_items.includes(doc.page_id)) {
+          enDoc.sub_items.push(doc.page_id);
+        }
+      }
+    }
+
+    writeFileSync(manifestPath, JSON.stringify(data, null, 2), "utf8");
+    console.log(`    [Manifest] ✓ Updated ${manifestPath} with entry [${doc.page_id}]`);
+  } catch (err) {
+    console.warn(`    [Manifest] ⚠ Could not update manifest: ${err}`);
+  }
+}
+
+function copyReferencedAssets(
+  outputDir: string,
+  inputDir: string,
+  docRelativePath: string,
+  rewrittenAssets: string[],
+  pageAssets?: PageAsset[],
+): void {
+  const assetsSrcDir = join(inputDir, "assets");
+  if (!existsSync(assetsSrcDir)) return;
+
+  const docDest = join(outputDir, docRelativePath);
+  const docDir = dirname(docDest);
+
+  // 1. Copy markdown assets to section/assets directory
+  if (pageAssets && pageAssets.length > 0) {
+    const targetAssetsDir = join(docDir, "assets");
+    mkdirSync(targetAssetsDir, { recursive: true });
+    for (const a of pageAssets) {
+      const filename = a.r2_key.replace(/^assets\//, "");
+      const src = join(assetsSrcDir, filename);
+      const dst = join(targetAssetsDir, filename);
+      if (existsSync(src) && !existsSync(dst)) {
+        writeFileSync(dst, readFileSync(src));
+      }
+    }
+  }
+
+  // 2. Copy inline static assets to outputDir/static/images/notion
+  if (rewrittenAssets.length > 0) {
+    const staticDir = join(outputDir, "static", "images", "notion");
+    mkdirSync(staticDir, { recursive: true });
+    for (const f of rewrittenAssets) {
+      if (f.includes("/") || f.includes("\\") || f.includes("..")) continue;
+      const src = join(assetsSrcDir, f);
+      const dst = join(staticDir, f);
+      if (existsSync(src) && !existsSync(dst)) {
+        writeFileSync(dst, readFileSync(src));
+      }
+    }
   }
 }
 

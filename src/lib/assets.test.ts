@@ -382,6 +382,11 @@ describe("stripUrlSignature", () => {
 		const malformed = "not-a-valid-url/path?query=val";
 		expect(stripUrlSignature(malformed)).toBe("not-a-valid-url/path");
 	});
+
+	it("preserves data URIs without corrupting them into null paths", () => {
+		const dataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+		expect(stripUrlSignature(dataUri)).toBe(dataUri);
+	});
 });
 
 // ── rehostMarkdownAssets ──

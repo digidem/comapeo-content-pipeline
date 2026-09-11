@@ -106,4 +106,31 @@ describe("inlineMarkdownToRichText", () => {
     expect(res[1].type).toBe("mention");
     expect((res[1].mention as { type: string; custom_emoji: { id: string } }).custom_emoji.id).toBe("emoji-from-map");
   });
+
+  it("handles links with balanced parentheses in the URL", () => {
+    const input = "See [Function article](https://en.wikipedia.org/wiki/Function_(mathematics)) for info.";
+    const res = inlineMarkdownToRichText(input);
+    expect(res).toHaveLength(3);
+    expect(res[1].text?.content).toBe("Function article");
+    expect(res[1].text?.link?.url).toBe("https://en.wikipedia.org/wiki/Function_(mathematics)");
+  });
+
+  it("converts underline HTML tags to Notion underline annotations", () => {
+    const input = "Please <u>underline this</u> text.";
+    const res = inlineMarkdownToRichText(input);
+    expect(res).toHaveLength(3);
+    expect(res[1].text?.content).toBe("underline this");
+    expect(res[1].annotations.underline).toBe(true);
+    expect(richTextToMarkdown(res)).toBe(input);
+  });
+
+  it("converts JSX and HTML color spans to Notion color annotations", () => {
+    const input = 'Check <span style={{color:"red"}}>alert</span> and <span style="color: blue">info</span>.';
+    const res = inlineMarkdownToRichText(input);
+    expect(res).toHaveLength(5);
+    expect(res[1].text?.content).toBe("alert");
+    expect(res[1].annotations.color).toBe("red");
+    expect(res[3].text?.content).toBe("info");
+    expect(res[3].annotations.color).toBe("blue");
+  });
 });

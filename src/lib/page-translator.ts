@@ -54,7 +54,7 @@ export function unmaskHtmlTags(text: string, tagMap: Map<string, string>): strin
     const match = placeholder.match(/\d+/);
     if (match) {
       const id = match[0];
-      const loosePattern = new RegExp(`(?:⟦|\\[|\\[\\[|«)\\s*TAG_${id}\\s*(?:⟧|\\]|\\]\\]|»)`, "gi");
+      const loosePattern = new RegExp(`(?:⟦|\\[\\[|\\[|«)\\s*TAG_${id}\\s*(?:⟧|\\]\\]|\\]|»)`, "gi");
       result = result.replace(loosePattern, originalTag);
     }
   }
@@ -124,11 +124,25 @@ export async function translatePageContent(
     pageContext: `Documentation page: "${enMetadata.title}" in section "${enMetadata.section}"`,
   });
 
-  // 5. Unmask HTML tags in translated output
+  // 5. Unmask HTML tags in translated output and verify placeholder integrity
   const translations: Record<string, string> = {};
   for (const [id, transText] of Object.entries(rawTranslations)) {
     const tagMap = blockTagMaps.get(id);
-    translations[id] = tagMap ? unmaskHtmlTags(transText, tagMap) : transText;
+    if (tagMap) {
+      for (const [placeholder] of tagMap.entries()) {
+        const idMatch = placeholder.match(/\d+/);
+        const tagId = idMatch ? idMatch[0] : "";
+        const checkPattern = new RegExp(`(?:⟦|\\[\\[|\\[|«)\\s*TAG_${tagId}\\s*(?:⟧|\\]\\]|\\]|»)`, "i");
+        if (!checkPattern.test(transText)) {
+          throw new Error(
+            `Translation validation failed: block "${id}" dropped required tag placeholder "${placeholder}". Output: ${transText}`,
+          );
+        }
+      }
+      translations[id] = unmaskHtmlTags(transText, tagMap);
+    } else {
+      translations[id] = transText;
+    }
   }
 
   // 6. Resolve translated title
@@ -149,7 +163,10 @@ export async function translatePageContent(
   // 10. Verify MDX hazards
   const hazards = findMdxHazards(markdownBody);
   if (hazards.length > 0) {
-    console.warn(`[mdx-safety] ${hazards.length} hazards detected in ${targetPageId}:`, hazards);
+    const hazardDetails = hazards.map((h) => `${h.kind} at line ${h.line}: "${h.snippet}"`).join(", ");
+    throw new Error(
+      `MDX safety verification failed for ${targetPageId}: ${hazards.length} hazards detected: ${hazardDetails}`,
+    );
   }
 
   // 11. Compute content hash on canonical rehosted markdown
@@ -161,7 +178,12 @@ export async function translatePageContent(
     page_id: targetPageId,
     title: translatedTitle,
     locale: targetLocale,
+    status: "draft",
+    source_url: targetPageId ? `https://notion.so/${targetPageId.replace(/-/g, "")}` : "",
+    notion_last_edited_time: new Date().toISOString(),
     content_hash: hash,
+    raw_hash: "",
+    properties: {},
     language_source: "automated",
     drafting_status: "automated translations generated",
     // Preserve canonical Docusaurus routing

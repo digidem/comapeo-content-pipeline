@@ -141,12 +141,16 @@ export class NotionClient {
       method?: string;
       body?: unknown;
       apiVersion?: string;
+      retry?: boolean;
     } = {},
     retries = 4,
   ): Promise<T> {
-    // Deduplicate by path + method so concurrent callers share one request
-    const dedupeKey = `${options.method || "GET"} ${path}`;
-    return this.dedupeRequest(dedupeKey, () => this._requestInner<T>(path, options, retries));
+    const method = (options.method || "GET").toUpperCase();
+    if (method === "GET") {
+      const dedupeKey = `GET ${path}`;
+      return this.dedupeRequest(dedupeKey, () => this._requestInner<T>(path, options, retries));
+    }
+    return this._requestInner<T>(path, options, retries);
   }
 
   private async _requestInner<T>(
@@ -155,6 +159,7 @@ export class NotionClient {
       method?: string;
       body?: unknown;
       apiVersion?: string;
+      retry?: boolean;
     },
     retries: number,
   ): Promise<T> {
@@ -204,10 +209,11 @@ export class NotionClient {
         const classified = classifyError(err, `Notion ${path}`);
         if (attempt >= retries) throw classified;
 
-        // Only retry network / timeout errors
+        // Only retry network / timeout errors if retries are not disabled for this request
         if (
-          classified.category === ErrorCategory.NETWORK ||
-          classified.category === ErrorCategory.TIMEOUT
+          options.retry !== false &&
+          (classified.category === ErrorCategory.NETWORK ||
+            classified.category === ErrorCategory.TIMEOUT)
         ) {
           const waitMs = 1000 * Math.pow(2, attempt);
           await sleep(waitMs);
@@ -475,6 +481,7 @@ export class NotionClient {
     return this.request<NotionPage>("/pages", {
       method: "POST",
       body: params,
+      retry: false,
     });
   }
 
@@ -510,6 +517,7 @@ export class NotionClient {
       const resp = await this.request<NotionBlockResponse>(`/blocks/${blockId}/children`, {
         method: "PATCH",
         body: { children: chunk },
+        retry: false,
       });
       if (resp.results) {
         allResults.push(...resp.results);

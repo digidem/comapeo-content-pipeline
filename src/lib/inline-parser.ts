@@ -18,9 +18,33 @@ interface IntermediateSpan {
   italic: boolean;
   code: boolean;
   strikethrough: boolean;
+  underline: boolean;
+  color: NotionRichText["annotations"]["color"];
   url: string | null;
   mention?: unknown;
 }
+
+const VALID_NOTION_COLORS = new Set<NotionRichText["annotations"]["color"]>([
+  "default",
+  "gray",
+  "brown",
+  "orange",
+  "yellow",
+  "green",
+  "blue",
+  "purple",
+  "pink",
+  "red",
+  "gray_background",
+  "brown_background",
+  "orange_background",
+  "yellow_background",
+  "green_background",
+  "blue_background",
+  "purple_background",
+  "pink_background",
+  "red_background",
+]);
 
 /**
  * Tokenizes and parses inline markdown into Notion rich_text spans.
@@ -50,14 +74,20 @@ export function inlineMarkdownToRichText(
     }
   }
 
-  return result.length > 0 ? result : [toNotionRichTextItem("", {
-    content: "",
-    bold: false,
-    italic: false,
-    code: false,
-    strikethrough: false,
-    url: null,
-  })];
+  return result.length > 0
+    ? result
+    : [
+        toNotionRichTextItem("", {
+          content: "",
+          bold: false,
+          italic: false,
+          code: false,
+          strikethrough: false,
+          underline: false,
+          color: "default",
+          url: null,
+        }),
+      ];
 }
 
 function toNotionRichTextItem(content: string, meta: IntermediateSpan): NotionRichText {
@@ -69,9 +99,9 @@ function toNotionRichTextItem(content: string, meta: IntermediateSpan): NotionRi
         bold: meta.bold,
         italic: meta.italic,
         strikethrough: meta.strikethrough,
-        underline: false,
+        underline: meta.underline,
         code: meta.code,
-        color: "default",
+        color: meta.color,
       },
       plain_text: content,
     };
@@ -87,9 +117,9 @@ function toNotionRichTextItem(content: string, meta: IntermediateSpan): NotionRi
       bold: meta.bold,
       italic: meta.italic,
       strikethrough: meta.strikethrough,
-      underline: false,
+      underline: meta.underline,
       code: meta.code,
-      color: "default",
+      color: meta.color,
     },
     plain_text: content,
     href: meta.url ?? undefined,
@@ -97,48 +127,122 @@ function toNotionRichTextItem(content: string, meta: IntermediateSpan): NotionRi
 }
 
 /**
+ * Finds the next markdown link `[link text](url)` with balanced parentheses in the URL.
+ */
+function findNextLink(
+  text: string,
+  startIndex: number,
+): {
+  linkStart: number;
+  linkEnd: number;
+  linkText: string;
+  linkUrl: string;
+} | null {
+  for (let i = startIndex; i < text.length; i++) {
+    if (text[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (text[i] === "[") {
+      let bracketDepth = 1;
+      let closeBracket = -1;
+      for (let j = i + 1; j < text.length; j++) {
+        if (text[j] === "\\") {
+          j++;
+          continue;
+        }
+        if (text[j] === "[") {
+          bracketDepth++;
+        } else if (text[j] === "]") {
+          bracketDepth--;
+          if (bracketDepth === 0) {
+            closeBracket = j;
+            break;
+          }
+        }
+      }
+
+      if (closeBracket !== -1 && text[closeBracket + 1] === "(") {
+        let parenDepth = 1;
+        let urlEnd = -1;
+        for (let k = closeBracket + 2; k < text.length; k++) {
+          if (text[k] === "\\") {
+            k++;
+            continue;
+          }
+          if (text[k] === "(") {
+            parenDepth++;
+          } else if (text[k] === ")") {
+            parenDepth--;
+            if (parenDepth === 0) {
+              urlEnd = k;
+              break;
+            }
+          }
+        }
+
+        if (urlEnd !== -1) {
+          return {
+            linkStart: i,
+            linkEnd: urlEnd + 1,
+            linkText: text.slice(i + 1, closeBracket),
+            linkUrl: text.slice(closeBracket + 2, urlEnd),
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Top-level inline segment parser that handles links, code, bold, italic, and strikethrough.
  */
 function parseInlineSegments(text: string, emojiMap?: Map<string, string>): IntermediateSpan[] {
   const spans: IntermediateSpan[] = [];
+  let currentIndex = 0;
 
-  // Match links or code blocks or formatting
-  // Link pattern: [link text](url)
-  const linkRegex = /\[(?<linkText>[^\]]+)\]\((?<linkUrl>[^)]+)\)/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
+  while (currentIndex < text.length) {
+    const linkMatch = findNextLink(text, currentIndex);
+    if (!linkMatch) {
+      spans.push(...parseFormatting(text.slice(currentIndex), null, emojiMap));
+      break;
+    }
 
-  while ((match = linkRegex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      const before = text.slice(lastIndex, match.index);
+    if (linkMatch.linkStart > currentIndex) {
+      const before = text.slice(currentIndex, linkMatch.linkStart);
       spans.push(...parseFormatting(before, null, emojiMap));
     }
 
-    const linkText = match.groups?.linkText ?? "";
-    const linkUrl = match.groups?.linkUrl ?? "";
-    spans.push(...parseFormatting(linkText, linkUrl, emojiMap));
-
-    lastIndex = linkRegex.lastIndex;
-  }
-
-  if (lastIndex < text.length) {
-    spans.push(...parseFormatting(text.slice(lastIndex), null, emojiMap));
+    spans.push(...parseFormatting(linkMatch.linkText, linkMatch.linkUrl, emojiMap));
+    currentIndex = linkMatch.linkEnd;
   }
 
   return spans;
 }
 
+interface FormatContext {
+  bold?: boolean;
+  italic?: boolean;
+  code?: boolean;
+  strikethrough?: boolean;
+  underline?: boolean;
+  color?: NotionRichText["annotations"]["color"];
+}
+
 /**
- * Parses inline formatting (code, bold, italic, strike) within a non-link or link segment.
+ * Parses inline formatting (code, bold, italic, strike, underline, color spans) within a non-link or link segment.
  */
 function parseFormatting(
   text: string,
   linkUrl: string | null,
   emojiMap?: Map<string, string>,
+  ctx: FormatContext = {},
 ): IntermediateSpan[] {
   const result: IntermediateSpan[] = [];
 
-  const tokenRegex = /(?<html><img\b[^>]*\/?>|<br\s*\/?>)|(?<code>`[^`]+`)|(?<boldItalic>\*\*\*[^*]+\*\*\*)|(?<bold>\*\*[^*]+\*\*)|(?<italic>\*[^*]+\*|_[^_]+_)|(?<strike>~~[^~]+~~)/g;
+  const tokenRegex =
+    /(?<html><img\b[^>]*\/?>|<br\s*\/?>)|(?<underline><u>[\s\S]*?<\/u>)|(?<colorSpan><span\s+style=(?:\{\{\s*color:\s*["'](?<jsxColor>[^"']+)["']\s*\}\}|["']\s*color:\s*(?<htmlColor>[^"';]+);?\s*["'])[^>]*>(?<colorSpanInner>[\s\S]*?)<\/span>)|(?<code>`[^`]+`)|(?<boldItalic>\*\*\*[^*]+\*\*\*)|(?<bold>\*\*[^*]+\*\*)|(?<italic>\*[^*]+\*|_[^_]+_)|(?<strike>~~[^~]+~~)/g;
 
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -148,16 +252,40 @@ function parseFormatting(
       const plain = text.slice(lastIndex, match.index);
       result.push({
         content: plain,
-        bold: false,
-        italic: false,
-        code: false,
-        strikethrough: false,
+        bold: !!ctx.bold,
+        italic: !!ctx.italic,
+        code: !!ctx.code,
+        strikethrough: !!ctx.strikethrough,
+        underline: !!ctx.underline,
+        color: ctx.color ?? "default",
         url: linkUrl,
       });
     }
 
     const matchedStr = match[0];
-    if (match.groups?.html) {
+    if (match.groups?.underline) {
+      const inner = matchedStr.slice(3, -4);
+      result.push(
+        ...parseFormatting(inner, linkUrl, emojiMap, { ...ctx, underline: true }),
+      );
+    } else if (match.groups?.colorSpan) {
+      const rawColor = (
+        match.groups.jsxColor ||
+        match.groups.htmlColor ||
+        ""
+      )
+        .trim()
+        .toLowerCase();
+      const mappedColor = VALID_NOTION_COLORS.has(
+        rawColor as NotionRichText["annotations"]["color"],
+      )
+        ? (rawColor as NotionRichText["annotations"]["color"])
+        : (ctx.color ?? "default");
+      const inner = match.groups.colorSpanInner ?? "";
+      result.push(
+        ...parseFormatting(inner, linkUrl, emojiMap, { ...ctx, color: mappedColor }),
+      );
+    } else if (match.groups?.html) {
       if (matchedStr.startsWith("<img")) {
         const isEmoji = /className=["']emoji["']/.test(matchedStr);
         if (isEmoji) {
@@ -167,14 +295,17 @@ function parseFormatting(
           const alt = altMatch ? altMatch[1] : "";
           const src = srcMatch ? srcMatch[1] : "";
 
-          const emojiId = idMatch?.[1] || (emojiMap && (emojiMap.get(alt) || emojiMap.get(src)));
+          const emojiId =
+            idMatch?.[1] || (emojiMap && (emojiMap.get(alt) || emojiMap.get(src)));
           if (emojiId) {
             result.push({
               content: alt ? `:${alt}:` : ":emoji:",
-              bold: false,
-              italic: false,
-              code: false,
-              strikethrough: false,
+              bold: !!ctx.bold,
+              italic: !!ctx.italic,
+              code: !!ctx.code,
+              strikethrough: !!ctx.strikethrough,
+              underline: !!ctx.underline,
+              color: ctx.color ?? "default",
               url: linkUrl,
               mention: {
                 type: "custom_emoji",
@@ -193,57 +324,54 @@ function parseFormatting(
 
       result.push({
         content: matchedStr,
-        bold: false,
-        italic: false,
-        code: false,
-        strikethrough: false,
+        bold: !!ctx.bold,
+        italic: !!ctx.italic,
+        code: !!ctx.code,
+        strikethrough: !!ctx.strikethrough,
+        underline: !!ctx.underline,
+        color: ctx.color ?? "default",
         url: linkUrl,
       });
     } else if (match.groups?.code) {
       result.push({
         content: matchedStr.slice(1, -1),
-        bold: false,
-        italic: false,
+        bold: !!ctx.bold,
+        italic: !!ctx.italic,
         code: true,
-        strikethrough: false,
+        strikethrough: !!ctx.strikethrough,
+        underline: !!ctx.underline,
+        color: ctx.color ?? "default",
         url: linkUrl,
       });
     } else if (match.groups?.boldItalic) {
-      result.push({
-        content: matchedStr.slice(3, -3),
-        bold: true,
-        italic: true,
-        code: false,
-        strikethrough: false,
-        url: linkUrl,
-      });
+      result.push(
+        ...parseFormatting(matchedStr.slice(3, -3), linkUrl, emojiMap, {
+          ...ctx,
+          bold: true,
+          italic: true,
+        }),
+      );
     } else if (match.groups?.bold) {
-      result.push({
-        content: matchedStr.slice(2, -2),
-        bold: true,
-        italic: false,
-        code: false,
-        strikethrough: false,
-        url: linkUrl,
-      });
+      result.push(
+        ...parseFormatting(matchedStr.slice(2, -2), linkUrl, emojiMap, {
+          ...ctx,
+          bold: true,
+        }),
+      );
     } else if (match.groups?.italic) {
-      result.push({
-        content: matchedStr.slice(1, -1),
-        bold: false,
-        italic: true,
-        code: false,
-        strikethrough: false,
-        url: linkUrl,
-      });
+      result.push(
+        ...parseFormatting(matchedStr.slice(1, -1), linkUrl, emojiMap, {
+          ...ctx,
+          italic: true,
+        }),
+      );
     } else if (match.groups?.strike) {
-      result.push({
-        content: matchedStr.slice(2, -2),
-        bold: false,
-        italic: false,
-        code: false,
-        strikethrough: true,
-        url: linkUrl,
-      });
+      result.push(
+        ...parseFormatting(matchedStr.slice(2, -2), linkUrl, emojiMap, {
+          ...ctx,
+          strikethrough: true,
+        }),
+      );
     }
 
     lastIndex = tokenRegex.lastIndex;
@@ -252,10 +380,12 @@ function parseFormatting(
   if (lastIndex < text.length) {
     result.push({
       content: text.slice(lastIndex),
-      bold: false,
-      italic: false,
-      code: false,
-      strikethrough: false,
+      bold: !!ctx.bold,
+      italic: !!ctx.italic,
+      code: !!ctx.code,
+      strikethrough: !!ctx.strikethrough,
+      underline: !!ctx.underline,
+      color: ctx.color ?? "default",
       url: linkUrl,
     });
   }

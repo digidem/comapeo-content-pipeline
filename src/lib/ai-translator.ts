@@ -45,16 +45,27 @@ export class AITranslator {
   private fetchFn: typeof fetch;
 
   constructor(config: AITranslatorConfig = {}) {
-    const poolsideKey = process.env.POOLSIDE_API_KEY;
+    if (config.batchSize !== undefined && (!Number.isInteger(config.batchSize) || config.batchSize <= 0)) {
+      throw new Error(`batchSize must be a positive integer, got ${config.batchSize}`);
+    }
+
+    const globalProcess =
+      typeof globalThis !== "undefined" && "process" in globalThis
+        ? (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+        : undefined;
+    const env = globalProcess?.env ?? {};
+
+    const poolsideKey = env.POOLSIDE_API_KEY;
     this.apiKey =
       config.apiKey ??
-      process.env.TRANSLATION_API_KEY ??
+      env.TRANSLATION_API_KEY ??
+      env.OPENAI_API_KEY ??
       poolsideKey ??
       "";
 
     const isPoolside =
       this.apiKey.startsWith("sky_") ||
-      (!process.env.TRANSLATION_BASE_URL && Boolean(poolsideKey) && this.apiKey === poolsideKey);
+      (!env.TRANSLATION_BASE_URL && !env.OPENAI_BASE_URL && Boolean(poolsideKey) && this.apiKey === poolsideKey);
     const defaultBaseUrl = isPoolside
       ? "https://inference.poolside.ai/v1"
       : "https://api.openai.com/v1";
@@ -63,9 +74,16 @@ export class AITranslator {
       : "deepseek-chat";
 
     const rawBaseUrl =
-      config.baseUrl ?? process.env.TRANSLATION_BASE_URL ?? defaultBaseUrl;
+      config.baseUrl ??
+      env.TRANSLATION_BASE_URL ??
+      env.OPENAI_BASE_URL ??
+      defaultBaseUrl;
     this.baseUrl = rawBaseUrl.replace(/\/+$/, "");
-    this.model = config.model ?? process.env.TRANSLATION_MODEL ?? defaultModel;
+    this.model =
+      config.model ??
+      env.TRANSLATION_MODEL ??
+      env.OPENAI_MODEL ??
+      defaultModel;
     this.maxRetries = config.maxRetries ?? 3;
     this.timeoutMs = config.timeoutMs ?? 180000;
     this.batchSize = config.batchSize ?? 25;
@@ -144,30 +162,35 @@ export class AITranslator {
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+        let rawContent = "";
 
-        const res = await this.fetchFn(`${this.baseUrl}/chat/completions`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${this.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: this.model,
-            messages,
-            temperature: 0.1,
-          }),
-          signal: controller.signal,
-        }).finally(() => clearTimeout(timeoutId));
+        try {
+          const res = await this.fetchFn(`${this.baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${this.apiKey}`,
+            },
+            body: JSON.stringify({
+              model: this.model,
+              messages,
+              temperature: 0.1,
+            }),
+            signal: controller.signal,
+          });
 
-        if (!res.ok) {
-          const errText = await res.text().catch(() => "");
-          throw new Error(
-            `Translation API error (${res.status} ${res.statusText}): ${errText}`,
-          );
+          if (!res.ok) {
+            const errText = await res.text().catch(() => "");
+            throw new Error(
+              `Translation API error (${res.status} ${res.statusText}): ${errText}`,
+            );
+          }
+
+          const data = (await res.json()) as ChatCompletionResponse;
+          rawContent = data.choices?.[0]?.message?.content?.trim() ?? "";
+        } finally {
+          clearTimeout(timeoutId);
         }
-
-        const data = (await res.json()) as ChatCompletionResponse;
-        const rawContent = data.choices?.[0]?.message?.content?.trim() ?? "";
 
         // Strip markdown code fences if LLM wrapped output
         const cleanedJson = rawContent
@@ -203,15 +226,24 @@ export class AITranslator {
           );
         }
 
-        // Verify that every input block ID is present in the response
-        const missingIds = blocks.map((b) => b.id).filter((id) => !(id in parsed));
-        if (missingIds.length > 0) {
-          const errMessage = `Response missing ${missingIds.length} block IDs: ${missingIds.slice(0, 5).join(", ")}`;
+        // Verify that every input block ID is present and has non-empty text if input was non-empty
+        const missingOrEmptyIds = blocks
+          .filter((b) => {
+            if (!(b.id in parsed)) return true;
+            const val = parsed[b.id];
+            if (typeof val !== "string") return true;
+            if (b.text.trim().length > 0 && val.trim().length === 0) return true;
+            return false;
+          })
+          .map((b) => b.id);
+
+        if (missingOrEmptyIds.length > 0) {
+          const errMessage = `Response missing or empty for ${missingOrEmptyIds.length} block IDs: ${missingOrEmptyIds.slice(0, 5).join(", ")}`;
           if (attempt < this.maxRetries) {
             messages.push({ role: "assistant", content: rawContent });
             messages.push({
               role: "user",
-              content: `Your previous response missed the following block IDs: ${missingIds.join(", ")}. Please output the complete JSON object with all block IDs.`,
+              content: `Your previous response was missing or had empty translations for the following block IDs: ${missingOrEmptyIds.join(", ")}. Please output the complete JSON object with all block IDs and valid translations.`,
             });
             continue;
           }

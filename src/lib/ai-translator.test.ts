@@ -231,4 +231,53 @@ describe("AITranslator", () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(result).toEqual({ b1: "1", b2: "2", b3: "3" });
   });
+
+  it("throws error when batchSize is not a positive integer", () => {
+    expect(() => new AITranslator({ batchSize: 0 })).toThrow("batchSize must be a positive integer");
+    expect(() => new AITranslator({ batchSize: -5 })).toThrow("batchSize must be a positive integer");
+    expect(() => new AITranslator({ batchSize: 2.5 })).toThrow("batchSize must be a positive integer");
+  });
+
+  it("retries when response contains empty string for a non-empty block", async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ b1: "" }),
+              },
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ b1: "Valid translation" }),
+              },
+            },
+          ],
+        }),
+      });
+
+    const translator = new AITranslator({
+      apiKey: "test-key",
+      maxRetries: 2,
+      fetchFn: mockFetch as unknown as typeof fetch,
+    });
+
+    const result = await translator.translate({
+      targetLocale: "pt",
+      blocks: [{ id: "b1", text: "Original" }],
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ b1: "Valid translation" });
+  });
 });
