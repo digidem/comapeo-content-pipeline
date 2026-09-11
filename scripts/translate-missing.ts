@@ -12,7 +12,7 @@
  *   bun scripts/translate-missing.ts --apply --page <slug-or-id>
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { parseArgs } from "./lib/args.js";
 import { buildReport, type PageReport } from "./missing-translations.js";
@@ -290,6 +290,15 @@ async function main() {
 
     // D. Apply Mode
     let rollbackNotion: (() => Promise<void>) | undefined;
+    const fileBackups = new Map<string, Buffer | null>();
+    const trackAndWriteFile = (filePath: string, content: string | Buffer) => {
+      if (!fileBackups.has(filePath)) {
+        fileBackups.set(filePath, existsSync(filePath) ? readFileSync(filePath) : null);
+      }
+      mkdirSync(dirname(filePath), { recursive: true });
+      writeFileSync(filePath, content);
+    };
+
     try {
       console.log(
         `${progress} Translating "${page.title}" to ${locale.toUpperCase()} (${translatable.length} blocks)...`,
@@ -370,17 +379,21 @@ async function main() {
       const outMetaPath = join(inputDir, `${targetPageId}.metadata.json`);
       const outBlocksPath = join(inputDir, `${targetPageId}.raw-blocks.json`);
 
-      writeFileSync(outMdPath, result.translatedMd, "utf8");
-      writeFileSync(outMetaPath, JSON.stringify(result.translatedMetadata, null, 2), "utf8");
-      writeFileSync(outBlocksPath, JSON.stringify(result.translatedBlocks, null, 2), "utf8");
+      trackAndWriteFile(outMdPath, result.translatedMd);
+      trackAndWriteFile(outMetaPath, JSON.stringify(result.translatedMetadata, null, 2));
+      trackAndWriteFile(outBlocksPath, JSON.stringify(result.translatedBlocks, null, 2));
 
       // If outputDir or Docusaurus path specified, write there too
       if (outputDir) {
         const docDest = join(outputDir, page.paths[locale]);
-        mkdirSync(dirname(docDest), { recursive: true });
         const rewritten = rewriteRawImgSrcToStatic(result.translatedMd);
-        writeFileSync(docDest, rewritten.content, "utf8");
-        copyReferencedAssets(outputDir, inputDir, page.paths[locale], rewritten.assets, enMetadata?.assets);
+        trackAndWriteFile(docDest, rewritten.content);
+        copyReferencedAssets(outputDir, inputDir, page.paths[locale], rewritten.assets, enMetadata?.assets, trackAndWriteFile);
+      }
+
+      // Snapshot manifest before updating so it can be restored on write error
+      if (!fileBackups.has(input)) {
+        fileBackups.set(input, existsSync(input) ? readFileSync(input) : null);
       }
 
       // Update manifest.json with the finalized translation entry using canonical R2 paths
@@ -407,6 +420,7 @@ async function main() {
       updateManifestWithDoc(input, buildManifestEntry(targetPageId, result.translatedMetadata), enPageId);
 
       // Successfully saved locally and in manifest; clear rollback tracking
+      fileBackups.clear();
       rollbackNotion = undefined;
 
       console.log(
@@ -425,6 +439,25 @@ async function main() {
           console.error(`${progress} Failed to rollback Notion changes on [${targetPageId}]:`, rollErr);
         }
       }
+
+      // Roll back / remove any partially written local files so no orphaned artifacts remain
+      for (const [filePath, originalContent] of fileBackups.entries()) {
+        try {
+          if (originalContent === null) {
+            if (existsSync(filePath)) {
+              rmSync(filePath, { force: true });
+              console.log(`${progress} [Cleanup] Removed orphaned file: ${filePath}`);
+            }
+          } else {
+            writeFileSync(filePath, originalContent);
+            console.log(`${progress} [Cleanup] Restored previous file: ${filePath}`);
+          }
+        } catch (cleanupErr) {
+          console.error(`${progress} Failed to clean up file ${filePath}:`, cleanupErr);
+        }
+      }
+      fileBackups.clear();
+
       console.error(`${progress} ✗ Translation failed for "${page.title}":`, err);
       failureCount++;
     }
@@ -517,12 +550,17 @@ function copyReferencedAssets(
   docRelativePath: string,
   rewrittenAssets: string[],
   pageAssets?: PageAsset[],
+  writeFn?: (filePath: string, content: Buffer | string) => void,
 ): void {
   const assetsSrcDir = join(inputDir, "assets");
   if (!existsSync(assetsSrcDir)) return;
 
   const docDest = join(outputDir, docRelativePath);
   const docDir = dirname(docDest);
+  const writeFile = writeFn ?? ((filePath: string, content: Buffer | string) => {
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, content);
+  });
 
   // 1. Copy markdown assets to section/assets directory
   if (pageAssets && pageAssets.length > 0) {
@@ -533,7 +571,7 @@ function copyReferencedAssets(
       const src = join(assetsSrcDir, filename);
       const dst = join(targetAssetsDir, filename);
       if (existsSync(src) && !existsSync(dst)) {
-        writeFileSync(dst, readFileSync(src));
+        writeFile(dst, readFileSync(src));
       }
     }
   }
@@ -547,7 +585,7 @@ function copyReferencedAssets(
       const src = join(assetsSrcDir, f);
       const dst = join(staticDir, f);
       if (existsSync(src) && !existsSync(dst)) {
-        writeFileSync(dst, readFileSync(src));
+        writeFile(dst, readFileSync(src));
       }
     }
   }
