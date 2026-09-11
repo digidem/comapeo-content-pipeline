@@ -29,6 +29,7 @@ import type { PageMetadata, PageAsset } from "../src/schemas/metadata.js";
 import type { ManifestDoc } from "../src/schemas/manifest.js";
 import { R2_PATHS } from "../src/persistence/r2.js";
 import { buildSidebarsFromPlan } from "../src/lib/manifest.js";
+import { isStubBody } from "../src/lib/stub-body.js";
 
 interface TranslationTarget {
   page: PageReport;
@@ -417,7 +418,16 @@ async function main() {
         language_source: "automated",
       });
 
-      updateManifestWithDoc(input, buildManifestEntry(targetPageId, result.translatedMetadata), enPageId);
+      updateManifestWithDoc(
+        input,
+        buildManifestEntry(targetPageId, result.translatedMetadata),
+        enPageId,
+        target.targetPageId,
+        {
+          inputDir,
+          includeDrafts,
+        },
+      );
 
       // Successfully saved locally and in manifest; clear rollback tracking
       fileBackups.clear();
@@ -479,13 +489,25 @@ async function main() {
   }
 }
 
-function updateManifestWithDoc(manifestPath: string, doc: ManifestDoc, enPageId?: string): void {
+function updateManifestWithDoc(
+  manifestPath: string,
+  doc: ManifestDoc,
+  enPageId?: string,
+  replacedPageId?: string,
+  options?: {
+    inputDir?: string;
+    hasBodyById?: Record<string, boolean>;
+    languageSourceById?: Record<string, "explicit" | "automated" | "fallback">;
+    includeDrafts?: boolean;
+  },
+): void {
   if (!existsSync(manifestPath)) {
     throw new Error(`Manifest file does not exist at ${manifestPath}`);
   }
   const raw = readFileSync(manifestPath, "utf8");
   const data = JSON.parse(raw) as {
     docs?: ManifestDoc[];
+    sidebars?: Record<string, unknown>;
     [key: string]: unknown;
   };
   if (!Array.isArray(data.docs)) {
@@ -494,31 +516,117 @@ function updateManifestWithDoc(manifestPath: string, doc: ManifestDoc, enPageId?
 
   const enDoc = enPageId ? data.docs.find((d) => d.page_id === enPageId) : undefined;
 
+  // If the parent English doc is active, promote the translation doc to active status
+  // so that it passes the publishable gate and is included in active sidebars
+  if (enDoc?.status === "active") {
+    doc.status = "active";
+  }
+
+  const inputDir = options?.inputDir ?? dirname(manifestPath);
+
+  // Build hasBodyById map so body-quality ranking accurately distinguishes stubs from real content
+  const hasBodyById: Record<string, boolean> = {
+    ...(options?.hasBodyById ?? {}),
+  };
+  for (const d of data.docs) {
+    if (d.page_id in hasBodyById) continue;
+    if (d.page_id === doc.page_id) {
+      hasBodyById[d.page_id] = true;
+      continue;
+    }
+    const mdPath = join(inputDir, `${d.page_id}.md`);
+    if (existsSync(mdPath)) {
+      try {
+        hasBodyById[d.page_id] = !isStubBody(readFileSync(mdPath, "utf8"));
+      } catch {
+        hasBodyById[d.page_id] = false;
+      }
+    } else {
+      hasBodyById[d.page_id] = false;
+    }
+  }
+  hasBodyById[doc.page_id] = true;
+
+  // Build languageSourceById map
+  const languageSourceById: Record<string, "explicit" | "automated" | "fallback"> = {
+    ...(options?.languageSourceById ?? {}),
+  };
+  for (const d of data.docs) {
+    if (d.page_id in languageSourceById) continue;
+    if (d.page_id === doc.page_id) {
+      languageSourceById[d.page_id] = "automated";
+      continue;
+    }
+    if (d.language_source) {
+      languageSourceById[d.page_id] = d.language_source;
+    }
+  }
+  languageSourceById[doc.page_id] = "automated";
+
   let previousPageId: string | null = null;
-  const existingIdx = data.docs.findIndex((d) => {
-    // 1. Exact page ID match
-    if (d.page_id === doc.page_id) return true;
+  // 1. Exact page ID match
+  let existingIdx = data.docs.findIndex((d) => d.page_id === doc.page_id);
 
-    // 2. Stable family identity: existing sibling in the English doc's sub_items matching this locale
-    if (enDoc && Array.isArray(enDoc.sub_items) && enDoc.sub_items.includes(d.page_id) && d.locale === doc.locale) {
-      return true;
-    }
+  // 2. Exact replaced page ID match (if translation replaced an existing stub)
+  if (existingIdx < 0 && replacedPageId) {
+    existingIdx = data.docs.findIndex((d) => d.page_id === replacedPageId);
+  }
 
-    // 3. Exact canonical route path match
-    if (doc.docusaurus_path && d.docusaurus_path && d.docusaurus_path === doc.docusaurus_path) {
-      return true;
-    }
-    if (doc.r2_doc_key && d.r2_doc_key && d.r2_doc_key === doc.r2_doc_key) {
-      return true;
-    }
-
-    // 4. Section + slug + locale match (never slug alone across different sections)
-    return (
-      d.locale === doc.locale &&
-      d.slug === doc.slug &&
-      d.section === doc.section
+  // 3. Match within English doc's sub_items family using canonical hierarchy ranking
+  if (existingIdx < 0 && enDoc && Array.isArray(enDoc.sub_items) && enDoc.sub_items.length > 0) {
+    const siblingCandidates = data.docs.filter(
+      (d) => enDoc.sub_items!.includes(d.page_id) && d.locale === doc.locale,
     );
-  });
+
+    if (siblingCandidates.length === 1) {
+      existingIdx = data.docs.findIndex((d) => d.page_id === siblingCandidates[0].page_id);
+    } else if (siblingCandidates.length > 1) {
+      // Multiple siblings exist for this locale in the family.
+      // Rank candidates so we replace the intended target (stubs before pages with bodies,
+      // fallback/automated before explicit, deprecated/archived before active) rather
+      // than arbitrarily replacing whichever sibling appears first in manifest order.
+      const ranked = [...siblingCandidates].sort((a, b) => {
+        // 1. Prefer replacing stubs (no body) before pages with real bodies
+        const aBody = hasBodyById[a.page_id] ? 1 : 0;
+        const bBody = hasBodyById[b.page_id] ? 1 : 0;
+        if (aBody !== bBody) return aBody - bBody;
+
+        // 2. Prefer replacing fallback/automated before explicit human translations
+        const srcRank: Record<string, number> = { fallback: 0, automated: 1, explicit: 2 };
+        const aSrc = srcRank[languageSourceById[a.page_id] ?? a.language_source ?? "fallback"] ?? 0;
+        const bSrc = srcRank[languageSourceById[b.page_id] ?? b.language_source ?? "fallback"] ?? 0;
+        if (aSrc !== bSrc) return aSrc - bSrc;
+
+        // 3. Prefer replacing archived/deprecated before draft/active
+        const statusRank: Record<string, number> = { archived: 0, deprecated: 1, draft: 2, active: 3 };
+        const aStat = statusRank[a.status] ?? 2;
+        const bStat = statusRank[b.status] ?? 2;
+        if (aStat !== bStat) return aStat - bStat;
+
+        // 4. Section order
+        return (a.section_order ?? 9999) - (b.section_order ?? 9999);
+      });
+
+      const targetSibling = ranked[0];
+      existingIdx = data.docs.findIndex((d) => d.page_id === targetSibling.page_id);
+    }
+  }
+
+  // 4. Exact canonical route path match
+  if (existingIdx < 0) {
+    existingIdx = data.docs.findIndex(
+      (d) =>
+        (doc.docusaurus_path && d.docusaurus_path && d.docusaurus_path === doc.docusaurus_path) ||
+        (doc.r2_doc_key && d.r2_doc_key && d.r2_doc_key === doc.r2_doc_key),
+    );
+  }
+
+  // 5. Section + slug + locale match (never slug alone across different sections)
+  if (existingIdx < 0) {
+    existingIdx = data.docs.findIndex(
+      (d) => d.locale === doc.locale && d.slug === doc.slug && d.section === doc.section,
+    );
+  }
 
   if (existingIdx >= 0) {
     previousPageId = data.docs[existingIdx].page_id;
@@ -538,7 +646,10 @@ function updateManifestWithDoc(manifestPath: string, doc: ManifestDoc, enPageId?
   }
 
   // Regenerate sidebars for all locales so navigation manifest stays consistent with added translations
-  data.sidebars = buildSidebarsFromPlan(data.docs);
+  data.sidebars = buildSidebarsFromPlan(data.docs, hasBodyById, {
+    includeDrafts: options?.includeDrafts ?? false,
+    languageSourceById,
+  });
 
   writeFileSync(manifestPath, JSON.stringify(data, null, 2), "utf8");
   console.log(`    [Manifest] ✓ Updated ${manifestPath} with entry [${doc.page_id}] and regenerated sidebars`);

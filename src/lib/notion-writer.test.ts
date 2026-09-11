@@ -1324,6 +1324,145 @@ describe("writeTranslationToNotion", () => {
     });
   });
 
+  it("aborts rollback on an updated page if concurrent edits changed last_edited_time", async () => {
+    vi.mocked(mockClient.getPage)
+      .mockResolvedValueOnce({
+        id: "concurrent-page",
+        last_edited_time: "2026-09-11T10:00:00.000Z",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage)
+      .mockResolvedValueOnce({
+        id: "concurrent-page",
+        last_edited_time: "2026-09-11T10:05:00.000Z",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage)
+      .mockResolvedValueOnce({
+        id: "concurrent-page",
+        last_edited_time: "2026-09-11T10:10:00.000Z",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [
+        { id: "old-block-a", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      children: {},
+    });
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "new-block-a", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+    vi.mocked(mockClient.updatePage).mockResolvedValue({
+      id: "concurrent-page",
+      last_edited_time: "2026-09-11T10:05:00.000Z",
+      object: "page",
+    } as unknown as NotionPage);
+    vi.mocked(mockClient.deleteBlock).mockResolvedValue({ id: "old-block-a", object: "block", archived: true });
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Concurrent Edit Check",
+      targetPageId: "concurrent-page",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(typeof result.rollback).toBe("function");
+
+    // Clear calls from the successful write
+    vi.mocked(mockClient.deleteBlock).mockClear();
+    vi.mocked(mockClient.restoreBlock!).mockClear();
+    vi.mocked(mockClient.updatePage).mockClear();
+
+    await result.rollback!();
+
+    // Must NOT delete new blocks, restore old blocks, or update page properties because concurrent edits occurred
+    expect(mockClient.deleteBlock).not.toHaveBeenCalled();
+    expect(mockClient.restoreBlock).not.toHaveBeenCalled();
+    expect(mockClient.updatePage).not.toHaveBeenCalled();
+  });
+
+  it("aborts rollback on an updated page if publish status changed to a human review state", async () => {
+    vi.mocked(mockClient.getPage)
+      .mockResolvedValueOnce({
+        id: "status-change-page",
+        last_edited_time: "2026-09-11T10:00:00.000Z",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage)
+      .mockResolvedValueOnce({
+        id: "status-change-page",
+        last_edited_time: "2026-09-11T10:05:00.000Z",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage)
+      .mockResolvedValueOnce({
+        id: "status-change-page",
+        last_edited_time: "2026-09-11T10:05:00.000Z",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Published" } },
+        },
+      } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [
+        { id: "old-block-a", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      children: {},
+    });
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "new-block-a", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+    vi.mocked(mockClient.updatePage).mockResolvedValue({
+      id: "status-change-page",
+      last_edited_time: "2026-09-11T10:05:00.000Z",
+      object: "page",
+    } as unknown as NotionPage);
+    vi.mocked(mockClient.deleteBlock).mockResolvedValue({ id: "old-block-a", object: "block", archived: true });
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Status Change Check",
+      targetPageId: "status-change-page",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    // Clear calls from the successful write
+    vi.mocked(mockClient.deleteBlock).mockClear();
+    vi.mocked(mockClient.restoreBlock!).mockClear();
+    vi.mocked(mockClient.updatePage).mockClear();
+
+    await result.rollback!();
+
+    // Must NOT delete new blocks or restore old blocks
+    expect(mockClient.deleteBlock).not.toHaveBeenCalled();
+    expect(mockClient.restoreBlock).not.toHaveBeenCalled();
+    expect(mockClient.updatePage).not.toHaveBeenCalled();
+  });
+
   describe("isStubPage block type checks", () => {
     it("recognizes bookmark blocks as non-stub content", () => {
       const page = { id: "p1" } as unknown as NotionPage;
