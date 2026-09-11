@@ -459,10 +459,34 @@ function updateManifestWithDoc(manifestPath: string, doc: ManifestDoc, enPageId?
     throw new Error(`Invalid manifest structure at ${manifestPath}: "docs" array is missing.`);
   }
 
+  const enDoc = enPageId ? data.docs.find((d) => d.page_id === enPageId) : undefined;
+
   let previousPageId: string | null = null;
-  const existingIdx = data.docs.findIndex(
-    (d) => d.page_id === doc.page_id || (d.slug === doc.slug && d.locale === doc.locale),
-  );
+  const existingIdx = data.docs.findIndex((d) => {
+    // 1. Exact page ID match
+    if (d.page_id === doc.page_id) return true;
+
+    // 2. Stable family identity: existing sibling in the English doc's sub_items matching this locale
+    if (enDoc && Array.isArray(enDoc.sub_items) && enDoc.sub_items.includes(d.page_id) && d.locale === doc.locale) {
+      return true;
+    }
+
+    // 3. Exact canonical route path match
+    if (doc.docusaurus_path && d.docusaurus_path && d.docusaurus_path === doc.docusaurus_path) {
+      return true;
+    }
+    if (doc.r2_doc_key && d.r2_doc_key && d.r2_doc_key === doc.r2_doc_key) {
+      return true;
+    }
+
+    // 4. Section + slug + locale match (never slug alone across different sections)
+    return (
+      d.locale === doc.locale &&
+      d.slug === doc.slug &&
+      d.section === doc.section
+    );
+  });
+
   if (existingIdx >= 0) {
     previousPageId = data.docs[existingIdx].page_id;
     data.docs[existingIdx] = doc;
@@ -470,16 +494,13 @@ function updateManifestWithDoc(manifestPath: string, doc: ManifestDoc, enPageId?
     data.docs.push(doc);
   }
 
-  if (enPageId) {
-    const enDoc = data.docs.find((d) => d.page_id === enPageId);
-    if (enDoc) {
-      if (!Array.isArray(enDoc.sub_items)) enDoc.sub_items = [];
-      if (previousPageId && previousPageId !== doc.page_id) {
-        enDoc.sub_items = enDoc.sub_items.filter((id) => id !== previousPageId);
-      }
-      if (!enDoc.sub_items.includes(doc.page_id)) {
-        enDoc.sub_items.push(doc.page_id);
-      }
+  if (enDoc) {
+    if (!Array.isArray(enDoc.sub_items)) enDoc.sub_items = [];
+    if (previousPageId && previousPageId !== doc.page_id) {
+      enDoc.sub_items = enDoc.sub_items.filter((id) => id !== previousPageId);
+    }
+    if (!enDoc.sub_items.includes(doc.page_id)) {
+      enDoc.sub_items.push(doc.page_id);
     }
   }
 
