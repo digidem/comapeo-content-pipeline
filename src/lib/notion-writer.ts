@@ -399,12 +399,20 @@ export function rankTranslationCandidates(
   const srcRank: Record<string, number> = { explicit: 0, automated: 1, fallback: 2 };
 
   return [...alive].sort((a, b) => {
-    // 1. Real body over stub: only compare if both candidates have known body status
+    // 1. Real body over stub:
+    // Confirmed non-stubs (true or unknown/undefined) rank ahead of confirmed empty stubs (false).
+    // When comparing a confirmed body (true) vs an unknown body (undefined), neither is penalized
+    // so canonical metadata (language source, element type, title) decides.
     if (hasBodyById) {
       const aBody = hasBodyById[a.id];
       const bBody = hasBodyById[b.id];
-      if (typeof aBody === "boolean" && typeof bBody === "boolean" && aBody !== bBody) {
-        return (aBody ? 0 : 1) - (bBody ? 0 : 1);
+      if (typeof aBody === "boolean" && typeof bBody === "boolean") {
+        if (aBody !== bBody) {
+          return (aBody ? 0 : 1) - (bBody ? 0 : 1);
+        }
+      } else if (aBody !== bBody) {
+        if (aBody === false) return 1;
+        if (bBody === false) return -1;
       }
     }
 
@@ -809,7 +817,6 @@ export async function writeTranslationToNotion(
           let hasBodyById: Record<string, boolean | undefined> | undefined;
           if (candidates.length > 1 && typeof client.getPageBlocks === "function") {
             const bodies: Record<string, boolean | undefined> = {};
-            let fetchFailed = false;
             await Promise.all(
               candidates.map(async (cand) => {
                 try {
@@ -819,14 +826,11 @@ export async function writeTranslationToNotion(
                   console.warn(
                     `[notion-writer] Failed to fetch blocks for candidate [${cand.id}]: ${fetchErr}`,
                   );
-                  fetchFailed = true;
                   bodies[cand.id] = undefined;
                 }
               }),
             );
-            if (!fetchFailed) {
-              hasBodyById = bodies;
-            }
+            hasBodyById = bodies;
           }
           const ranked = rankTranslationCandidates(candidates, targetTitle, hasBodyById);
           if (ranked.length > 0) {
@@ -880,7 +884,6 @@ export async function writeTranslationToNotion(
         let hasBodyById: Record<string, boolean | undefined> | undefined;
         if (candidates.length > 1 && typeof client.getPageBlocks === "function") {
           const bodies: Record<string, boolean | undefined> = {};
-          let fetchFailed = false;
           await Promise.all(
             candidates.map(async (cand) => {
               try {
@@ -890,14 +893,11 @@ export async function writeTranslationToNotion(
                 console.warn(
                   `[notion-writer] Failed to fetch blocks for candidate [${cand.id}]: ${fetchErr}`,
                 );
-                fetchFailed = true;
                 bodies[cand.id] = undefined;
               }
             }),
           );
-          if (!fetchFailed) {
-            hasBodyById = bodies;
-          }
+          hasBodyById = bodies;
         }
         const ranked = rankTranslationCandidates(candidates, targetTitle, hasBodyById);
         if (ranked.length > 0) {
@@ -942,7 +942,6 @@ export async function writeTranslationToNotion(
         let hasBodyById: Record<string, boolean | undefined> | undefined;
         if (subItemPages.length > 1 && typeof client.getPageBlocks === "function") {
           const bodies: Record<string, boolean | undefined> = {};
-          let fetchFailed = false;
           await Promise.all(
             subItemPages.map(async (cand) => {
               try {
@@ -952,14 +951,11 @@ export async function writeTranslationToNotion(
                 console.warn(
                   `[notion-writer] Failed to fetch blocks for candidate [${cand.id}]: ${fetchErr}`,
                 );
-                fetchFailed = true;
                 bodies[cand.id] = undefined;
               }
             }),
           );
-          if (!fetchFailed) {
-            hasBodyById = bodies;
-          }
+          hasBodyById = bodies;
         }
         const ranked = rankTranslationCandidates(subItemPages, targetTitle, hasBodyById);
         if (ranked.length > 0) {

@@ -2020,6 +2020,44 @@ describe("writeTranslationToNotion", () => {
       expect(ranked[0].id).toBe("canonical-id");
     });
 
+    it("ranks automated candidate with real body ahead of explicit stub even when another candidate has undefined body status", () => {
+      const failedFetch = {
+        id: "failed-id",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Target" }] },
+          [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES" } },
+        },
+      } as unknown as NotionPage;
+
+      const automatedWithBody = {
+        id: "auto-body-id",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Target" }] },
+          [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES - automated" } },
+        },
+      } as unknown as NotionPage;
+
+      const explicitStub = {
+        id: "explicit-stub-id",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Target" }] },
+          [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES" } },
+        },
+      } as unknown as NotionPage;
+
+      const ranked = rankTranslationCandidates(
+        [explicitStub, automatedWithBody, failedFetch],
+        "Target",
+        {
+          "failed-id": undefined,
+          "auto-body-id": true,
+          "explicit-stub-id": false,
+        },
+      );
+
+      expect(ranked.map((p) => p.id)).toEqual(["failed-id", "auto-body-id", "explicit-stub-id"]);
+    });
+
     it("ranks explicit language source over automated over fallback", () => {
       const explicit = {
         id: "exp-id",
