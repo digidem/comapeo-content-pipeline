@@ -935,5 +935,13 @@ describe("applyTranslatedBlocks", () => {
     expect(restored).not.toMatch(/(?<!!)\[diagrama do fluxo\]\(https:\/\/example\.com\/flow\.png\)/);
     expect(restored).toContain("$x$");
   });
+
+  it("restores duplicate equations when one occurrence was preserved but another lost its delimiters", () => {
+    const originalText = "First equation $x$ and second equation $x$.";
+    const translatedWithLostSecond = "Primeira equação $x$ e segunda equação x.";
+
+    const restored = restoreEquationDelimiters(translatedWithLostSecond, originalText);
+    expect(restored).toBe("Primeira equação $x$ e segunda equação $x$.");
+  });
 });
 

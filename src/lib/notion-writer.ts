@@ -6,7 +6,7 @@
  */
 
 import type { NotionBlock, NotionClient, NotionPage } from "./notion-client.js";
-import type { NotionBlockList } from "./notion-converter.js";
+import { DEDICATED_IMAGE_LINK_MARKER, type NotionBlockList } from "./notion-converter.js";
 import { NOTION_PROPERTIES, DEAD_STATUSES, normalizeLocale } from "./notion-properties.js";
 import { mapStatus } from "./status.js";
 import { isStubBody } from "./stub-body.js";
@@ -213,10 +213,10 @@ export function prepareBlocksForNotion(
                 {
                   type: "text",
                   text: {
-                    content: " [link]",
+                    content: DEDICATED_IMAGE_LINK_MARKER,
                     link: { url: sanitizedLink },
                   },
-                  plain_text: " [link]",
+                  plain_text: DEDICATED_IMAGE_LINK_MARKER,
                 },
               ];
             } else if (captionRichText.length > 0) {
@@ -1065,137 +1065,142 @@ export async function writeTranslationToNotion(
       }
     }
 
-    // 2. Under a shared container parent (parentItemId) or database root, match by language AND title
-    //    to strictly prevent reusing an unrelated sibling article under the same container.
-    try {
-      const filterConditions: Record<string, unknown>[] = [
-        {
-          property: NOTION_PROPERTIES.LANGUAGE,
-          select: { equals: localeSelectName },
-        },
-        {
-          property: NOTION_PROPERTIES.TITLE,
-          title: { equals: targetTitle },
-        },
-      ];
-      if (effectiveParentId) {
-        filterConditions.push({
-          property: NOTION_PROPERTIES.PARENT_ITEM,
-          relation: { contains: effectiveParentId },
-        });
-      }
-
-      const existing = await client.queryDatabase({
-        filter: { and: filterConditions },
-        pageSize: 10,
-      });
-
-      const rawCandidates = existing?.results ?? [];
-      const candidates = rawCandidates.filter((p) => {
-        const lang = getPageLanguage(p);
-        return normalizeLocale(lang) === targetLocale;
-      });
-
-      if (candidates.length > 0) {
-        let hasBodyById: Record<string, boolean | undefined> | undefined;
-        if (candidates.length > 1 && typeof client.getPageBlocks === "function") {
-          const bodies: Record<string, boolean | undefined> = {};
-          await Promise.all(
-            candidates.map(async (cand) => {
-              try {
-                const blocks = await client.getPageBlocks(cand.id);
-                bodies[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
-              } catch (fetchErr) {
-                console.warn(
-                  `[notion-writer] Failed to fetch blocks for candidate [${cand.id}]: ${fetchErr}`,
-                );
-                bodies[cand.id] = undefined;
+    // 2. If parentEnglishPageId is provided, check if parentEnglishPageId has sub-item relations
+    //    pointing to this locale's translation.
+    if (parentEnglishPageId && typeof client.getPage === "function") {
+      try {
+        const enPage = await client.getPage(parentEnglishPageId);
+        const subItemProp = enPage?.properties?.[NOTION_PROPERTIES.SUB_ITEM] as
+          | { relation?: Array<{ id: string }> }
+          | undefined;
+        const subItemIds = subItemProp?.relation?.map((r) => r.id) || [];
+        const subItemPages: NotionPage[] = [];
+        for (const childId of subItemIds) {
+          try {
+            const childPage = await client.getPage(childId);
+            if (childPage) {
+              const childLang = getPageLanguage(childPage);
+              if (normalizeLocale(childLang) === targetLocale) {
+                subItemPages.push(childPage);
               }
-            }),
-          );
-          hasBodyById = bodies;
-        }
-        const ranked = rankTranslationCandidates(candidates, targetTitle, hasBodyById);
-        if (ranked.length > 0) {
-          const winner = ranked[0];
-          console.warn(
-            `[notion-writer] Found existing translation page [${winner.id}] matching ${targetLocale} and title "${targetTitle}". Reusing canonical member instead of creating duplicate.`,
-          );
-          return writeTranslationToNotion({
-            ...options,
-            targetPageId: winner.id,
-          });
-        }
-      }
-    } catch (queryErr) {
-      throw new Error(
-        `[notion-writer] Failed to query existing translations by language and title: ${queryErr instanceof Error ? queryErr.message : String(queryErr)}`,
-        { cause: queryErr },
-      );
-    }
-  }
-
-  // 3. Fallback: check if parentEnglishPageId has sub-item relations pointing to this locale's translation
-  if (parentEnglishPageId && typeof client.getPage === "function") {
-    try {
-      const enPage = await client.getPage(parentEnglishPageId);
-      const subItemProp = enPage?.properties?.[NOTION_PROPERTIES.SUB_ITEM] as
-        | { relation?: Array<{ id: string }> }
-        | undefined;
-      const subItemIds = subItemProp?.relation?.map((r) => r.id) || [];
-      const subItemPages: NotionPage[] = [];
-      for (const childId of subItemIds) {
-        try {
-          const childPage = await client.getPage(childId);
-          if (childPage) {
-            const childLang = getPageLanguage(childPage);
-            if (normalizeLocale(childLang) === targetLocale) {
-              subItemPages.push(childPage);
             }
+          } catch (childErr) {
+            throw new Error(
+              `[notion-writer] Failed to fetch sub-item child page [${childId}] of parentEnglishPageId [${parentEnglishPageId}]: ${childErr instanceof Error ? childErr.message : String(childErr)}`,
+              { cause: childErr },
+            );
           }
-        } catch (childErr) {
-          throw new Error(
-            `[notion-writer] Failed to fetch sub-item child page [${childId}] of parentEnglishPageId [${parentEnglishPageId}]: ${childErr instanceof Error ? childErr.message : String(childErr)}`,
-            { cause: childErr },
-          );
         }
+        if (subItemPages.length > 0) {
+          let hasBodyById: Record<string, boolean | undefined> | undefined;
+          if (subItemPages.length > 1 && typeof client.getPageBlocks === "function") {
+            const bodies: Record<string, boolean | undefined> = {};
+            await Promise.all(
+              subItemPages.map(async (cand) => {
+                try {
+                  const blocks = await client.getPageBlocks(cand.id);
+                  bodies[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
+                } catch (fetchErr) {
+                  console.warn(
+                    `[notion-writer] Failed to fetch blocks for candidate [${cand.id}]: ${fetchErr}`,
+                  );
+                  bodies[cand.id] = undefined;
+                }
+              }),
+            );
+            hasBodyById = bodies;
+          }
+          const ranked = rankTranslationCandidates(subItemPages, targetTitle, hasBodyById);
+          if (ranked.length > 0) {
+            const winner = ranked[0];
+            console.warn(
+              `[notion-writer] Found existing translation page [${winner.id}] in sub-items of English page ${parentEnglishPageId}. Reusing canonical member instead of creating duplicate.`,
+            );
+            return writeTranslationToNotion({
+              ...options,
+              targetPageId: winner.id,
+            });
+          }
+        }
+      } catch (err) {
+        throw new Error(
+          `[notion-writer] Failed to inspect parentEnglishPageId [${parentEnglishPageId}] sub-items: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
       }
-      if (subItemPages.length > 0) {
-        let hasBodyById: Record<string, boolean | undefined> | undefined;
-        if (subItemPages.length > 1 && typeof client.getPageBlocks === "function") {
-          const bodies: Record<string, boolean | undefined> = {};
-          await Promise.all(
-            subItemPages.map(async (cand) => {
-              try {
-                const blocks = await client.getPageBlocks(cand.id);
-                bodies[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
-              } catch (fetchErr) {
-                console.warn(
-                  `[notion-writer] Failed to fetch blocks for candidate [${cand.id}]: ${fetchErr}`,
-                );
-                bodies[cand.id] = undefined;
-              }
-            }),
-          );
-          hasBodyById = bodies;
-        }
-        const ranked = rankTranslationCandidates(subItemPages, targetTitle, hasBodyById);
-        if (ranked.length > 0) {
-          const winner = ranked[0];
-          console.warn(
-            `[notion-writer] Found existing translation page [${winner.id}] in sub-items of English page ${parentEnglishPageId}. Reusing canonical member instead of creating duplicate.`,
-          );
-          return writeTranslationToNotion({
-            ...options,
-            targetPageId: winner.id,
+    }
+
+    // 3. For standalone pages where parentEnglishPageId is not provided, match by language AND title
+    //    under effectiveParentId (parentItemId) or database root.
+    //    Note: When parentEnglishPageId is provided, we strictly disallow matching by title alone under a
+    //    shared container to prevent title collisions from overwriting another article's translation.
+    if (!parentEnglishPageId) {
+      try {
+        const filterConditions: Record<string, unknown>[] = [
+          {
+            property: NOTION_PROPERTIES.LANGUAGE,
+            select: { equals: localeSelectName },
+          },
+          {
+            property: NOTION_PROPERTIES.TITLE,
+            title: { equals: targetTitle },
+          },
+        ];
+        if (effectiveParentId) {
+          filterConditions.push({
+            property: NOTION_PROPERTIES.PARENT_ITEM,
+            relation: { contains: effectiveParentId },
           });
         }
+
+        const existing = await client.queryDatabase({
+          filter: { and: filterConditions },
+          pageSize: 10,
+        });
+
+        const rawCandidates = existing?.results ?? [];
+        const candidates = rawCandidates.filter((p) => {
+          const lang = getPageLanguage(p);
+          return normalizeLocale(lang) === targetLocale;
+        });
+
+        if (candidates.length > 0) {
+          let hasBodyById: Record<string, boolean | undefined> | undefined;
+          if (candidates.length > 1 && typeof client.getPageBlocks === "function") {
+            const bodies: Record<string, boolean | undefined> = {};
+            await Promise.all(
+              candidates.map(async (cand) => {
+                try {
+                  const blocks = await client.getPageBlocks(cand.id);
+                  bodies[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
+                } catch (fetchErr) {
+                  console.warn(
+                    `[notion-writer] Failed to fetch blocks for candidate [${cand.id}]: ${fetchErr}`,
+                  );
+                  bodies[cand.id] = undefined;
+                }
+              }),
+            );
+            hasBodyById = bodies;
+          }
+          const ranked = rankTranslationCandidates(candidates, targetTitle, hasBodyById);
+          if (ranked.length > 0) {
+            const winner = ranked[0];
+            console.warn(
+              `[notion-writer] Found existing translation page [${winner.id}] matching ${targetLocale} and title "${targetTitle}". Reusing canonical member instead of creating duplicate.`,
+            );
+            return writeTranslationToNotion({
+              ...options,
+              targetPageId: winner.id,
+            });
+          }
+        }
+      } catch (queryErr) {
+        throw new Error(
+          `[notion-writer] Failed to query existing translations by language and title: ${queryErr instanceof Error ? queryErr.message : String(queryErr)}`,
+          { cause: queryErr },
+        );
       }
-    } catch (err) {
-      throw new Error(
-        `[notion-writer] Failed to inspect parentEnglishPageId [${parentEnglishPageId}] sub-items: ${err instanceof Error ? err.message : String(err)}`,
-        { cause: err },
-      );
     }
   }
   const firstChunk = preparedBlocks.slice(0, 100);

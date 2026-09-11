@@ -83,6 +83,35 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const MAX_DATA_URI_BYTES = 10 * 1024 * 1024; // 10 MB limit for embedded data URIs
 const MAX_DATA_URI_ENCODED_CHARS = Math.ceil((MAX_DATA_URI_BYTES * 4) / 3) + 64;
 
+/**
+ * Estimates the decoded byte length of a percent-encoded or plain URI payload
+ * without allocating decoded strings or intermediate memory.
+ */
+export function estimateDecodedUriBytes(payload: string): number {
+	let bytes = 0;
+	const len = payload.length;
+	for (let i = 0; i < len; i++) {
+		const ch = payload.charCodeAt(i);
+		if (ch === 0x25 /* '%' */ && i + 2 < len && /^[0-9a-fA-F]{2}$/.test(payload.slice(i + 1, i + 3))) {
+			bytes += 1;
+			i += 2;
+		} else if (ch <= 0x7f) {
+			bytes += 1;
+		} else if (ch <= 0x7ff) {
+			bytes += 2;
+		} else if (ch >= 0xd800 && ch <= 0xdbff) {
+			bytes += 4;
+			i++; // skip low surrogate
+		} else {
+			bytes += 3;
+		}
+		if (bytes > MAX_DATA_URI_BYTES) {
+			return bytes;
+		}
+	}
+	return bytes;
+}
+
 export async function rehostAsset(
 	url: string,
 ): Promise<{ data: Uint8Array; contentType: string; ext: string } | null> {
@@ -115,9 +144,10 @@ export async function rehostAsset(
 				data[i] = binaryStr.charCodeAt(i);
 			}
 		} else {
-			if (payload.length > MAX_DATA_URI_BYTES * 3) {
+			const estimatedBytes = estimateDecodedUriBytes(payload);
+			if (estimatedBytes > MAX_DATA_URI_BYTES) {
 				throw new Error(
-					`Data URI payload exceeds maximum allowed size of ${MAX_DATA_URI_BYTES} bytes`,
+					`Data URI payload (${estimatedBytes} bytes) exceeds maximum allowed size of ${MAX_DATA_URI_BYTES} bytes`,
 				);
 			}
 			data = new TextEncoder().encode(decodeURIComponent(payload));

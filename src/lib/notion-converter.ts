@@ -597,16 +597,20 @@ function convertImage(block: NotionBlock): string {
   return `![${alt}](${imgUrl})`;
 }
 
+/** Dedicated zero-width marker that cannot collide with visible author caption text. */
+export const DEDICATED_IMAGE_LINK_MARKER = "\u200B";
+
 /**
  * Checks if a rich text item is a dedicated round-trip representation of an image click destination.
+ * Uses a zero-width space marker to prevent collisions with visible author caption text.
  */
 export function isDedicatedImageLink(rt: NotionRichText): boolean {
   return (
     Boolean(rt.text?.link?.url || rt.href) &&
-    (rt.text?.content === " [link]" ||
-      rt.plain_text === " [link]" ||
-      rt.text?.content === " [image link]" ||
-      rt.plain_text === " [image link]")
+    (rt.text?.content === DEDICATED_IMAGE_LINK_MARKER ||
+      rt.plain_text === DEDICATED_IMAGE_LINK_MARKER ||
+      rt.text?.content === " [link]" ||
+      rt.plain_text === " [link]")
   );
 }
 

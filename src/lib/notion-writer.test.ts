@@ -6,7 +6,7 @@ import {
   isDeadPage,
   rankTranslationCandidates,
 } from "./notion-writer.js";
-import { convertBlocks, type NotionBlockList } from "./notion-converter.js";
+import { convertBlocks, DEDICATED_IMAGE_LINK_MARKER, type NotionBlockList } from "./notion-converter.js";
 import type { NotionBlock, NotionClient, NotionPage } from "./notion-client.js";
 import { ClassifiedError, ErrorCategory } from "./errors.js";
 import { NOTION_PROPERTIES } from "./notion-properties.js";
@@ -255,10 +255,10 @@ describe("prepareBlocksForNotion", () => {
           {
             type: "text",
             text: {
-              content: " [link]",
+              content: DEDICATED_IMAGE_LINK_MARKER,
               link: { url: "https://example.com/image-target" },
             },
-            plain_text: " [link]",
+            plain_text: DEDICATED_IMAGE_LINK_MARKER,
           },
         ],
       },
@@ -266,6 +266,39 @@ describe("prepareBlocksForNotion", () => {
 
     const roundTripMd = convertBlocks({ object: "list", results: [prepared[0] as NotionBlock] });
     expect(roundTripMd).toBe("[![Photo by Jane](https://example.com/images/diagram.png)](https://example.com/image-target)\n");
+  });
+
+  it("does not treat author caption text containing '[link]' as dedicated image link marker", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "author-link-text",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "external",
+            external: {
+              url: "https://example.com/images/diagram.png",
+            },
+            caption: [
+              {
+                type: "text",
+                text: {
+                  content: "See our [link] for details",
+                  link: { url: "https://example.com/details" },
+                },
+              },
+            ],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const prepared = prepareBlocksForNotion(rawBlocks);
+    const roundTripMd = convertBlocks({ object: "list", results: [prepared[0] as NotionBlock] });
+    expect(roundTripMd).toBe("[![See our [link] for details](https://example.com/images/diagram.png)](https://example.com/details)\n");
   });
 
   it("preserves clickable links on image blocks from block.image.external.link", () => {

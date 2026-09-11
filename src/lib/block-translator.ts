@@ -352,15 +352,6 @@ function restoreEquationInProse(prose: string, eq: ParsedEquation): string {
   const escaped = escapeRegExp(expr);
   const isDisplay = eq.isDisplay;
 
-  // If the expression is already delimited in this prose segment, do not touch it
-  const delimitedRegex = new RegExp(
-    isDisplay
-      ? `(?<!\\\\)\\$\\$(?:\\s*)${escaped}(?:\\s*)\\$\\$`
-      : `(?<![\\w\\\\$])\\$(?!\\s)(?:\\s*)${escaped}(?:\\s*)(?<![\\s\\\\$])\\$(?!\\d)`,
-  );
-  if (delimitedRegex.test(prose)) {
-    return prose;
-  }
 
   // Build boundary pattern to safely match un-delimited occurrences of the expression
   const startsWithWord = /^\w/.test(expr);

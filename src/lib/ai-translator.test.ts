@@ -421,4 +421,49 @@ describe("AITranslator", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ b1: "A taxa para avaliação de $x$ é alta." });
   });
+
+  it("retries when LLM drops equation delimiters for a duplicate occurrence of the same equation", async () => {
+    const mockFetch = vi
+      .fn()
+      // First attempt: preserved first $x$, but dropped second $x$
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ b1: "Seja $x$ e depois x." }),
+              },
+            },
+          ],
+        }),
+      })
+      // Second attempt: both preserved
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ b1: "Seja $x$ e depois $x$." }),
+              },
+            },
+          ],
+        }),
+      });
+
+    const translator = new AITranslator({
+      apiKey: "test-key",
+      maxRetries: 2,
+      fetchFn: mockFetch as unknown as typeof fetch,
+    });
+
+    const result = await translator.translate({
+      targetLocale: "pt",
+      blocks: [{ id: "b1", text: "Let $x$ and then $x$." }],
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ b1: "Seja $x$ e depois $x$." });
+  });
 });

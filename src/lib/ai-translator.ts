@@ -310,16 +310,34 @@ export class AITranslator {
           const origEquations = extractEquationsFromText(b.text);
           if (origEquations.length === 0) continue;
 
-          const missingEquations: string[] = [];
+          // Count occurrences of each equation in source to prevent duplicate equations
+          // from falsely passing validation when only one occurrence is delimited
+          const equationCounts = new Map<string, { count: number; raw: string; expression: string; isDisplay: boolean }>();
           for (const eq of origEquations) {
-            const escaped = escapeRegExp(eq.expression);
-            const delimitedRegex = new RegExp(
-              eq.isDisplay
+            const key = `${eq.isDisplay ? "$$" : "$"}:${eq.expression}`;
+            const existing = equationCounts.get(key);
+            if (existing) {
+              existing.count++;
+            } else {
+              equationCounts.set(key, { count: 1, raw: eq.raw, expression: eq.expression, isDisplay: eq.isDisplay });
+            }
+          }
+
+          const missingEquations: string[] = [];
+          for (const { count, raw, expression, isDisplay } of equationCounts.values()) {
+            const escaped = escapeRegExp(expression);
+            const delimitedRegexGlobal = new RegExp(
+              isDisplay
                 ? `(?<!\\\\)\\$\\$(?:\\s*)${escaped}(?:\\s*)\\$\\$`
                 : `(?<![\\w\\\\$])\\$(?!\\s)(?:\\s*)${escaped}(?:\\s*)(?<![\\s\\\\$])\\$(?!\\d)`,
+              "g",
             );
-            if (!delimitedRegex.test(trans)) {
-              missingEquations.push(eq.raw);
+            const matches = trans.match(delimitedRegexGlobal) || [];
+            if (matches.length < count) {
+              const missingCount = count - matches.length;
+              missingEquations.push(
+                missingCount > 1 ? `${raw} (${missingCount} occurrences)` : raw,
+              );
             }
           }
 
