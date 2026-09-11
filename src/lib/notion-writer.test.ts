@@ -545,26 +545,21 @@ describe("writeTranslationToNotion", () => {
     expect(mockClient.createPage).toHaveBeenCalled();
   });
 
-  it("falls back to creating a new page if targetPageId returns status 400 or validation_error", async () => {
+  it("rethrows error when targetPageId returns 400 (does NOT fall back to page creation)", async () => {
     vi.mocked(mockClient.getPage).mockRejectedValueOnce({ status: 400, code: "validation_error" });
-    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
-      id: "new-page-after-400",
-      object: "page",
-    } as unknown as NotionPage);
 
-    const result = await writeTranslationToNotion({
-      client: mockClient,
-      databaseId: "db-123",
-      targetLocale: "es",
-      targetTitle: "Título Nuevo",
-      targetPageId: "invalid-page-id",
-      translatedBlocks: mockTranslatedBlocks,
-    });
+    await expect(
+      writeTranslationToNotion({
+        client: mockClient,
+        databaseId: "db-123",
+        targetLocale: "es",
+        targetTitle: "Título Nuevo",
+        targetPageId: "invalid-page-id",
+        translatedBlocks: mockTranslatedBlocks,
+      }),
+    ).rejects.toEqual({ status: 400, code: "validation_error" });
 
-    expect(result.written).toBe(true);
-    expect(result.action).toBe("created");
-    expect(result.pageId).toBe("new-page-after-400");
-    expect(mockClient.createPage).toHaveBeenCalled();
+    expect(mockClient.createPage).not.toHaveBeenCalled();
   });
 
 
@@ -1164,6 +1159,57 @@ describe("writeTranslationToNotion", () => {
         [NOTION_PROPERTIES.PARENT_ITEM]: { relation: [] },
       },
     });
+  });
+
+  it("preserves newly appended replacement blocks and reports failed block IDs if restoreBlock fails during delete rollback", async () => {
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "stub-restore-fail",
+      properties: {},
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [
+        { id: "old-a", type: "paragraph", object: "block" } as unknown as NotionBlock,
+        { id: "old-b", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      children: {},
+    });
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "new-preserved-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "stub-restore-fail",
+      object: "page",
+    } as unknown as NotionPage);
+
+    // Delete old-a succeeds, old-b fails
+    vi.mocked(mockClient.deleteBlock)
+      .mockResolvedValueOnce({ id: "old-a", object: "block", archived: true })
+      .mockRejectedValueOnce(new Error("Delete error on old-b"));
+
+    // Restoring old-a fails
+    vi.mocked(mockClient.restoreBlock).mockRejectedValueOnce(new Error("Restore error on old-a"));
+
+    await expect(
+      writeTranslationToNotion({
+        client: mockClient,
+        databaseId: "db-123",
+        targetLocale: "pt",
+        targetTitle: "Restore Fail",
+        parentEnglishPageId: "en-parent-id",
+        targetPageId: "stub-restore-fail",
+        translatedBlocks: mockTranslatedBlocks,
+      }),
+    ).rejects.toThrow(/Rollback failed to restore 1 deleted old block\(s\) \[old-a\]; preserved newly appended replacement blocks/);
+
+    // new-preserved-1 must NOT be deleted so content is not completely lost
+    expect(mockClient.deleteBlock).not.toHaveBeenCalledWith("new-preserved-1");
   });
 
   it("rolls back all previously appended chunks when appendBlockChildren fails on a later chunk", async () => {

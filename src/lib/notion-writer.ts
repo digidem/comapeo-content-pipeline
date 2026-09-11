@@ -12,6 +12,7 @@ import { isStubBody } from "./stub-body.js";
 import { toSectionDir } from "./hierarchy.js";
 import type { PageAsset } from "../schemas/metadata.js";
 import { stripUrlSignature } from "./assets.js";
+import type { ClassifiedError } from "./errors.js";
 
 export interface WriteNotionOptions {
   client: NotionClient;
@@ -353,18 +354,16 @@ export async function writeTranslationToNotion(
         (err as { statusCode?: number }).statusCode ??
         (err as { status?: number }).status;
       const code = (err as { code?: string }).code;
-      const isNotFoundOrInvalid =
+      const isNotFound =
         statusCode === 404 ||
-        statusCode === 400 ||
         code === "object_not_found" ||
-        code === "validation_error" ||
         (err instanceof Error &&
-          (/\b(?:404|400)\b/.test(err.message) ||
-            /object_not_found|validation_error/i.test(err.message)));
+          err.name === "ClassifiedError" &&
+          (err as ClassifiedError).statusCode === 404);
 
-      if (isNotFoundOrInvalid) {
+      if (isNotFound) {
         console.warn(
-          `[notion-writer] Target page ${targetPageId} not found or invalid in Notion (${statusCode || code || "404"}); falling back to page creation.`,
+          `[notion-writer] Target page ${targetPageId} not found in Notion (404 / object_not_found); falling back to page creation.`,
         );
       } else {
         throw err;
@@ -477,7 +476,9 @@ export async function writeTranslationToNotion(
       }
 
       // Delete old blocks only after new blocks and properties have committed successfully.
-      // If deletion fails, restore deleted blocks, rollback newly appended blocks, and restore original properties so the page is not left in a corrupted hybrid state.
+      // If deletion fails, attempt to restore deleted old blocks.
+      // If restore fails on any old block, PRESERVE newly appended blocks to prevent total data loss.
+      // Only delete newly appended blocks and restore original properties if all deleted old blocks were safely restored.
       const deletedOldBlockIds: string[] = [];
       try {
         for (const b of existingBlocks.results) {
@@ -485,62 +486,88 @@ export async function writeTranslationToNotion(
           deletedOldBlockIds.push(b.id);
         }
       } catch (deleteErr) {
+        const failedRestoreIds: string[] = [];
+        const restoredBlockIds: string[] = [];
         if (typeof client.restoreBlock === "function") {
           for (const id of deletedOldBlockIds) {
             try {
               await client.restoreBlock(id);
+              restoredBlockIds.push(id);
+            } catch {
+              failedRestoreIds.push(id);
+            }
+          }
+        } else if (deletedOldBlockIds.length > 0) {
+          failedRestoreIds.push(...deletedOldBlockIds);
+        }
+
+        // Only delete newly appended replacement blocks if ALL deleted old blocks were restored,
+        // avoiding total content loss if restore fails.
+        if (failedRestoreIds.length === 0) {
+          for (const b of newlyAppended) {
+            try {
+              await client.deleteBlock(b.id);
             } catch {
               // ignore secondary errors during rollback
             }
           }
-        }
-        for (const b of newlyAppended) {
-          try {
-            await client.deleteBlock(b.id);
-          } catch {
-            // ignore secondary errors during rollback
+          if (Object.keys(originalPropertiesToRestore).length > 0) {
+            try {
+              await client.updatePage(targetPageId, {
+                properties: originalPropertiesToRestore,
+              });
+            } catch {
+              // ignore secondary errors during rollback
+            }
           }
+          throw new Error(
+            `Failed to delete old blocks during atomic replacement on ${targetPageId}. Restored ${restoredBlockIds.length} deleted old blocks, rolled back newly appended blocks, and restored original page properties. Error: ${String(deleteErr)}`,
+            { cause: deleteErr },
+          );
+        } else {
+          throw new Error(
+            `Failed to delete old blocks during atomic replacement on ${targetPageId}. Rollback failed to restore ${failedRestoreIds.length} deleted old block(s) [${failedRestoreIds.join(", ")}]; preserved newly appended replacement blocks to prevent complete content loss. Error: ${String(deleteErr)}`,
+            { cause: deleteErr },
+          );
         }
-        if (Object.keys(originalPropertiesToRestore).length > 0) {
-          try {
-            await client.updatePage(targetPageId, {
-              properties: originalPropertiesToRestore,
-            });
-          } catch {
-            // ignore secondary errors during rollback
-          }
-        }
-        throw new Error(
-          `Failed to delete old blocks during atomic replacement on ${targetPageId}. Rolled back newly appended blocks, restored deleted blocks, and restored original page properties. Error: ${String(deleteErr)}`,
-          { cause: deleteErr },
-        );
       }
 
       const rollback = async (): Promise<void> => {
+        const failedRestoreIds: string[] = [];
         if (typeof client.restoreBlock === "function") {
           for (const b of existingBlocks.results) {
             try {
               await client.restoreBlock(b.id);
             } catch {
+              failedRestoreIds.push(b.id);
+            }
+          }
+        } else if (existingBlocks.results.length > 0) {
+          failedRestoreIds.push(...existingBlocks.results.map((b) => b.id));
+        }
+
+        // Only delete new replacement blocks if old blocks were safely restored
+        if (failedRestoreIds.length === 0) {
+          for (const b of newlyAppended) {
+            try {
+              await client.deleteBlock(b.id);
+            } catch {
               // ignore secondary errors during rollback
             }
           }
-        }
-        for (const b of newlyAppended) {
-          try {
-            await client.deleteBlock(b.id);
-          } catch {
-            // ignore secondary errors during rollback
+          if (Object.keys(originalPropertiesToRestore).length > 0) {
+            try {
+              await client.updatePage(targetPageId, {
+                properties: originalPropertiesToRestore,
+              });
+            } catch {
+              // ignore secondary errors during rollback
+            }
           }
-        }
-        if (Object.keys(originalPropertiesToRestore).length > 0) {
-          try {
-            await client.updatePage(targetPageId, {
-              properties: originalPropertiesToRestore,
-            });
-          } catch {
-            // ignore secondary errors during rollback
-          }
+        } else {
+          console.error(
+            `[notion-writer] Rollback on ${targetPageId} failed to restore ${failedRestoreIds.length} old block(s) [${failedRestoreIds.join(", ")}]. Preserved newly appended blocks to prevent content loss.`,
+          );
         }
       };
 
