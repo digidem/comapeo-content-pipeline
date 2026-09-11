@@ -466,4 +466,122 @@ describe("AITranslator", () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(result).toEqual({ b1: "Seja $x$ e depois $x$." });
   });
+
+  it("retries when LLM duplicates an equation and succeeds on subsequent try", async () => {
+    const mockFetch = vi
+      .fn()
+      // First attempt: duplicated $x$ as $x$ $x$
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ b1: "Seja $x$ $x$ agora." }),
+              },
+            },
+          ],
+        }),
+      })
+      // Second attempt: single $x$
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ b1: "Seja $x$ agora." }),
+              },
+            },
+          ],
+        }),
+      });
+
+    const translator = new AITranslator({
+      apiKey: "test-key",
+      maxRetries: 2,
+      fetchFn: mockFetch as unknown as typeof fetch,
+    });
+
+    const result = await translator.translate({
+      targetLocale: "pt",
+      blocks: [{ id: "b1", text: "Let $x$ now." }],
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ b1: "Seja $x$ agora." });
+  });
+
+  it("retries when LLM adds an unexpected equation not present in source", async () => {
+    const mockFetch = vi
+      .fn()
+      // First attempt: hallucinates $y$
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ b1: "Resultado com $y$ inesperado." }),
+              },
+            },
+          ],
+        }),
+      })
+      // Second attempt: clean translation without equation
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ b1: "Resultado sem fórmula." }),
+              },
+            },
+          ],
+        }),
+      });
+
+    const translator = new AITranslator({
+      apiKey: "test-key",
+      maxRetries: 2,
+      fetchFn: mockFetch as unknown as typeof fetch,
+    });
+
+    const result = await translator.translate({
+      targetLocale: "pt",
+      blocks: [{ id: "b1", text: "Result without formula." }],
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ b1: "Resultado sem fórmula." });
+  });
+
+  it("throws validation error when LLM persistently duplicates equations after all retries", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({ b1: "Seja $x$ $x$ sempre." }),
+            },
+          },
+        ],
+      }),
+    });
+
+    const translator = new AITranslator({
+      apiKey: "test-key",
+      maxRetries: 1,
+      fetchFn: mockFetch as unknown as typeof fetch,
+    });
+
+    await expect(
+      translator.translate({
+        targetLocale: "pt",
+        blocks: [{ id: "b1", text: "Let $x$ always." }],
+      }),
+    ).rejects.toThrow(/Translation validation failed: equation mismatch/);
+  });
 });

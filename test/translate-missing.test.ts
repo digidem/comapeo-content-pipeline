@@ -49,6 +49,25 @@ describe("copyReferencedAssets", () => {
     }
     expect(writtenPaths.some((p) => p.endsWith("safe-image.png"))).toBe(true);
   });
+
+  it("rejects docRelativePath attempting directory traversal outside outputDir", () => {
+    const writtenFiles: Record<string, string> = {};
+    const mockWrite = vi.fn((filePath: string, content: Buffer | string) => {
+      writtenFiles[filePath] = content.toString();
+    });
+
+    copyReferencedAssets(
+      outputDir,
+      inputDir,
+      "../../evil/doc.md",
+      ["safe-image.png"],
+      [{ r2_key: "assets/safe-image.png", url: "https://example.com/1.png" }],
+      mockWrite,
+    );
+
+    expect(mockWrite).not.toHaveBeenCalled();
+    expect(Object.keys(writtenFiles)).toHaveLength(0);
+  });
 });
 
 describe("manifest docusaurus_path contract", () => {

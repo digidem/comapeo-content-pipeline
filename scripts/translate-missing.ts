@@ -444,7 +444,14 @@ async function main() {
 
       // If outputDir or Docusaurus path specified, write there too
       if (outputDir) {
-        const docDest = join(outputDir, page.paths[locale]);
+        const resolvedOutputDir = resolve(outputDir);
+        const docRelativePath = page.paths[locale];
+        const docDest = resolve(resolvedOutputDir, docRelativePath);
+        if (!docDest.startsWith(resolvedOutputDir + "/") && docDest !== resolvedOutputDir) {
+          throw new Error(
+            `Security error: resolved document destination [${docDest}] escapes output directory [${resolvedOutputDir}]`,
+          );
+        }
         const rewritten = rewriteRawImgSrcToStatic(result.translatedMd);
         trackAndWriteFile(docDest, rewritten.content);
         copyReferencedAssets(outputDir, inputDir, page.paths[locale], rewritten.assets, enMetadata?.assets, trackAndWriteFile);
@@ -522,39 +529,45 @@ async function main() {
           `${progress} [Warning] Notion retained translation for [${targetPageId}]. Preserving local files and synchronizing manifest to prevent divergent state.`,
         );
         if (result) {
+          const recoveryFiles = new Map<string, Buffer | null>();
+          const trackRecovery = (filePath: string, content: string | Buffer) => {
+            if (!recoveryFiles.has(filePath)) {
+              recoveryFiles.set(filePath, existsSync(filePath) ? readFileSync(filePath) : null);
+            }
+            mkdirSync(dirname(filePath), { recursive: true });
+            writeFileSync(filePath, content);
+          };
           try {
             const finalPageId = targetPageId || result.translatedMetadata.page_id || `${enPageId}-${locale}`;
             const outMdPath = join(inputDir, `${finalPageId}.md`);
             const outMetaPath = join(inputDir, `${finalPageId}.metadata.json`);
             const outBlocksPath = join(inputDir, `${finalPageId}.raw-blocks.json`);
-            mkdirSync(dirname(outMdPath), { recursive: true });
-            writeFileSync(outMdPath, result.translatedMd);
-            writeFileSync(outMetaPath, JSON.stringify(result.translatedMetadata, null, 2));
-            writeFileSync(outBlocksPath, JSON.stringify(result.translatedBlocks, null, 2));
+            trackRecovery(outMdPath, result.translatedMd);
+            trackRecovery(outMetaPath, JSON.stringify(result.translatedMetadata, null, 2));
+            trackRecovery(outBlocksPath, JSON.stringify(result.translatedBlocks, null, 2));
 
             if (outputDir && page.paths[locale]) {
-              const docDest = join(outputDir, page.paths[locale]);
-              const rewritten = rewriteRawImgSrcToStatic(result.translatedMd);
-              mkdirSync(dirname(docDest), { recursive: true });
-              writeFileSync(docDest, rewritten.content);
-              copyReferencedAssets(
-                outputDir,
-                inputDir,
-                page.paths[locale],
-                rewritten.assets,
-                enMetadata?.assets,
-                (fp, c) => {
-                  mkdirSync(dirname(fp), { recursive: true });
-                  writeFileSync(fp, c);
-                },
-              );
+              const resolvedOutputDir = resolve(outputDir);
+              const docDest = resolve(resolvedOutputDir, page.paths[locale]);
+              if (docDest.startsWith(resolvedOutputDir + "/") || docDest === resolvedOutputDir) {
+                const rewritten = rewriteRawImgSrcToStatic(result.translatedMd);
+                trackRecovery(docDest, rewritten.content);
+                copyReferencedAssets(
+                  outputDir,
+                  inputDir,
+                  page.paths[locale],
+                  rewritten.assets,
+                  enMetadata?.assets,
+                  trackRecovery,
+                );
+              }
             }
 
             updateManifestWithDoc(
               input,
               buildManifestDoc(finalPageId, result.translatedMetadata, locale),
               enPageId,
-              target.targetPageId,
+              target.replaceablePageId ?? target.targetPageId,
               {
                 inputDir,
                 includeDrafts,
@@ -568,6 +581,18 @@ async function main() {
               `${progress} Failed to persist retained translation [${targetPageId ?? "unknown"}] to manifest:`,
               syncErr,
             );
+            // Restore or remove recovery files when manifest update cannot be committed
+            for (const [filePath, orig] of recoveryFiles.entries()) {
+              try {
+                if (orig === null) {
+                  if (existsSync(filePath)) rmSync(filePath, { force: true });
+                } else {
+                  writeFileSync(filePath, orig);
+                }
+              } catch (recErr) {
+                console.error(`${progress} Failed to clean up recovery file ${filePath}:`, recErr);
+              }
+            }
           }
         }
       }
@@ -805,8 +830,15 @@ export function copyReferencedAssets(
   const assetsSrcDir = resolve(inputDir, "assets");
   if (!existsSync(assetsSrcDir)) return;
 
-  const docDest = resolve(outputDir, docRelativePath);
+  const resolvedOutputDir = resolve(outputDir);
+  const docDest = resolve(resolvedOutputDir, docRelativePath);
+  if (!docDest.startsWith(resolvedOutputDir + "/") && docDest !== resolvedOutputDir) {
+    return;
+  }
   const docDir = dirname(docDest);
+  if (!docDir.startsWith(resolvedOutputDir + "/") && docDir !== resolvedOutputDir) {
+    return;
+  }
   const writeFile = writeFn ?? ((filePath: string, content: Buffer | string) => {
     mkdirSync(dirname(filePath), { recursive: true });
     writeFileSync(filePath, content);

@@ -6,7 +6,6 @@
  */
 
 import {
-  escapeRegExp,
   extractEquationsFromText,
   restoreEquationDelimiters,
 } from "./block-translator.js";
@@ -302,68 +301,96 @@ export class AITranslator {
           throw new Error(`Translation validation failed: ${errMessage} after ${this.maxRetries} attempts`);
         }
 
-        // Verify that equation delimiters ($...$ or $$...$$) from source blocks are preserved in translations
-        const droppedEquationBlocks: Array<{ id: string; equations: string[] }> = [];
-        for (const b of blocks) {
-          const trans = parsed[b.id];
-          if (!trans) continue;
-          const origEquations = extractEquationsFromText(b.text);
-          if (origEquations.length === 0) continue;
+        // Verify that equation delimiters ($...$ or $$...$$) and equation counts match source blocks exactly
+        const checkEquationMismatches = (currentParsed: Record<string, string>) => {
+          const mismatchedBlocks: Array<{ id: string; equations: string[] }> = [];
+          for (const b of blocks) {
+            const trans = currentParsed[b.id];
+            if (!trans) continue;
+            const origEquations = extractEquationsFromText(b.text);
+            const transEquations = extractEquationsFromText(trans);
+            if (origEquations.length === 0 && transEquations.length === 0) continue;
 
-          // Count occurrences of each equation in source to prevent duplicate equations
-          // from falsely passing validation when only one occurrence is delimited
-          const equationCounts = new Map<string, { count: number; raw: string; expression: string; isDisplay: boolean }>();
-          for (const eq of origEquations) {
-            const key = `${eq.isDisplay ? "$$" : "$"}:${eq.expression}`;
-            const existing = equationCounts.get(key);
-            if (existing) {
-              existing.count++;
-            } else {
-              equationCounts.set(key, { count: 1, raw: eq.raw, expression: eq.expression, isDisplay: eq.isDisplay });
+            const sourceCounts = new Map<string, { count: number; raw: string }>();
+            for (const eq of origEquations) {
+              const key = `${eq.isDisplay ? "$$" : "$"}:${eq.expression}`;
+              const existing = sourceCounts.get(key);
+              if (existing) {
+                existing.count++;
+              } else {
+                sourceCounts.set(key, { count: 1, raw: eq.raw });
+              }
+            }
+
+            const transCounts = new Map<string, { count: number; raw: string }>();
+            for (const eq of transEquations) {
+              const key = `${eq.isDisplay ? "$$" : "$"}:${eq.expression}`;
+              const existing = transCounts.get(key);
+              if (existing) {
+                existing.count++;
+              } else {
+                transCounts.set(key, { count: 1, raw: eq.raw });
+              }
+            }
+
+            const issues: string[] = [];
+            for (const [key, { count, raw }] of sourceCounts.entries()) {
+              const transEntry = transCounts.get(key);
+              const actualCount = transEntry ? transEntry.count : 0;
+              if (actualCount < count) {
+                const missing = count - actualCount;
+                issues.push(missing > 1 ? `missing delimiters for ${raw} (${missing} occurrences)` : `missing delimiters for ${raw}`);
+              } else if (actualCount > count) {
+                const extra = actualCount - count;
+                issues.push(`duplicate ${raw} (${extra} extra occurrences)`);
+              }
+            }
+
+            for (const [key, { count, raw }] of transCounts.entries()) {
+              if (!sourceCounts.has(key)) {
+                issues.push(`added equation ${raw} (${count} occurrences)`);
+              }
+            }
+
+            if (issues.length > 0) {
+              mismatchedBlocks.push({ id: b.id, equations: issues });
             }
           }
+          return mismatchedBlocks;
+        };
 
-          const missingEquations: string[] = [];
-          for (const { count, raw, expression, isDisplay } of equationCounts.values()) {
-            const escaped = escapeRegExp(expression);
-            const delimitedRegexGlobal = new RegExp(
-              isDisplay
-                ? `(?<!\\\\)\\$\\$(?:\\s*)${escaped}(?:\\s*)\\$\\$`
-                : `(?<![\\w\\\\$])\\$(?!\\s)(?:\\s*)${escaped}(?:\\s*)(?<![\\s\\\\$])\\$(?!\\d)`,
-              "g",
-            );
-            const matches = trans.match(delimitedRegexGlobal) || [];
-            if (matches.length < count) {
-              const missingCount = count - matches.length;
-              missingEquations.push(
-                missingCount > 1 ? `${raw} (${missingCount} occurrences)` : raw,
-              );
-            }
-          }
+        const mismatchedEquationBlocks = checkEquationMismatches(parsed);
 
-          if (missingEquations.length > 0) {
-            droppedEquationBlocks.push({ id: b.id, equations: missingEquations });
-          }
-        }
-
-        if (droppedEquationBlocks.length > 0) {
+        if (mismatchedEquationBlocks.length > 0) {
           if (attempt < this.maxRetries) {
             messages.push({ role: "assistant", content: rawContent });
-            const details = droppedEquationBlocks
-              .map((d) => `Block "${d.id}": missing delimiters for ${d.equations.join(", ")}`)
+            const details = mismatchedEquationBlocks
+              .map((d) => `Block "${d.id}": ${d.equations.join(", ")}`)
               .join("; ");
             messages.push({
               role: "user",
-              content: `Error: The translation dropped equation delimiters ($...$ or $$...$$) for the following: ${details}. Please output the complete JSON object preserving all equation delimiters ($...$ or $$...$$) verbatim.`,
+              content: `Error: The translation dropped equation delimiters ($...$ or $$...$$) or has mismatched equation counts for the following: ${details}. Please output the complete JSON object with the exact same equations and equation counts as the source text, preserving all equation delimiters ($...$ or $$...$$) verbatim.`,
             });
             await sleep(1000 * attempt);
             continue;
           }
+
           // On final attempt, apply delimiter restoration post-processing to recover missing equation delimiters
           for (const b of blocks) {
             if (parsed[b.id]) {
               parsed[b.id] = restoreEquationDelimiters(parsed[b.id], b.text);
             }
+          }
+
+          // Verify whether equation counts now match source after delimiter restoration
+          const stillMismatched = checkEquationMismatches(parsed);
+          if (stillMismatched.length > 0) {
+            const details = stillMismatched
+              .map((d) => `Block "${d.id}": ${d.equations.join(", ")}`)
+              .join("; ");
+            throw new Error(
+              `Translation validation failed: equation mismatch (${details}) after ${this.maxRetries} attempts`,
+            );
           }
         }
 
