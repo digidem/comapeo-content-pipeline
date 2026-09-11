@@ -156,5 +156,24 @@ describe("inlineMarkdownToRichText", () => {
     expect(res[3].text?.content).toBe("parenthesized");
     expect(res[3].annotations.italic).toBe(true);
   });
+
+  it("preserves technical expressions with literal asterisks without corrupting them as italics", () => {
+    const input = "expression a*b*c and x**2**y should not be italic or bold";
+    const res = inlineMarkdownToRichText(input);
+    expect(res).toHaveLength(1);
+    expect(res[0].text?.content).toBe(input);
+    expect(res[0].annotations.italic).toBe(false);
+    expect(res[0].annotations.bold).toBe(false);
+  });
+
+  it("converts genuine asterisk italics with word boundaries", () => {
+    const input = "This is *italic text* and (*parenthesized*) here.";
+    const res = inlineMarkdownToRichText(input);
+    expect(res).toHaveLength(5);
+    expect(res[1].text?.content).toBe("italic text");
+    expect(res[1].annotations.italic).toBe(true);
+    expect(res[3].text?.content).toBe("parenthesized");
+    expect(res[3].annotations.italic).toBe(true);
+  });
 });
 

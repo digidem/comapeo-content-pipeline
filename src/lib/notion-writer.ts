@@ -7,7 +7,7 @@
 
 import type { NotionBlock, NotionClient, NotionPage } from "./notion-client.js";
 import type { NotionBlockList } from "./notion-converter.js";
-import { NOTION_PROPERTIES, DEAD_STATUSES } from "./notion-properties.js";
+import { NOTION_PROPERTIES } from "./notion-properties.js";
 import { isStubBody } from "./stub-body.js";
 import { toSectionDir } from "./hierarchy.js";
 import type { PageAsset } from "../schemas/metadata.js";
@@ -340,6 +340,19 @@ export async function writeTranslationToNotion(
     assetBaseUrl: options.assetBaseUrl,
     canonicalUrl: options.canonicalUrl,
   });
+
+  if (preparedBlocks.length === 0) {
+    console.warn(
+      `[notion-writer] Translation for "${targetTitle}" (${targetLocale}) resulted in 0 writeable blocks after preparation. Skipping write to prevent erasing existing content or creating empty page in Notion.`,
+    );
+    return {
+      written: false,
+      action: "skipped",
+      pageId: targetPageId,
+      reason: "No writeable blocks after preparation (empty translation)",
+    };
+  }
+
   const localeSelectName = targetLocale === "pt" ? "PT - automated" : "ES - automated";
 
   // ── Case 1: Target Page already exists (update stub) ──
@@ -639,13 +652,52 @@ export async function writeTranslationToNotion(
 
   // ── Case 2: Target Page does NOT exist (create new page in Notion DB) ──
   // Reconcile ambiguous responses and prevent duplicate page creation:
-  // Query Notion database to check if a translation page already exists for this family and locale.
   if (typeof client.queryDatabase === "function") {
+    // 1. If parentEnglishPageId is provided and differs from parentItemId, check if a translation
+    //    page already exists directly under this English family root.
+    if (parentEnglishPageId && parentEnglishPageId !== parentItemId) {
+      try {
+        const directFamilyMatch = await client.queryDatabase({
+          filter: {
+            and: [
+              {
+                property: NOTION_PROPERTIES.LANGUAGE,
+                select: { equals: localeSelectName },
+              },
+              {
+                property: NOTION_PROPERTIES.PARENT_ITEM,
+                relation: { contains: parentEnglishPageId },
+              },
+            ],
+          },
+          pageSize: 1,
+        });
+        if (directFamilyMatch?.results && directFamilyMatch.results.length > 0) {
+          const found = directFamilyMatch.results[0];
+          console.warn(
+            `[notion-writer] Found existing translation page [${found.id}] parented by English page ${parentEnglishPageId}. Reusing instead of creating duplicate.`,
+          );
+          return writeTranslationToNotion({
+            ...options,
+            targetPageId: found.id,
+          });
+        }
+      } catch (queryErr) {
+        console.warn(`[notion-writer] Could not query by parentEnglishPageId: ${queryErr}`);
+      }
+    }
+
+    // 2. Under a shared container parent (parentItemId) or database root, match by language AND title
+    //    to strictly prevent reusing an unrelated sibling article under the same container.
     try {
       const filterConditions: Record<string, unknown>[] = [
         {
           property: NOTION_PROPERTIES.LANGUAGE,
           select: { equals: localeSelectName },
+        },
+        {
+          property: NOTION_PROPERTIES.TITLE,
+          title: { equals: targetTitle },
         },
       ];
       if (effectiveParentId) {
@@ -653,44 +705,17 @@ export async function writeTranslationToNotion(
           property: NOTION_PROPERTIES.PARENT_ITEM,
           relation: { contains: effectiveParentId },
         });
-      } else {
-        filterConditions.push({
-          property: NOTION_PROPERTIES.TITLE,
-          title: { equals: targetTitle },
-        });
       }
 
       const existing = await client.queryDatabase({
         filter: { and: filterConditions },
-        pageSize: 10,
+        pageSize: 1,
       });
 
       if (existing?.results && existing.results.length > 0) {
-        let found = existing.results[0];
-        if (existing.results.length > 1) {
-          const exactTitle = existing.results.find((p) => {
-            const pageTitle = (
-              p.properties?.[NOTION_PROPERTIES.TITLE] as { title?: Array<{ plain_text?: string }> } | undefined
-            )?.title?.[0]?.plain_text;
-            return pageTitle === targetTitle;
-          });
-          if (exactTitle) {
-            found = exactTitle;
-          } else {
-            const nonDead = existing.results.find((p) => {
-              const status = (
-                p.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS] as { select?: { name?: string } } | undefined
-              )?.select?.name;
-              return status && !DEAD_STATUSES.includes(status as typeof DEAD_STATUSES[number]);
-            });
-            if (nonDead) {
-              found = nonDead;
-            }
-          }
-        }
-
+        const found = existing.results[0];
         console.warn(
-          `[notion-writer] Found existing translation page [${found.id}] matching ${targetLocale} in family ${effectiveParentId || "root"}. Reusing instead of creating duplicate.`,
+          `[notion-writer] Found existing translation page [${found.id}] matching ${targetLocale} and title "${targetTitle}". Reusing instead of creating duplicate.`,
         );
         return writeTranslationToNotion({
           ...options,
@@ -699,6 +724,38 @@ export async function writeTranslationToNotion(
       }
     } catch (queryErr) {
       console.warn(`[notion-writer] Could not query for existing translation before creation: ${queryErr}`);
+    }
+  }
+
+  // 3. Fallback: check if parentEnglishPageId has sub-item relations pointing to this locale's translation
+  if (parentEnglishPageId && typeof client.getPage === "function") {
+    try {
+      const enPage = await client.getPage(parentEnglishPageId);
+      const subItemProp = enPage?.properties?.[NOTION_PROPERTIES.SUB_ITEM] as
+        | { relation?: Array<{ id: string }> }
+        | undefined;
+      const subItemIds = subItemProp?.relation?.map((r) => r.id) || [];
+      for (const childId of subItemIds) {
+        try {
+          const childPage = await client.getPage(childId);
+          const childLang = (
+            childPage?.properties?.[NOTION_PROPERTIES.LANGUAGE] as { select?: { name?: string } } | undefined
+          )?.select?.name;
+          if (childLang === localeSelectName) {
+            console.warn(
+              `[notion-writer] Found existing translation page [${childId}] in sub-items of English page ${parentEnglishPageId}. Reusing instead of creating duplicate.`,
+            );
+            return writeTranslationToNotion({
+              ...options,
+              targetPageId: childId,
+            });
+          }
+        } catch {
+          // ignore individual child fetch error
+        }
+      }
+    } catch (err) {
+      console.warn(`[notion-writer] Could not inspect parentEnglishPageId sub-items: ${err}`);
     }
   }
   const firstChunk = preparedBlocks.slice(0, 100);
@@ -742,7 +799,13 @@ export async function writeTranslationToNotion(
     throw err;
   }
 
-  let committedLastEditedTime: string | undefined = newPage?.last_edited_time;
+  if (!newPage?.id) {
+    throw new Error(
+      `Failed to create page for "${targetTitle}" in database ${databaseId}: Notion API returned no page`,
+    );
+  }
+
+  let committedLastEditedTime: string | undefined = newPage.last_edited_time;
   try {
     const postCommitPage = await client.getPage(newPage.id);
     if (postCommitPage?.last_edited_time) {

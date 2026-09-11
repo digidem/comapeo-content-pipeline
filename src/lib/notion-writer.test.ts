@@ -477,14 +477,15 @@ describe("writeTranslationToNotion", () => {
       filter: {
         and: [
           { property: NOTION_PROPERTIES.LANGUAGE, select: { equals: "PT - automated" } },
+          { property: NOTION_PROPERTIES.TITLE, title: { equals: "Título Reconciliado" } },
           { property: NOTION_PROPERTIES.PARENT_ITEM, relation: { contains: "container-parent-id" } },
         ],
       },
-      pageSize: 10,
+      pageSize: 1,
     });
   });
 
-  it("reconciles existing page in family even if the title was renamed or differs from targetTitle", async () => {
+  it("reconciles existing page in family even if the title was renamed or differs from targetTitle via parentEnglishPageId", async () => {
     vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
       results: [
         {
@@ -537,8 +538,58 @@ describe("writeTranslationToNotion", () => {
           { property: NOTION_PROPERTIES.PARENT_ITEM, relation: { contains: "en-family-root" } },
         ],
       },
-      pageSize: 10,
+      pageSize: 1,
     });
+  });
+
+  it("reconciles existing page via parentEnglishPageId sub-items even if title differs", async () => {
+    vi.mocked(mockClient.getPage)
+      // Call 1: parentEnglishPageId
+      .mockResolvedValueOnce({
+        id: "en-family-root",
+        properties: {
+          [NOTION_PROPERTIES.SUB_ITEM]: { relation: [{ id: "sub-item-es-id" }] },
+        },
+      } as unknown as NotionPage)
+      // Call 2: child page in sub-items
+      .mockResolvedValueOnce({
+        id: "sub-item-es-id",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Renamed Title in Notion" }] },
+          [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES - automated" } },
+        },
+      } as unknown as NotionPage)
+      // Call 3: getPage inside writeTranslationToNotion update flow
+      .mockResolvedValueOnce({
+        id: "sub-item-es-id",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [],
+      children: {},
+    });
+
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "sub-item-es-id",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Completely Different AI Title",
+      parentEnglishPageId: "en-family-root",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("updated");
+    expect(result.pageId).toBe("sub-item-es-id");
+    expect(mockClient.createPage).not.toHaveBeenCalled();
   });
 
   it("queries by title and language when effectiveParentId is not provided", async () => {
@@ -570,8 +621,32 @@ describe("writeTranslationToNotion", () => {
           { property: NOTION_PROPERTIES.TITLE, title: { equals: "Standalone Page" } },
         ],
       },
-      pageSize: 10,
+      pageSize: 1,
     });
+  });
+
+  it("skips write and preserves Notion content when translated blocks result in 0 writeable blocks after preparation", async () => {
+    const emptyBlocks: NotionBlockList = {
+      object: "list",
+      results: [],
+    };
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Empty Translation Page",
+      targetPageId: "existing-page-to-preserve",
+      translatedBlocks: emptyBlocks,
+    });
+
+    expect(result.written).toBe(false);
+    expect(result.action).toBe("skipped");
+    expect(result.reason).toContain("empty translation");
+    expect(mockClient.deleteBlock).not.toHaveBeenCalled();
+    expect(mockClient.updatePage).not.toHaveBeenCalled();
+    expect(mockClient.appendBlockChildren).not.toHaveBeenCalled();
+    expect(mockClient.createPage).not.toHaveBeenCalled();
   });
 
   it("falls back to parentEnglishPageId when parentItemId is not provided", async () => {

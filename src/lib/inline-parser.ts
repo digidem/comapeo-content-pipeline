@@ -242,7 +242,7 @@ function parseFormatting(
   const result: IntermediateSpan[] = [];
 
   const tokenRegex =
-    /(?<html><img\b[^>]*\/?>|<br\s*\/?>)|(?<underline><u>[\s\S]*?<\/u>)|(?<colorSpan><span\s+style=(?:\{\{\s*color:\s*["'](?<jsxColor>[^"']+)["']\s*\}\}|["']\s*color:\s*(?<htmlColor>[^"';]+);?\s*["'])[^>]*>(?<colorSpanInner>[\s\S]*?)<\/span>)|(?<code>`[^`]+`)|(?<boldItalic>\*\*\*[^*]+\*\*\*)|(?<bold>\*\*[^*]+\*\*)|(?<italic>\*(?:[^\s*](?:[^*]*?[^\s*])?)\*|(?<!\w)_(?:[^\s_](?:[^_]*?[^\s_])?)_(?!\w))|(?<strike>~~[^~]+~~)/g;
+    /(?<html><img\b[^>]*\/?>|<br\s*\/?>)|(?<underline><u>[\s\S]*?<\/u>)|(?<colorSpan><span\s+style=(?:\{\{\s*color:\s*["'](?<jsxColor>[^"']+)["']\s*\}\}|["']\s*color:\s*(?<htmlColor>[^"';]+);?\s*["'])[^>]*>(?<colorSpanInner>[\s\S]*?)<\/span>)|(?<code>`[^`]+`)|(?<boldItalic>(?<![\w*])\*\*\*[^*]+\*\*\*(?![\w*]))|(?<bold>(?<![\w*])\*\*[^*]+\*\*(?![\w*]))|(?<italic>(?<![\w*])\*(?:[^\s*](?:[^*]*?[^\s*])?)\*(?![\w*])|(?<!\w)_(?:[^\s_](?:[^_]*?[^\s_])?)_(?!\w))|(?<strike>~~[^~]+~~)/g;
 
   let lastIndex = 0;
   let match: RegExpExecArray | null;
