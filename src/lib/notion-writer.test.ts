@@ -473,6 +473,16 @@ describe("writeTranslationToNotion", () => {
     expect(result.action).toBe("updated");
     expect(result.pageId).toBe("already-created-id");
     expect(mockClient.createPage).not.toHaveBeenCalled();
+    expect(mockClient.queryDatabase).toHaveBeenCalledWith({
+      filter: {
+        and: [
+          { property: NOTION_PROPERTIES.LANGUAGE, select: { equals: "PT - automated" } },
+          { property: NOTION_PROPERTIES.TITLE, title: { equals: "Título Reconciliado" } },
+          { property: NOTION_PROPERTIES.PARENT_ITEM, relation: { contains: "container-parent-id" } },
+        ],
+      },
+      pageSize: 1,
+    });
   });
 
   it("falls back to parentEnglishPageId when parentItemId is not provided", async () => {

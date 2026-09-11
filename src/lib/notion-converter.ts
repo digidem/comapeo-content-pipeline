@@ -203,8 +203,8 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
       const linkUrl = rt.href || rt.text?.link?.url;
       if (linkUrl && !rt.annotations.code) {
         // Hoist leading/trailing whitespace outside the bracket syntax (MD039).
-        // e.g. plain_text=" text " → " [text](url) " not "[ text ](url)"
-        const rawLinkText = rt.plain_text || text;
+        // e.g. text=" **text** " → " [**text**](url) " not "[ **text** ](url)"
+        const rawLinkText = text;
         const linkLeadMatch = rawLinkText.match(/^(\s+)/);
         const linkLeadWs = linkLeadMatch ? linkLeadMatch[1] : "";
         const linkTrailMatch = rawLinkText.match(/(\s+)$/);

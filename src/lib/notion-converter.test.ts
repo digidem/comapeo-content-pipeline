@@ -423,6 +423,21 @@ describe("richTextToMarkdown", () => {
     expect(text).toBe(" [link text](https://example.com)");
   });
 
+  it("preserves formatting (bold, italic, underline) on linked text", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: " bold link ",
+        text: { content: " bold link ", link: { url: "https://example.com" } },
+        annotations: {
+          bold: true, italic: true, strikethrough: false,
+          underline: true, code: false, color: "default",
+        },
+      },
+    ]);
+    expect(text).toBe(" [<u>***bold link***</u>](https://example.com) ");
+  });
+
   // ── Defect C: MD056 — newlines inside table cells ──
 
   it("MD056: newlines inside table cells are replaced with <br />", () => {

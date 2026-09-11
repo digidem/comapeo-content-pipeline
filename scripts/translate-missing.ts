@@ -515,13 +515,6 @@ function updateManifestWithDoc(
   }
 
   const enDoc = enPageId ? data.docs.find((d) => d.page_id === enPageId) : undefined;
-
-  // If the parent English doc is active, promote the translation doc to active status
-  // so that it passes the publishable gate and is included in active sidebars
-  if (enDoc?.status === "active") {
-    doc.status = "active";
-  }
-
   const inputDir = options?.inputDir ?? dirname(manifestPath);
 
   // Build hasBodyById map so body-quality ranking accurately distinguishes stubs from real content

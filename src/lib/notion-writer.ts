@@ -641,16 +641,15 @@ export async function writeTranslationToNotion(
           property: NOTION_PROPERTIES.LANGUAGE,
           select: { equals: localeSelectName },
         },
+        {
+          property: NOTION_PROPERTIES.TITLE,
+          title: { equals: targetTitle },
+        },
       ];
       if (effectiveParentId) {
         filterConditions.push({
           property: NOTION_PROPERTIES.PARENT_ITEM,
           relation: { contains: effectiveParentId },
-        });
-      } else {
-        filterConditions.push({
-          property: NOTION_PROPERTIES.TITLE,
-          title: { equals: targetTitle },
         });
       }
 
