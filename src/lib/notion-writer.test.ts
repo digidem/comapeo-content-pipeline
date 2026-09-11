@@ -477,11 +477,100 @@ describe("writeTranslationToNotion", () => {
       filter: {
         and: [
           { property: NOTION_PROPERTIES.LANGUAGE, select: { equals: "PT - automated" } },
-          { property: NOTION_PROPERTIES.TITLE, title: { equals: "Título Reconciliado" } },
           { property: NOTION_PROPERTIES.PARENT_ITEM, relation: { contains: "container-parent-id" } },
         ],
       },
-      pageSize: 1,
+      pageSize: 10,
+    });
+  });
+
+  it("reconciles existing page in family even if the title was renamed or differs from targetTitle", async () => {
+    vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
+      results: [
+        {
+          id: "renamed-translation-id",
+          object: "page",
+          properties: {
+            [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Old Renamed Title" }] },
+            [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+          },
+        } as unknown as NotionPage,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "renamed-translation-id",
+      properties: {
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [],
+      children: {},
+    });
+
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "renamed-translation-id",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Newly Generated Title",
+      parentEnglishPageId: "en-family-root",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("updated");
+    expect(result.pageId).toBe("renamed-translation-id");
+    expect(mockClient.createPage).not.toHaveBeenCalled();
+    expect(mockClient.queryDatabase).toHaveBeenCalledWith({
+      filter: {
+        and: [
+          { property: NOTION_PROPERTIES.LANGUAGE, select: { equals: "ES - automated" } },
+          { property: NOTION_PROPERTIES.PARENT_ITEM, relation: { contains: "en-family-root" } },
+        ],
+      },
+      pageSize: 10,
+    });
+  });
+
+  it("queries by title and language when effectiveParentId is not provided", async () => {
+    vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
+      results: [],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "standalone-new-page",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Standalone Page",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("created");
+    expect(mockClient.queryDatabase).toHaveBeenCalledWith({
+      filter: {
+        and: [
+          { property: NOTION_PROPERTIES.LANGUAGE, select: { equals: "ES - automated" } },
+          { property: NOTION_PROPERTIES.TITLE, title: { equals: "Standalone Page" } },
+        ],
+      },
+      pageSize: 10,
     });
   });
 

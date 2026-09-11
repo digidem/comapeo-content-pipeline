@@ -438,6 +438,51 @@ describe("richTextToMarkdown", () => {
     expect(text).toBe(" [<u>***bold link***</u>](https://example.com) ");
   });
 
+  it("MD039: hoists whitespace around colored punctuation link without leaving spaces inside span or brackets", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: " : ",
+        text: { content: " : ", link: { url: "https://example.com" } },
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: false, code: false, color: "red",
+        },
+      },
+    ]);
+    expect(text).toBe(' [<span style={{color:"red"}}>:</span>](https://example.com) ');
+  });
+
+  it("emits whitespace-only linked text without link brackets", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: "   ",
+        text: { content: "   ", link: { url: "https://example.com" } },
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: false, code: false, color: "red",
+        },
+      },
+    ]);
+    expect(text).toBe("   ");
+  });
+
+  it("hoists whitespace nested inside HTML boundary tags within links", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: " colored link ",
+        text: { content: " colored link ", link: { url: "https://example.com" } },
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: false, code: false, color: "blue",
+        },
+      },
+    ]);
+    expect(text).toBe(' [<span style={{color:"blue"}}>colored link</span>](https://example.com) ');
+  });
+
   // ── Defect C: MD056 — newlines inside table cells ──
 
   it("MD056: newlines inside table cells are replaced with <br />", () => {

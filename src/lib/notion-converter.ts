@@ -125,6 +125,15 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
 
       let text = rt.plain_text || "";
 
+      const ann = rt.annotations || {
+        bold: false,
+        italic: false,
+        strikethrough: false,
+        underline: false,
+        code: false,
+        color: "default",
+      };
+
       // Apply inline annotations to a single line segment. Markdown inline
       // markers (**bold**, *italic*, ~~strike~~, `code`) must open and close on
       // the same line, so wrapping is done per-line below — otherwise a run
@@ -132,41 +141,27 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
       const applyInline = (segment: string): string => {
         // Don't wrap empty segments (blank lines) — keeps them blank.
         if (segment === "") return "";
-        // Whitespace-only segments must not receive inline markers.
-        // Markers that open or close adjacent to whitespace are not valid
-        // emphasis delimiters in CommonMark — they render as literal asterisks.
-        if (segment.trim() === "") return segment;
-
-        // Punctuation/symbol-only segments (no letters or digits) must not be
-        // emphasized either: authors sometimes bold/italicize just a ":" after
-        // a word ("Step 1*:*"), and per CommonMark flanking rules an emphasis
-        // delimiter between an alphanumeric and punctuation is not left-flanking
-        // — the markers render literally. Styling bare punctuation is visually
-        // meaningless, so drop the markers (keep color spans, which still work).
-        const ann = rt.annotations || {
-          bold: false,
-          italic: false,
-          strikethrough: false,
-          underline: false,
-          code: false,
-          color: "default",
-        };
-
-        if (!/[\p{L}\p{N}]/u.test(segment) && !ann.code) {
-          const color = ann.color;
-          if (color && color !== "default" && !color.endsWith("_background")) {
-            return `<span style={{color:"${color}"}}>${segment}</span>`;
-          }
+        // If segment is whitespace-only, do not apply any inline formatting or tags
+        if (/^\s*$/.test(segment)) {
           return segment;
         }
 
-        // Hoist leading/trailing whitespace outside inline markers (MD037).
+        // Hoist leading/trailing whitespace outside inline markers and HTML tags (MD037 / MD039).
         // e.g. bold(" Step 2: ") → " **Step 2:** " not "** Step 2: **"
+        // e.g. color(" : ") → " <span ...>:</span> " not "<span ...> : </span>"
         const leadMatch = segment.match(/^(\s+)/);
         const leadingWs = leadMatch ? leadMatch[1] : "";
         const trailMatch = segment.match(/(\s+)$/);
         const trailingWs = trailMatch ? trailMatch[1] : "";
         let s = segment.slice(leadingWs.length, segment.length - trailingWs.length);
+
+        if (!/[\p{L}\p{N}]/u.test(s) && !ann.code) {
+          const color = ann.color;
+          if (color && color !== "default" && !color.endsWith("_background")) {
+            return leadingWs + `<span style={{color:"${color}"}}>${s}</span>` + trailingWs;
+          }
+          return leadingWs + s + trailingWs;
+        }
 
         if (ann.bold) {
           s = `**${s}**`;
@@ -202,18 +197,36 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
       // Links: prefer href from mention, then text.link, then annotations
       const linkUrl = rt.href || rt.text?.link?.url;
       if (linkUrl && !rt.annotations.code) {
+        // Whitespace-only link text: emit the whitespace without brackets.
+        if (!rt.plain_text || !rt.plain_text.trim()) {
+          return rt.plain_text || "";
+        }
+
         // Hoist leading/trailing whitespace outside the bracket syntax (MD039).
         // e.g. text=" **text** " → " [**text**](url) " not "[ **text** ](url)"
         const rawLinkText = text;
         const linkLeadMatch = rawLinkText.match(/^(\s+)/);
-        const linkLeadWs = linkLeadMatch ? linkLeadMatch[1] : "";
+        let linkLeadWs = linkLeadMatch ? linkLeadMatch[1] : "";
         const linkTrailMatch = rawLinkText.match(/(\s+)$/);
-        const linkTrailWs = linkTrailMatch ? linkTrailMatch[1] : "";
-        const innerText = rawLinkText.slice(linkLeadWs.length, rawLinkText.length - linkTrailWs.length);
-        if (innerText) {
+        let linkTrailWs = linkTrailMatch ? linkTrailMatch[1] : "";
+        let innerText = rawLinkText.slice(linkLeadWs.length, rawLinkText.length - linkTrailWs.length);
+
+        // Also hoist whitespace that may be nested immediately inside boundary HTML elements
+        // e.g. "<span ...> : </span>" or "<u>  link  </u>"
+        const tagLeadWs = innerText.match(/^(<[^>]+>)(\s+)/);
+        if (tagLeadWs) {
+          linkLeadWs += tagLeadWs[2];
+          innerText = tagLeadWs[1] + innerText.slice(tagLeadWs[0].length);
+        }
+        const tagTrailWs = innerText.match(/(\s+)(<\/[^>]+>)$/);
+        if (tagTrailWs) {
+          linkTrailWs = tagTrailWs[1] + linkTrailWs;
+          innerText = innerText.slice(0, innerText.length - tagTrailWs[0].length) + tagTrailWs[2];
+        }
+
+        if (innerText.replace(/<[^>]*>/g, "").trim()) {
           text = linkLeadWs + `[${innerText}](${linkUrl})` + linkTrailWs;
         } else {
-          // Whitespace-only link text: emit the whitespace without brackets.
           text = rawLinkText;
         }
       }

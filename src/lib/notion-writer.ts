@@ -7,7 +7,7 @@
 
 import type { NotionBlock, NotionClient, NotionPage } from "./notion-client.js";
 import type { NotionBlockList } from "./notion-converter.js";
-import { NOTION_PROPERTIES } from "./notion-properties.js";
+import { NOTION_PROPERTIES, DEAD_STATUSES } from "./notion-properties.js";
 import { isStubBody } from "./stub-body.js";
 import { toSectionDir } from "./hierarchy.js";
 import type { PageAsset } from "../schemas/metadata.js";
@@ -647,27 +647,50 @@ export async function writeTranslationToNotion(
           property: NOTION_PROPERTIES.LANGUAGE,
           select: { equals: localeSelectName },
         },
-        {
-          property: NOTION_PROPERTIES.TITLE,
-          title: { equals: targetTitle },
-        },
       ];
       if (effectiveParentId) {
         filterConditions.push({
           property: NOTION_PROPERTIES.PARENT_ITEM,
           relation: { contains: effectiveParentId },
         });
+      } else {
+        filterConditions.push({
+          property: NOTION_PROPERTIES.TITLE,
+          title: { equals: targetTitle },
+        });
       }
 
       const existing = await client.queryDatabase({
         filter: { and: filterConditions },
-        pageSize: 1,
+        pageSize: 10,
       });
 
       if (existing?.results && existing.results.length > 0) {
-        const found = existing.results[0];
+        let found = existing.results[0];
+        if (existing.results.length > 1) {
+          const exactTitle = existing.results.find((p) => {
+            const pageTitle = (
+              p.properties?.[NOTION_PROPERTIES.TITLE] as { title?: Array<{ plain_text?: string }> } | undefined
+            )?.title?.[0]?.plain_text;
+            return pageTitle === targetTitle;
+          });
+          if (exactTitle) {
+            found = exactTitle;
+          } else {
+            const nonDead = existing.results.find((p) => {
+              const status = (
+                p.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS] as { select?: { name?: string } } | undefined
+              )?.select?.name;
+              return status && !DEAD_STATUSES.includes(status as typeof DEAD_STATUSES[number]);
+            });
+            if (nonDead) {
+              found = nonDead;
+            }
+          }
+        }
+
         console.warn(
-          `[notion-writer] Found existing translation page [${found.id}] matching ${targetLocale}. Reusing instead of creating duplicate.`,
+          `[notion-writer] Found existing translation page [${found.id}] matching ${targetLocale} in family ${effectiveParentId || "root"}. Reusing instead of creating duplicate.`,
         );
         return writeTranslationToNotion({
           ...options,
