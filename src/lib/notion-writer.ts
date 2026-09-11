@@ -449,6 +449,61 @@ export function rankTranslationCandidates(
 }
 
 /**
+ * Verifies that the Notion page state has not been concurrently modified by human editors
+ * or changed to a non-automated status before applying a destructive rollback.
+ * Returns true if safe to proceed with rollback, false if rollback should be aborted.
+ */
+async function verifyPageStateBeforeRollback(
+  client: NotionClient,
+  pageId: string,
+  committedLastEditedTime?: string,
+): Promise<boolean> {
+  try {
+    const currentPage = await client.getPage(pageId);
+    if (!currentPage) {
+      console.error(
+        `[notion-writer] Rollback aborted on ${pageId}: page could not be retrieved before rollback. Preserving content to prevent destroying concurrent edits.`,
+      );
+      return false;
+    }
+
+    if (
+      committedLastEditedTime &&
+      currentPage.last_edited_time &&
+      currentPage.last_edited_time !== committedLastEditedTime
+    ) {
+      console.warn(
+        `[notion-writer] Rollback aborted on ${pageId}: page was modified concurrently after translation write (committed at ${committedLastEditedTime}, current at ${currentPage.last_edited_time}). Preserving concurrent edits.`,
+      );
+      return false;
+    }
+
+    const currentPublishStatus = (
+      currentPage.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS] as {
+        select?: { name?: string };
+      }
+    )?.select?.name;
+    if (
+      currentPublishStatus &&
+      currentPublishStatus !== "Automated translations generated"
+    ) {
+      console.warn(
+        `[notion-writer] Rollback aborted on ${pageId}: publish status changed to "${currentPublishStatus}" after translation write. Preserving concurrent edits.`,
+      );
+      return false;
+    }
+
+    return true;
+  } catch (fetchErr) {
+    console.error(
+      `[notion-writer] Rollback aborted on ${pageId}: could not verify page state before rollback. Preserving content to prevent destroying concurrent edits:`,
+      fetchErr,
+    );
+    return false;
+  }
+}
+
+/**
  * Writes or updates a translated page in Notion with Human-Edit Safety Lock.
  */
 export async function writeTranslationToNotion(
@@ -564,6 +619,7 @@ export async function writeTranslationToNotion(
       }
 
       let updatedPage: NotionPage | undefined;
+      let committedLastEditedTime: string | undefined;
       try {
         if (preparedBlocks.length > 0) {
           const appendRes = await client.appendBlockChildren(targetPageId, preparedBlocks, {
@@ -602,6 +658,7 @@ export async function writeTranslationToNotion(
         updatedPage = await client.updatePage(targetPageId, {
           properties: updateProperties,
         });
+        committedLastEditedTime = updatedPage?.last_edited_time;
       } catch (err) {
         // Rollback newly appended blocks on error to keep existing content intact.
         // Include any chunks appended before a chunk error occurred.
@@ -626,7 +683,8 @@ export async function writeTranslationToNotion(
       // Delete old blocks only after new blocks and properties have committed successfully.
       // If deletion fails, attempt to restore deleted old blocks.
       // If restore fails on any old block, PRESERVE newly appended blocks to prevent total data loss.
-      // Only delete newly appended blocks and restore original properties if all deleted old blocks were safely restored.
+      // Only delete newly appended blocks and restore original properties if all deleted old blocks were safely restored
+      // AND the page has not been concurrently modified.
       const deletedOldBlockIds: string[] = [];
       try {
         for (const b of existingBlocks.results) {
@@ -650,28 +708,40 @@ export async function writeTranslationToNotion(
         }
 
         // Only delete newly appended replacement blocks if ALL deleted old blocks were restored,
-        // avoiding total content loss if restore fails.
+        // avoiding total content loss if restore fails, AND if the page was not concurrently modified.
         if (failedRestoreIds.length === 0) {
-          for (const b of newlyAppended) {
-            try {
-              await client.deleteBlock(b.id);
-            } catch {
-              // ignore secondary errors during rollback
-            }
-          }
-          if (Object.keys(originalPropertiesToRestore).length > 0) {
-            try {
-              await client.updatePage(targetPageId, {
-                properties: originalPropertiesToRestore,
-              });
-            } catch {
-              // ignore secondary errors during rollback
-            }
-          }
-          throw new Error(
-            `Failed to delete old blocks during atomic replacement on ${targetPageId}. Restored ${restoredBlockIds.length} deleted old blocks, rolled back newly appended blocks, and restored original page properties. Error: ${String(deleteErr)}`,
-            { cause: deleteErr },
+          const isSafeToRollback = await verifyPageStateBeforeRollback(
+            client,
+            targetPageId,
+            committedLastEditedTime,
           );
+          if (isSafeToRollback) {
+            for (const b of newlyAppended) {
+              try {
+                await client.deleteBlock(b.id);
+              } catch {
+                // ignore secondary errors during rollback
+              }
+            }
+            if (Object.keys(originalPropertiesToRestore).length > 0) {
+              try {
+                await client.updatePage(targetPageId, {
+                  properties: originalPropertiesToRestore,
+                });
+              } catch {
+                // ignore secondary errors during rollback
+              }
+            }
+            throw new Error(
+              `Failed to delete old blocks during atomic replacement on ${targetPageId}. Restored ${restoredBlockIds.length} deleted old blocks, rolled back newly appended blocks, and restored original page properties. Error: ${String(deleteErr)}`,
+              { cause: deleteErr },
+            );
+          } else {
+            throw new Error(
+              `Failed to delete old blocks during atomic replacement on ${targetPageId}. Restored ${restoredBlockIds.length} deleted old blocks, but rollback was aborted because the page was concurrently modified or unverified; preserved newly appended blocks and properties to prevent destroying concurrent edits. Error: ${String(deleteErr)}`,
+              { cause: deleteErr },
+            );
+          }
         } else {
           throw new Error(
             `Failed to delete old blocks during atomic replacement on ${targetPageId}. Rollback failed to restore ${failedRestoreIds.length} deleted old block(s) [${failedRestoreIds.join(", ")}]; preserved newly appended replacement blocks to prevent complete content loss. Error: ${String(deleteErr)}`,
@@ -681,7 +751,6 @@ export async function writeTranslationToNotion(
       }
 
       // Capture committed page version to guard against destroying concurrent human edits on rollback
-      let committedLastEditedTime: string | undefined = updatedPage?.last_edited_time;
       try {
         const postCommitPage = await client.getPage(targetPageId);
         if (postCommitPage?.last_edited_time) {
@@ -692,48 +761,12 @@ export async function writeTranslationToNotion(
       }
 
       const rollback = async (): Promise<void> => {
-        // Re-fetch and verify the page version and written state before applying this destructive rollback.
-        // If an editor changes the Notion page after this command commits its update,
-        // abort rollback to prevent destroying human edits.
-        try {
-          const currentPage = await client.getPage(targetPageId);
-          if (currentPage) {
-            if (
-              committedLastEditedTime &&
-              currentPage.last_edited_time &&
-              currentPage.last_edited_time !== committedLastEditedTime
-            ) {
-              console.warn(
-                `[notion-writer] Rollback aborted on ${targetPageId}: page was modified concurrently after translation write (committed at ${committedLastEditedTime}, current at ${currentPage.last_edited_time}). Preserving concurrent edits.`,
-              );
-              return;
-            }
-
-            const currentPublishStatus = (
-              currentPage.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS] as {
-                select?: { name?: string };
-              }
-            )?.select?.name;
-            if (
-              currentPublishStatus &&
-              currentPublishStatus !== "Automated translations generated"
-            ) {
-              console.warn(
-                `[notion-writer] Rollback aborted on ${targetPageId}: publish status changed to "${currentPublishStatus}" after translation write. Preserving concurrent edits.`,
-              );
-              return;
-            }
-          } else {
-            console.error(
-              `[notion-writer] Rollback aborted on ${targetPageId}: page could not be retrieved before rollback. Preserving content to prevent destroying concurrent edits.`,
-            );
-            return;
-          }
-        } catch (fetchErr) {
-          console.error(
-            `[notion-writer] Rollback aborted on ${targetPageId}: could not verify page state before rollback. Preserving content to prevent destroying concurrent edits:`,
-            fetchErr,
-          );
+        const isSafeToRollback = await verifyPageStateBeforeRollback(
+          client,
+          targetPageId,
+          committedLastEditedTime,
+        );
+        if (!isSafeToRollback) {
           return;
         }
 
@@ -1030,45 +1063,12 @@ export async function writeTranslationToNotion(
 
   const rollback = async (): Promise<void> => {
     if (newPage?.id) {
-      try {
-        const currentPage = await client.getPage(newPage.id);
-        if (currentPage) {
-          if (
-            committedLastEditedTime &&
-            currentPage.last_edited_time &&
-            currentPage.last_edited_time !== committedLastEditedTime
-          ) {
-            console.warn(
-              `[notion-writer] Rollback aborted on created page ${newPage.id}: page was modified concurrently after creation (committed at ${committedLastEditedTime}, current at ${currentPage.last_edited_time}). Preserving concurrent edits.`,
-            );
-            return;
-          }
-
-          const currentPublishStatus = (
-            currentPage.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS] as {
-              select?: { name?: string };
-            }
-          )?.select?.name;
-          if (
-            currentPublishStatus &&
-            currentPublishStatus !== "Automated translations generated"
-          ) {
-            console.warn(
-              `[notion-writer] Rollback aborted on created page ${newPage.id}: publish status changed to "${currentPublishStatus}". Preserving concurrent edits.`,
-            );
-            return;
-          }
-        } else {
-          console.error(
-            `[notion-writer] Rollback aborted on created page ${newPage.id}: page could not be retrieved before rollback. Preserving created page to prevent destroying concurrent edits.`,
-          );
-          return;
-        }
-      } catch (fetchErr) {
-        console.error(
-          `[notion-writer] Rollback aborted on created page ${newPage.id}: could not verify page state before rollback. Preserving created page to prevent destroying concurrent edits:`,
-          fetchErr,
-        );
+      const isSafeToRollback = await verifyPageStateBeforeRollback(
+        client,
+        newPage.id,
+        committedLastEditedTime,
+      );
+      if (!isSafeToRollback) {
         return;
       }
 
