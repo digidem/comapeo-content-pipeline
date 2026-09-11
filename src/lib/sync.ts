@@ -200,16 +200,32 @@ export async function convertPageData(input: {
     // URL because that's what's in the body; only the emitted marker is stripped.
     const markerUrl = stripUrlSignature(url);
 
-    // Markdown image: ![alt](url) → preserve alt text where present
+    // 1. Linked markdown image: [![alt](url)](dest) → neutralize entire linked construct
+    //    so the outer link does not wrap around the multiline unavailable marker and comment.
+    markdownBody = markdownBody.replace(
+      new RegExp(`\\[\\s*!\\[([^\\]]*)\\]\\(${esc}\\)\\s*\\]\\([^)]*\\)`, "g"),
+      (_match, alt: string) =>
+        alt && alt.trim()
+          ? `**[Image unavailable: ${alt.trim()}]**\n<!-- failed-asset: ${markerUrl} -->`
+          : `**[Image unavailable]**\n<!-- failed-asset: ${markerUrl} -->`,
+    );
+
+    // 2. Standalone markdown image: ![alt](url) → preserve alt text where present
     markdownBody = markdownBody.replace(
       new RegExp(`!\\[([^\\]]*)\\]\\(${esc}\\)`, "g"),
       (_match, alt: string) =>
         alt && alt.trim()
-          ? `**[Image unavailable: ${alt}]**\n<!-- failed-asset: ${markerUrl} -->`
+          ? `**[Image unavailable: ${alt.trim()}]**\n<!-- failed-asset: ${markerUrl} -->`
           : `**[Image unavailable]**\n<!-- failed-asset: ${markerUrl} -->`,
     );
 
-    // HTML img: <img ... src="url" ...> (double or single quoted) → no alt recovery.
+    // 3. HTML img inside an anchor: <a ...><img ... src="url" ...></a>
+    markdownBody = markdownBody.replace(
+      new RegExp(`<a\\b[^>]*>\\s*<img\\b[^>]*\\ssrc=(["'])${esc}\\1[^>]*>\\s*<\\/a>`, "gi"),
+      () => `**[Image unavailable]**\n<!-- failed-asset: ${markerUrl} -->`,
+    );
+
+    // 4. Standalone HTML img: <img ... src="url" ...> (double or single quoted) → no alt recovery.
     // Callback (not a string replacer) so any `$` in `url` isn't re-interpreted.
     markdownBody = markdownBody.replace(
       new RegExp(`<img\\b[^>]*\\ssrc=(["'])${esc}\\1[^>]*>`, "gi"),

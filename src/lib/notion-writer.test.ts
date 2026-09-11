@@ -2493,6 +2493,51 @@ describe("writeTranslationToNotion", () => {
     expect(mockClient.deleteBlock).toHaveBeenCalledWith("created-sub-item-page");
   });
 
+  it("archives created page and throws if attaching to English parent Sub-item relation fails", async () => {
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "created-orphan-candidate",
+      object: "page",
+    } as unknown as NotionPage);
+
+    // Call 1: parentEnglishPageId sub-items inspection during reconciliation (returns empty)
+    // Call 2: parentEnglishPageId when attaching created page (returns enPage with subItem relation)
+    vi.mocked(mockClient.getPage)
+      .mockResolvedValueOnce({
+        id: "en-parent-id",
+        properties: {
+          [NOTION_PROPERTIES.SUB_ITEM]: { relation: [] },
+        },
+      } as unknown as NotionPage)
+      .mockResolvedValueOnce({
+        id: "en-parent-id",
+        properties: {
+          [NOTION_PROPERTIES.SUB_ITEM]: { relation: [] },
+        },
+      } as unknown as NotionPage);
+
+    // updatePage for parentEnglishPageId fails with network/API error
+    vi.mocked(mockClient.updatePage).mockRejectedValueOnce(
+      new Error("Notion API 500: internal server error while updating relation"),
+    );
+
+    await expect(
+      writeTranslationToNotion({
+        client: mockClient,
+        databaseId: "db-123",
+        targetLocale: "es",
+        targetTitle: "Failed Linking Page",
+        parentItemId: "shared-container-id",
+        parentEnglishPageId: "en-parent-id",
+        translatedBlocks: mockTranslatedBlocks,
+      }),
+    ).rejects.toThrow(/Failed to attach translation \[created-orphan-candidate\]/);
+
+    // Verified created page was archived to avoid leaving an undiscoverable duplicate
+    expect(mockClient.updatePage).toHaveBeenCalledWith("created-orphan-candidate", {
+      archived: true,
+    });
+  });
+
   it("aborts rollback on created page if getPage rejects or returns null", async () => {
     vi.mocked(mockClient.createPage).mockResolvedValueOnce({
       id: "created-page-abort-test",

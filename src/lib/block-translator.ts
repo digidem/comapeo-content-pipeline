@@ -430,34 +430,42 @@ export function restoreEquationDelimiters(
   if (originalEquations.length === 0) return translatedText;
 
   // Extract all equations that are ALREADY delimited in the translated text
+  // Track counts segregated by display mode (inline vs display) so equations with the same
+  // expression (e.g. $x$ and $$x$$) do not conflate modes or restore with the wrong delimiters.
   const existingEquations = extractEquationsFromText(translatedText);
   const existingCounts = new Map<string, number>();
   for (const eq of existingEquations) {
-    existingCounts.set(eq.expression, (existingCounts.get(eq.expression) ?? 0) + 1);
+    const key = `${eq.isDisplay ? "display" : "inline"}\0${eq.expression}`;
+    existingCounts.set(key, (existingCounts.get(key) ?? 0) + 1);
   }
 
-  // Count occurrences of each equation in the original source
-  const origCounts = new Map<string, { count: number; isDisplay: boolean }>();
+  // Count occurrences of each equation in the original source, segregated by display mode
+  const origCounts = new Map<string, { count: number; expression: string; isDisplay: boolean }>();
   for (const eq of originalEquations) {
-    const entry = origCounts.get(eq.expression) ?? { count: 0, isDisplay: eq.isDisplay };
+    const key = `${eq.isDisplay ? "display" : "inline"}\0${eq.expression}`;
+    const entry = origCounts.get(key) ?? {
+      count: 0,
+      expression: eq.expression,
+      isDisplay: eq.isDisplay,
+    };
     entry.count += 1;
-    origCounts.set(eq.expression, entry);
+    origCounts.set(key, entry);
   }
 
   // Identify equations that actually lost delimiters
   const equationsToRestore: Array<{ expression: string; isDisplay: boolean; needed: number }> = [];
-  for (const [expr, orig] of origCounts.entries()) {
-    const existing = existingCounts.get(expr) ?? 0;
+  for (const [key, orig] of origCounts.entries()) {
+    const existing = existingCounts.get(key) ?? 0;
     const needed = orig.count - existing;
     if (needed > 0) {
       // Single-letter target language words / stop words (Spanish 'y', Portuguese 'e', 'a', 'o', Spanish 'u', etc.)
       // must never be recovered from bare prose. If an LLM dropped delimiters for a single-letter word,
       // attempting to wrap bare letters in prose will corrupt ordinary conjunctions and articles.
-      if (expr.length === 1 && /^[aeiouyAEIOUY]$/.test(expr)) {
+      if (orig.expression.length === 1 && /^[aeiouyAEIOUY]$/.test(orig.expression)) {
         continue;
       }
       equationsToRestore.push({
-        expression: expr,
+        expression: orig.expression,
         isDisplay: orig.isDisplay,
         needed,
       });
@@ -467,6 +475,9 @@ export function restoreEquationDelimiters(
   if (equationsToRestore.length === 0) {
     return translatedText;
   }
+
+  // Process display equations before inline equations to avoid inline delimiter collisions
+  equationsToRestore.sort((a, b) => (b.isDisplay ? 1 : 0) - (a.isDisplay ? 1 : 0));
 
   // Segment translatedText across links, code blocks, HTML tags, and equations
   const segments = collectAllSegments(translatedText);

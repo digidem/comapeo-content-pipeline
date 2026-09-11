@@ -970,6 +970,20 @@ describe("applyTranslatedBlocks", () => {
     // 3 occurrences of 'x' in prose with only 1 equation in source is ambiguous; do not wrap
     expect(restored).toBe("Variável x e parâmetro x com valor x.");
   });
+
+  it("segregates inline and display equation recovery without conflating delimiters", () => {
+    const originalText = "Inline equation $E=mc^2$ and display equation:\n$$E=mc^2$$\nused in calculation.";
+    // LLM preserved the display equation but dropped delimiters on the inline occurrence
+    const translatedWithLostInline = "Ecuación en línea E=mc^2 y ecuación en bloque:\n$$E=mc^2$$\nusada en el cálculo.";
+
+    const restoredInline = restoreEquationDelimiters(translatedWithLostInline, originalText);
+    expect(restoredInline).toBe("Ecuación en línea $E=mc^2$ y ecuación en bloque:\n$$E=mc^2$$\nusada en el cálculo.");
+
+    // And vice-versa: LLM preserved inline equation but dropped delimiters on the display occurrence
+    const translatedWithLostDisplay = "Ecuación en línea $E=mc^2$ y ecuación en bloque:\nE=mc^2\nusada en el cálculo.";
+    const restoredDisplay = restoreEquationDelimiters(translatedWithLostDisplay, originalText);
+    expect(restoredDisplay).toBe("Ecuación en línea $E=mc^2$ y ecuación en bloque:\n$$E=mc^2$$\nusada en el cálculo.");
+  });
 });
 
 

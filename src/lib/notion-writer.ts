@@ -1287,7 +1287,11 @@ export async function writeTranslationToNotion(
     }
   } catch (err) {
     if (newPage) {
-      await client.updatePage(newPage.id, { archived: true }).catch(() => {});
+      try {
+        await client.updatePage(newPage.id, { archived: true });
+      } catch {
+        // ignore
+      }
     }
     throw err;
   }
@@ -1324,8 +1328,16 @@ export async function writeTranslationToNotion(
         }
       }
     } catch (linkErr) {
-      console.warn(
-        `[notion-writer] Failed to attach translation [${newPage.id}] to parentEnglishPageId [${parentEnglishPageId}] Sub-item relation: ${linkErr}`,
+      if (newPage) {
+        try {
+          await client.updatePage(newPage.id, { archived: true });
+        } catch {
+          // ignore secondary cleanup errors
+        }
+      }
+      throw new Error(
+        `[notion-writer] Failed to attach translation [${newPage.id}] to parentEnglishPageId [${parentEnglishPageId}] Sub-item relation: ${linkErr instanceof Error ? linkErr.message : String(linkErr)}`,
+        { cause: linkErr },
       );
     }
   }

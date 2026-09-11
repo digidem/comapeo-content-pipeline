@@ -227,4 +227,48 @@ describe("failed-asset marker signature stripping", () => {
     // No `?` at all → returned unchanged by the fallback path.
     expect(stripUrlSignature("not-a-url")).toBe("not-a-url");
   });
+
+  it("neutralizes linked images cleanly without leaving outer link wrapped around failure marker", async () => {
+    failingFetch();
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-linked",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "file",
+            file: { url: signedImageUrl("sig-linked") },
+            link: { url: "https://example.com/destination" },
+            caption: [
+              {
+                type: "text",
+                plain_text: "Linked diagram",
+                text: { content: "Linked diagram" },
+                annotations: { ...DEFAULT_ANNOTATIONS },
+              },
+            ],
+          },
+        },
+      ],
+      children: {},
+    };
+
+    const result = await convertPageData({
+      pageId: "page-fail-linked",
+      rawPage: makeRawPage(),
+      rawBlocks,
+      usedSlugs: new Set<string>(),
+    });
+
+    const { body } = parseDoc(result.canoncialMd);
+    // Outer link markdown construct must not wrap the multiline failure marker
+    expect(body).not.toContain("](https://example.com/destination)");
+    expect(body).toContain("**[Image unavailable: Linked diagram]**");
+    expect(body).toContain(
+      "<!-- failed-asset: https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/img.png -->",
+    );
+  });
 });
