@@ -158,7 +158,15 @@ async function main() {
       const isMissing = p.missing.includes(loc);
       const isStub = p.english_content.includes(loc);
       if (isMissing || isStub || force) {
-        const rawStubId = p.locales[loc]?.page_id;
+        const existingMember = p.locales[loc];
+        if (existingMember?.language_source === "explicit" && !force) {
+          console.log(
+            `[skip] Skipping "${p.title}" (${loc}): explicit human translation exists (use --force to override)`,
+          );
+          continue;
+        }
+
+        const rawStubId = existingMember?.page_id;
         const stubPageId = isSyntheticPageId(rawStubId) ? undefined : rawStubId;
         targets.push({
           page: p,
@@ -660,10 +668,19 @@ export function updateManifestWithDoc(
     existingIdx = data.docs.findIndex((d) => d.page_id === replacedPageId);
   }
 
+  // Helper to check if a doc is an explicit human translation
+  const isExplicit = (d: ManifestDoc) =>
+    (languageSourceById[d.page_id] ?? d.language_source) === "explicit";
+
   // 3. Match within English doc's sub_items family using canonical hierarchy ranking
+  // Reject explicit human translations: automated translation generation must never
+  // silently overwrite an explicit human translation unless the caller explicitly supplied its page ID.
   if (existingIdx < 0 && enDoc && Array.isArray(enDoc.sub_items) && enDoc.sub_items.length > 0) {
     const siblingCandidates = data.docs.filter(
-      (d) => enDoc.sub_items!.includes(d.page_id) && d.locale === doc.locale,
+      (d) =>
+        enDoc.sub_items!.includes(d.page_id) &&
+        d.locale === doc.locale &&
+        !isExplicit(d),
     );
 
     if (siblingCandidates.length === 1) {
@@ -679,8 +696,8 @@ export function updateManifestWithDoc(
         const bBody = hasBodyById[b.page_id] ? 1 : 0;
         if (aBody !== bBody) return aBody - bBody;
 
-        // 2. Prefer replacing fallback/automated before explicit human translations
-        const srcRank: Record<string, number> = { fallback: 0, automated: 1, explicit: 2 };
+        // 2. Prefer replacing fallback before automated
+        const srcRank: Record<string, number> = { fallback: 0, automated: 1 };
         const aSrc = srcRank[languageSourceById[a.page_id] ?? a.language_source ?? "fallback"] ?? 0;
         const bSrc = srcRank[languageSourceById[b.page_id] ?? b.language_source ?? "fallback"] ?? 0;
         if (aSrc !== bSrc) return aSrc - bSrc;
@@ -701,19 +718,52 @@ export function updateManifestWithDoc(
   }
 
   // 4. Section + slug + locale match (never slug alone across different sections)
+  // Reject explicit candidates here unless the caller supplied their exact page ID as the intended replaceable stub.
   if (existingIdx < 0) {
     existingIdx = data.docs.findIndex(
-      (d) => d.locale === doc.locale && d.slug === doc.slug && d.section === doc.section,
+      (d) =>
+        d.locale === doc.locale &&
+        d.slug === doc.slug &&
+        d.section === doc.section &&
+        !isExplicit(d),
     );
   }
 
   // 5. Exact storage key or canonical route path match within the same section
+  // Reject explicit candidates here unless the caller supplied their exact page ID as the intended replaceable stub.
   if (existingIdx < 0) {
     existingIdx = data.docs.findIndex(
       (d) =>
-        (doc.r2_doc_key && d.r2_doc_key && d.r2_doc_key === doc.r2_doc_key) ||
-        (d.locale === doc.locale && d.section === doc.section && doc.docusaurus_path && d.docusaurus_path && d.docusaurus_path === doc.docusaurus_path),
+        !isExplicit(d) &&
+        ((doc.r2_doc_key && d.r2_doc_key && d.r2_doc_key === doc.r2_doc_key) ||
+          (d.locale === doc.locale &&
+            d.section === doc.section &&
+            doc.docusaurus_path &&
+            d.docusaurus_path &&
+            d.docusaurus_path === doc.docusaurus_path)),
     );
+  }
+
+  // If an explicit human translation already exists for this locale + section + slug (or route),
+  // reject replacing or shadowing it with an automated translation unless caller explicitly supplied its page ID.
+  if (existingIdx < 0) {
+    const explicitConflict = data.docs.find(
+      (d) =>
+        isExplicit(d) &&
+        ((d.locale === doc.locale && d.slug === doc.slug && d.section === doc.section) ||
+          (doc.r2_doc_key && d.r2_doc_key && d.r2_doc_key === doc.r2_doc_key) ||
+          (d.locale === doc.locale &&
+            d.section === doc.section &&
+            doc.docusaurus_path &&
+            d.docusaurus_path &&
+            d.docusaurus_path === doc.docusaurus_path)),
+    );
+    if (explicitConflict) {
+      console.warn(
+        `[manifest] Cannot replace explicit human translation [${explicitConflict.page_id}] for "${doc.slug}" (${doc.locale}) with automated translation without exact page ID. Skipping manifest update.`,
+      );
+      return;
+    }
   }
 
   if (existingIdx >= 0) {
