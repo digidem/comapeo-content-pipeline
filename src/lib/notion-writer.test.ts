@@ -387,6 +387,7 @@ describe("writeTranslationToNotion", () => {
       getPage: vi.fn(),
       getPageBlocks: vi.fn(),
       queryDatabase: vi.fn().mockResolvedValue({ results: [], next_cursor: null, has_more: false }),
+      restoreBlock: vi.fn().mockResolvedValue({ id: "restored", object: "block" }),
     } as unknown as NotionClient;
   });
 
@@ -1070,6 +1071,56 @@ describe("writeTranslationToNotion", () => {
         "Publish Status": { select: { name: "Automated translations generated" } },
       },
     });
+  });
+
+  it("restores previously deleted old blocks using restoreBlock if deletion fails midway", async () => {
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "stub-partial-delete",
+      properties: {},
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [
+        { id: "old-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+        { id: "old-2", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      children: {},
+    });
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "new-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "stub-partial-delete",
+      object: "page",
+    } as unknown as NotionPage);
+
+    // First deleteBlock succeeds (old-1), second fails (old-2)
+    vi.mocked(mockClient.deleteBlock)
+      .mockResolvedValueOnce({ id: "old-1", object: "block", archived: true })
+      .mockRejectedValueOnce(new Error("Midway delete failure"));
+
+    await expect(
+      writeTranslationToNotion({
+        client: mockClient,
+        databaseId: "db-123",
+        targetLocale: "pt",
+        targetTitle: "Falha Meio",
+        parentEnglishPageId: "en-parent-id",
+        targetPageId: "stub-partial-delete",
+        translatedBlocks: mockTranslatedBlocks,
+      }),
+    ).rejects.toThrow("Failed to delete old blocks during atomic replacement");
+
+    // old-1 was deleted before the error, so it must be restored
+    expect(mockClient.restoreBlock).toHaveBeenCalledWith("old-1");
+    // new-1 was appended, so it must be deleted during rollback
+    expect(mockClient.deleteBlock).toHaveBeenCalledWith("new-1");
   });
 
   describe("isStubPage block type checks", () => {

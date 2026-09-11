@@ -371,9 +371,11 @@ export async function writeTranslationToNotion(
       const publishStatus = publishStatusProp?.select?.name ?? "";
 
       const stub = isStubPage(page, existingBlocks);
+      const isAutomated = publishStatus === "Automated translations generated";
+      const isSafeToOverwrite = stub || isAutomated;
 
-      // Human-Edit Safety Lock: require force to overwrite any page with non-stub content
-      if (!stub && !force) {
+      // Human-Edit Safety Lock: require force to overwrite any page with non-stub, human-edited content
+      if (!isSafeToOverwrite && !force) {
         return {
           written: false,
           action: "skipped",
@@ -440,12 +442,23 @@ export async function writeTranslationToNotion(
       }
 
       // Delete old blocks only after new blocks and properties have committed successfully.
-      // If deletion fails, rollback newly appended blocks and restore original properties so the page is not left in a corrupted hybrid state.
+      // If deletion fails, restore deleted blocks, rollback newly appended blocks, and restore original properties so the page is not left in a corrupted hybrid state.
+      const deletedOldBlockIds: string[] = [];
       try {
         for (const b of existingBlocks.results) {
           await client.deleteBlock(b.id);
+          deletedOldBlockIds.push(b.id);
         }
       } catch (deleteErr) {
+        if (typeof client.restoreBlock === "function") {
+          for (const id of deletedOldBlockIds) {
+            try {
+              await client.restoreBlock(id);
+            } catch {
+              // ignore secondary errors during rollback
+            }
+          }
+        }
         for (const b of newlyAppended) {
           try {
             await client.deleteBlock(b.id);
@@ -463,7 +476,7 @@ export async function writeTranslationToNotion(
           }
         }
         throw new Error(
-          `Failed to delete old blocks during atomic replacement on ${targetPageId}. Rolled back newly appended blocks and restored original page properties. Error: ${String(deleteErr)}`,
+          `Failed to delete old blocks during atomic replacement on ${targetPageId}. Rolled back newly appended blocks, restored deleted blocks, and restored original page properties. Error: ${String(deleteErr)}`,
           { cause: deleteErr },
         );
       }

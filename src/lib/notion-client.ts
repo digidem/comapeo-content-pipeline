@@ -543,6 +543,16 @@ export class NotionClient {
       method: "DELETE",
     });
   }
+
+  /**
+   * Restore (unarchive) a block by ID.
+   */
+  async restoreBlock(blockId: string): Promise<NotionBlock> {
+    return this.request<NotionBlock>(`/blocks/${blockId}`, {
+      method: "PATCH",
+      body: { archived: false },
+    });
+  }
 }
 
 function sleep(ms: number): Promise<void> {

@@ -28,6 +28,7 @@ import type { NotionBlockList } from "../src/lib/notion-converter.js";
 import type { PageMetadata, PageAsset } from "../src/schemas/metadata.js";
 import type { ManifestDoc } from "../src/schemas/manifest.js";
 import { R2_PATHS } from "../src/persistence/r2.js";
+import { buildSidebarsFromPlan } from "../src/lib/manifest.js";
 
 interface TranslationTarget {
   page: PageReport;
@@ -477,8 +478,11 @@ function updateManifestWithDoc(manifestPath: string, doc: ManifestDoc, enPageId?
     }
   }
 
+  // Regenerate sidebars for all locales so navigation manifest stays consistent with added translations
+  data.sidebars = buildSidebarsFromPlan(data.docs);
+
   writeFileSync(manifestPath, JSON.stringify(data, null, 2), "utf8");
-  console.log(`    [Manifest] ✓ Updated ${manifestPath} with entry [${doc.page_id}]`);
+  console.log(`    [Manifest] ✓ Updated ${manifestPath} with entry [${doc.page_id}] and regenerated sidebars`);
 }
 
 function copyReferencedAssets(
