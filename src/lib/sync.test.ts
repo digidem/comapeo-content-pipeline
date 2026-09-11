@@ -271,4 +271,49 @@ describe("failed-asset marker signature stripping", () => {
       "<!-- failed-asset: https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/img.png -->",
     );
   });
+
+  it("neutralizes linked images cleanly when destination contains closing parentheses", async () => {
+    failingFetch();
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-paren-dest",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "file",
+            file: { url: signedImageUrl("sig-paren-dest") },
+            link: { url: "https://en.wikipedia.org/wiki/Flowchart_(computer_programming)" },
+            caption: [
+              {
+                type: "text",
+                plain_text: "Flowchart link with parens",
+                text: { content: "Flowchart link with parens" },
+                annotations: { ...DEFAULT_ANNOTATIONS },
+              },
+            ],
+          },
+        },
+      ],
+      children: {},
+    };
+
+    const result = await convertPageData({
+      pageId: "page-fail-paren-dest",
+      rawPage: makeRawPage(),
+      rawBlocks,
+      usedSlugs: new Set<string>(),
+    });
+
+    const { body } = parseDoc(result.canoncialMd);
+    // Verified the entire outer link with parens is neutralized
+    expect(body).not.toContain("https://en.wikipedia.org/wiki/Flowchart");
+    expect(body).not.toContain("(computer_programming)");
+    expect(body).toContain("**[Image unavailable: Flowchart link with parens]**");
+    expect(body).toContain(
+      "<!-- failed-asset: https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/img.png -->",
+    );
+  });
 });

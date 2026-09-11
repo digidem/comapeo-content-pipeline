@@ -202,15 +202,20 @@ export async function convertPageData(input: {
 
     // 1. Linked markdown image: [![alt](url)](dest) → neutralize entire linked construct
     //    so the outer link does not wrap around the multiline unavailable marker and comment.
+    //    Supports balanced parentheses in the outer destination URL (e.g. Wikipedia links with closing parens like /wiki/Foo_(bar)),
+    //    pointy-bracketed destinations <...>, and optional link titles.
     markdownBody = markdownBody.replace(
-      new RegExp(`\\[\\s*!\\[([^\\]]*)\\]\\(${esc}\\)\\s*\\]\\([^)]*\\)`, "g"),
+      new RegExp(
+        `\\[\\s*!\\[([^\\]]*)\\]\\(${esc}\\)\\s*\\]\\(\\s*(?:<[^>]+>|(?:\\((?:[^()]*|\\([^()]*\\))*\\)|[^()\\s])+)(?:\\s+["'][^"']*["'])?\\s*\\)`,
+        "g",
+      ),
       (_match, alt: string) =>
         alt && alt.trim()
           ? `**[Image unavailable: ${alt.trim()}]**\n<!-- failed-asset: ${markerUrl} -->`
           : `**[Image unavailable]**\n<!-- failed-asset: ${markerUrl} -->`,
     );
 
-    // 2. Standalone markdown image: ![alt](url) → preserve alt text where present
+    // 3. Standalone markdown image: ![alt](url) → preserve alt text where present
     markdownBody = markdownBody.replace(
       new RegExp(`!\\[([^\\]]*)\\]\\(${esc}\\)`, "g"),
       (_match, alt: string) =>
@@ -219,13 +224,13 @@ export async function convertPageData(input: {
           : `**[Image unavailable]**\n<!-- failed-asset: ${markerUrl} -->`,
     );
 
-    // 3. HTML img inside an anchor: <a ...><img ... src="url" ...></a>
+    // 4. HTML img inside an anchor: <a ...><img ... src="url" ...></a>
     markdownBody = markdownBody.replace(
       new RegExp(`<a\\b[^>]*>\\s*<img\\b[^>]*\\ssrc=(["'])${esc}\\1[^>]*>\\s*<\\/a>`, "gi"),
       () => `**[Image unavailable]**\n<!-- failed-asset: ${markerUrl} -->`,
     );
 
-    // 4. Standalone HTML img: <img ... src="url" ...> (double or single quoted) → no alt recovery.
+    // 5. Standalone HTML img: <img ... src="url" ...> (double or single quoted) → no alt recovery.
     // Callback (not a string replacer) so any `$` in `url` isn't re-interpreted.
     markdownBody = markdownBody.replace(
       new RegExp(`<img\\b[^>]*\\ssrc=(["'])${esc}\\1[^>]*>`, "gi"),
