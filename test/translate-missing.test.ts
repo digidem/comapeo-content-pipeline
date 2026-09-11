@@ -111,4 +111,70 @@ describe("manifest docusaurus_path contract", () => {
     expect(esDoc.docusaurus_path).not.toContain("i18n");
     expect(esDoc.docusaurus_path).not.toContain(".md");
   });
+
+  it("does not overwrite a doc in another section when slugs / docusaurus_paths match", () => {
+    mkdirSync(testDir, { recursive: true });
+    const manifestPath = join(testDir, "manifest.json");
+
+    const initialManifest = {
+      schema_version: "1.0",
+      generated_at: new Date().toISOString(),
+      source: { type: "notion", database_id: "db", data_source_id: "ds" },
+      docs: [
+        {
+          page_id: "es-secA",
+          title: "Overview Section A",
+          locale: "es",
+          section: "section-a",
+          slug: "overview",
+          docusaurus_path: "/overview",
+          status: "published",
+        },
+        {
+          page_id: "en-secB",
+          title: "Overview Section B",
+          locale: "en",
+          section: "section-b",
+          slug: "overview",
+          docusaurus_path: "/overview",
+          status: "published",
+        },
+      ],
+      sidebars: {},
+    };
+    writeFileSync(manifestPath, JSON.stringify(initialManifest, null, 2), "utf8");
+
+    updateManifestWithDoc(
+      manifestPath,
+      {
+        page_id: "es-secB",
+        title: "Overview Section B",
+        locale: "es",
+        section: "section-b",
+        slug: "overview",
+        docusaurus_path: "/overview",
+        docusaurus_id: "section-b/overview",
+        r2_doc_key: "docs/es/section-b/overview.md",
+        r2_metadata_key: "metadata/es-secB.json",
+        source_url: "https://notion.so/es-secB",
+        notion_last_edited_time: new Date().toISOString(),
+        content_hash: "hash456",
+        status: "draft",
+        language_source: "automated",
+      },
+      "en-secB",
+      undefined,
+      { inputDir: testDir },
+    );
+
+    const updated = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const secADoc = updated.docs.find((d: { page_id: string }) => d.page_id === "es-secA");
+    const secBDoc = updated.docs.find((d: { page_id: string }) => d.page_id === "es-secB");
+
+    expect(secADoc).toBeDefined();
+    expect(secADoc.section).toBe("section-a");
+    expect(secBDoc).toBeDefined();
+    expect(secBDoc.section).toBe("section-b");
+    expect(updated.docs.filter((d: { locale: string }) => d.locale === "es")).toHaveLength(2);
+  });
 });

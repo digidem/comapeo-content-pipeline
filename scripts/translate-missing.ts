@@ -630,19 +630,19 @@ export function updateManifestWithDoc(
     }
   }
 
-  // 4. Exact canonical route path match
-  if (existingIdx < 0) {
-    existingIdx = data.docs.findIndex(
-      (d) =>
-        (d.locale === doc.locale && doc.docusaurus_path && d.docusaurus_path && d.docusaurus_path === doc.docusaurus_path) ||
-        (doc.r2_doc_key && d.r2_doc_key && d.r2_doc_key === doc.r2_doc_key),
-    );
-  }
-
-  // 5. Section + slug + locale match (never slug alone across different sections)
+  // 4. Section + slug + locale match (never slug alone across different sections)
   if (existingIdx < 0) {
     existingIdx = data.docs.findIndex(
       (d) => d.locale === doc.locale && d.slug === doc.slug && d.section === doc.section,
+    );
+  }
+
+  // 5. Exact storage key or canonical route path match within the same section
+  if (existingIdx < 0) {
+    existingIdx = data.docs.findIndex(
+      (d) =>
+        (doc.r2_doc_key && d.r2_doc_key && d.r2_doc_key === doc.r2_doc_key) ||
+        (d.locale === doc.locale && d.section === doc.section && doc.docusaurus_path && d.docusaurus_path && d.docusaurus_path === doc.docusaurus_path),
     );
   }
 
