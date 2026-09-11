@@ -55,14 +55,16 @@ async function main() {
   const databaseId = args["database-id"] || process.env.NOTION_DATABASE_ID;
   const targetLocaleArg = args.locale as "pt" | "es" | undefined;
   const pageFilter = args.page;
+  let limit = Infinity;
   if (args.limit !== undefined) {
-    const parsedLimit = Number(args.limit);
-    if (!Number.isInteger(parsedLimit) || parsedLimit <= 0) {
+    const raw = String(args.limit).trim();
+    const parsedLimit = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(parsedLimit) || parsedLimit <= 0) {
       console.error(`Invalid --limit: "${args.limit}". Must be a positive integer.`);
       process.exit(1);
     }
+    limit = parsedLimit;
   }
-  const limit = args.limit ? parseInt(args.limit, 10) : Infinity;
   const input = args.input || join(process.cwd(), "output/manifest.json");
   const inputDir = args["input-dir"] || join(process.cwd(), "output");
   const outputDir = args["output-dir"];
@@ -180,8 +182,9 @@ async function main() {
 
   let timeoutMs: number | undefined;
   if (args.timeout !== undefined) {
-    const parsed = parseInt(String(args.timeout), 10);
-    if (Number.isNaN(parsed) || !Number.isFinite(parsed) || parsed <= 0) {
+    const raw = String(args.timeout).trim();
+    const parsed = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(parsed) || parsed <= 0) {
       console.error(`Error: --timeout must be a positive finite duration in milliseconds, got "${args.timeout}".`);
       process.exit(1);
     }
@@ -190,8 +193,9 @@ async function main() {
 
   let batchSize: number | undefined;
   if (args["batch-size"] !== undefined) {
-    const parsed = parseInt(String(args["batch-size"]), 10);
-    if (Number.isNaN(parsed) || !Number.isFinite(parsed) || parsed <= 0) {
+    const raw = String(args["batch-size"]).trim();
+    const parsed = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(parsed) || parsed <= 0) {
       console.error(`Error: --batch-size must be a positive finite integer, got "${args["batch-size"]}".`);
       process.exit(1);
     }
