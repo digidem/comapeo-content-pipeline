@@ -133,4 +133,28 @@ describe("inlineMarkdownToRichText", () => {
     expect(res[3].text?.content).toBe("info");
     expect(res[3].annotations.color).toBe("blue");
   });
+
+  it("preserves technical identifiers with multiple underscores without corrupting them as italics", () => {
+    const input = "Set my_var_name, SOME_ENV_VAR, and config_file.txt in settings.";
+    const res = inlineMarkdownToRichText(input);
+    expect(res).toHaveLength(1);
+    expect(res[0].text?.content).toBe(input);
+    expect(res[0].annotations.italic).toBe(false);
+
+    const backToMd = richTextToMarkdown(res);
+    expect(backToMd).toBe(input);
+    expect(backToMd).not.toContain("*var*");
+    expect(backToMd).not.toContain("*ENV*");
+  });
+
+  it("converts genuine underscore italics with word boundaries", () => {
+    const input = "This is _italic text_ and (_parenthesized_) here.";
+    const res = inlineMarkdownToRichText(input);
+    expect(res).toHaveLength(5);
+    expect(res[1].text?.content).toBe("italic text");
+    expect(res[1].annotations.italic).toBe(true);
+    expect(res[3].text?.content).toBe("parenthesized");
+    expect(res[3].annotations.italic).toBe(true);
+  });
 });
+

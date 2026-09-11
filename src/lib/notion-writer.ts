@@ -342,27 +342,47 @@ export async function writeTranslationToNotion(
 
   // ── Case 1: Target Page already exists (update stub) ──
   if (targetPageId) {
-    const page = await client.getPage(targetPageId);
-    const existingBlocks = await client.getPageBlocks(targetPageId);
-
-    const publishStatusProp = page.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS] as
-      | { select?: { name?: string } | null }
-      | undefined;
-    const publishStatus = publishStatusProp?.select?.name ?? "";
-
-    const stub = isStubPage(page, existingBlocks);
-
-    // Human-Edit Safety Lock: require force to overwrite any page with non-stub content
-    if (!stub && !force) {
-      return {
-        written: false,
-        action: "skipped",
-        reason: `Human-edit safety lock: Page ${targetPageId} has existing content and Publish Status "${publishStatus || "none"}". Use force to override.`,
-      };
+    let page: NotionPage | null = null;
+    let existingBlocks: Awaited<ReturnType<NotionClient["getPageBlocks"]>> | null = null;
+    try {
+      page = await client.getPage(targetPageId);
+      existingBlocks = await client.getPageBlocks(targetPageId);
+    } catch (err: unknown) {
+      const status = (err as { status?: number }).status;
+      const code = (err as { code?: string }).code;
+      if (
+        status === 404 ||
+        status === 400 ||
+        code === "object_not_found" ||
+        code === "validation_error"
+      ) {
+        console.warn(
+          `[notion-writer] Target page ${targetPageId} not found or invalid in Notion (${status || code}); falling back to page creation.`,
+        );
+      } else {
+        throw err;
+      }
     }
 
-    // Atomic replacement: Append new blocks first so if it fails, old content is preserved
-    const newlyAppended: NotionBlock[] = [];
+    if (page && existingBlocks) {
+      const publishStatusProp = page.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS] as
+        | { select?: { name?: string } | null }
+        | undefined;
+      const publishStatus = publishStatusProp?.select?.name ?? "";
+
+      const stub = isStubPage(page, existingBlocks);
+
+      // Human-Edit Safety Lock: require force to overwrite any page with non-stub content
+      if (!stub && !force) {
+        return {
+          written: false,
+          action: "skipped",
+          reason: `Human-edit safety lock: Page ${targetPageId} has existing content and Publish Status "${publishStatus || "none"}". Use force to override.`,
+        };
+      }
+
+      // Atomic replacement: Append new blocks first so if it fails, old content is preserved
+      const newlyAppended: NotionBlock[] = [];
     try {
       if (preparedBlocks.length > 0) {
         const appendRes = await client.appendBlockChildren(targetPageId, preparedBlocks);
@@ -428,6 +448,7 @@ export async function writeTranslationToNotion(
       action: "updated",
       pageId: targetPageId,
     };
+    }
   }
 
   // ── Case 2: Target Page does NOT exist (create new page in Notion DB) ──

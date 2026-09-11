@@ -465,6 +465,28 @@ describe("writeTranslationToNotion", () => {
     expect(createArgs.properties["Parent item"]).toBeUndefined();
   });
 
+  it("falls back to creating a new page if targetPageId returns 404 from Notion", async () => {
+    vi.mocked(mockClient.getPage).mockRejectedValueOnce({ status: 404, code: "object_not_found" });
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "new-page-after-404",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Título Nuevo",
+      targetPageId: "nonexistent-page-id",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("created");
+    expect(result.pageId).toBe("new-page-after-404");
+    expect(mockClient.createPage).toHaveBeenCalled();
+  });
+
 
   it("uses parentItemId as relation when creating a new page as a sibling", async () => {
     vi.mocked(mockClient.createPage).mockResolvedValueOnce({

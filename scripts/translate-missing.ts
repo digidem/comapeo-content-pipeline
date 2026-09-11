@@ -33,8 +33,13 @@ interface TranslationTarget {
   page: PageReport;
   locale: "pt" | "es";
   enPageId: string;
-  targetPageId: string;
+  targetPageId?: string;
   needsTranslation: boolean;
+}
+
+function isSyntheticPageId(id?: string | null): boolean {
+  if (!id) return false;
+  return /-[a-z]{2}(-[a-z]{2})?$/i.test(id) || !/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(id);
 }
 
 async function main() {
@@ -119,12 +124,13 @@ async function main() {
       const isMissing = p.missing.includes(loc);
       const isStub = p.english_content.includes(loc);
       if (isMissing || isStub || force) {
-        const stubPageId = p.locales[loc]?.page_id;
+        const rawStubId = p.locales[loc]?.page_id;
+        const stubPageId = isSyntheticPageId(rawStubId) ? undefined : rawStubId;
         targets.push({
           page: p,
           locale: loc,
           enPageId: enMember.page_id,
-          targetPageId: stubPageId ?? `${enMember.page_id}-${loc}`,
+          targetPageId: stubPageId,
           needsTranslation: true,
         });
       }
@@ -259,12 +265,11 @@ async function main() {
       console.log(
         `${progress} [DRY RUN] "${page.title}" (${page.slug}) -> ${locale.toUpperCase()}`,
       );
-      console.log(`    Target ID:    ${targetPageId}`);
+      console.log(`    Target ID:    ${targetPageId ?? `${enPageId}-${locale} (provisional)`}`);
       console.log(`    Doc Path:     ${page.paths[locale]}`);
       console.log(`    Blocks:       ${translatable.length} translatable segments`);
       if (writeNotion) {
-        const stubId = page.locales[locale]?.page_id;
-        console.log(`    Notion:       Would ${stubId ? `update stub ${stubId}` : "create new page in Notion DB"}`);
+        console.log(`    Notion:       Would ${targetPageId ? `update stub ${targetPageId}` : "create new page in Notion DB"}`);
       }
       if (translatable.length > 0) {
         const preview = translatable[0].text.slice(0, 70).replace(/\n/g, " ");
@@ -294,7 +299,6 @@ async function main() {
       // the error is caught, no provisional manifest entry is recorded, and the locale
       // remains eligible for future retry.
       if (writeNotion && client && databaseId) {
-        const stubId = page.locales[locale]?.page_id;
         console.log(`${progress} [Notion] Writing translation to Notion database...`);
 
         // Resolve Container Parent ID so translations are siblings under the container row
@@ -314,7 +318,7 @@ async function main() {
           targetTitle: result.title,
           parentItemId: containerParentId,
           parentEnglishPageId: enPageId,
-          targetPageId: stubId,
+          targetPageId,
           translatedBlocks: result.translatedBlocks,
           assets: enMetadata?.assets,
           section: page.section,
@@ -340,6 +344,16 @@ async function main() {
           skippedCount++;
           continue;
         }
+      }
+
+      // If write-back was not enabled or targetPageId was not assigned by Notion,
+      // fall back to synthetic ID for local files.
+      if (!targetPageId) {
+        targetPageId = `${enPageId}-${locale}`;
+        result.translatedMetadata.page_id = targetPageId;
+        result.translatedMetadata.source_url = `https://notion.so/${targetPageId.replace(/-/g, "")}`;
+        const updatedFrontmatter = buildFrontmatter(result.translatedMetadata);
+        result.translatedMd = serializeDoc(updatedFrontmatter, result.markdownBody);
       }
 
       // Write output files in inputDir (pipeline output dir) using final targetPageId
@@ -410,44 +424,44 @@ async function main() {
 }
 
 function updateManifestWithDoc(manifestPath: string, doc: ManifestDoc, enPageId?: string): void {
-  if (!existsSync(manifestPath)) return;
-  try {
-    const raw = readFileSync(manifestPath, "utf8");
-    const data = JSON.parse(raw) as {
-      docs?: ManifestDoc[];
-      [key: string]: unknown;
-    };
-    if (!Array.isArray(data.docs)) return;
+  if (!existsSync(manifestPath)) {
+    throw new Error(`Manifest file does not exist at ${manifestPath}`);
+  }
+  const raw = readFileSync(manifestPath, "utf8");
+  const data = JSON.parse(raw) as {
+    docs?: ManifestDoc[];
+    [key: string]: unknown;
+  };
+  if (!Array.isArray(data.docs)) {
+    throw new Error(`Invalid manifest structure at ${manifestPath}: "docs" array is missing.`);
+  }
 
-    let previousPageId: string | null = null;
-    const existingIdx = data.docs.findIndex(
-      (d) => d.page_id === doc.page_id || (d.slug === doc.slug && d.locale === doc.locale),
-    );
-    if (existingIdx >= 0) {
-      previousPageId = data.docs[existingIdx].page_id;
-      data.docs[existingIdx] = doc;
-    } else {
-      data.docs.push(doc);
-    }
+  let previousPageId: string | null = null;
+  const existingIdx = data.docs.findIndex(
+    (d) => d.page_id === doc.page_id || (d.slug === doc.slug && d.locale === doc.locale),
+  );
+  if (existingIdx >= 0) {
+    previousPageId = data.docs[existingIdx].page_id;
+    data.docs[existingIdx] = doc;
+  } else {
+    data.docs.push(doc);
+  }
 
-    if (enPageId) {
-      const enDoc = data.docs.find((d) => d.page_id === enPageId);
-      if (enDoc) {
-        if (!Array.isArray(enDoc.sub_items)) enDoc.sub_items = [];
-        if (previousPageId && previousPageId !== doc.page_id) {
-          enDoc.sub_items = enDoc.sub_items.filter((id) => id !== previousPageId);
-        }
-        if (!enDoc.sub_items.includes(doc.page_id)) {
-          enDoc.sub_items.push(doc.page_id);
-        }
+  if (enPageId) {
+    const enDoc = data.docs.find((d) => d.page_id === enPageId);
+    if (enDoc) {
+      if (!Array.isArray(enDoc.sub_items)) enDoc.sub_items = [];
+      if (previousPageId && previousPageId !== doc.page_id) {
+        enDoc.sub_items = enDoc.sub_items.filter((id) => id !== previousPageId);
+      }
+      if (!enDoc.sub_items.includes(doc.page_id)) {
+        enDoc.sub_items.push(doc.page_id);
       }
     }
-
-    writeFileSync(manifestPath, JSON.stringify(data, null, 2), "utf8");
-    console.log(`    [Manifest] ✓ Updated ${manifestPath} with entry [${doc.page_id}]`);
-  } catch (err) {
-    console.warn(`    [Manifest] ⚠ Could not update manifest: ${err}`);
   }
+
+  writeFileSync(manifestPath, JSON.stringify(data, null, 2), "utf8");
+  console.log(`    [Manifest] ✓ Updated ${manifestPath} with entry [${doc.page_id}]`);
 }
 
 function copyReferencedAssets(
