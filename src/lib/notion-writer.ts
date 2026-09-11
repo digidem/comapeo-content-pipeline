@@ -180,18 +180,49 @@ export function prepareBlocksForNotion(
           img.file?.link?.url;
         const sanitizedLink = rawLinkUrl ? sanitizeLinkUrl(rawLinkUrl, options.canonicalUrl) : null;
 
-        const externalObj: Record<string, unknown> = { url: externalUrl };
+        let captionRichText: Array<Record<string, unknown>> = [];
+        if (img.caption && Array.isArray(img.caption) && img.caption.length > 0) {
+          captionRichText = sanitizeRichText(img.caption as Array<Record<string, unknown>>, options.canonicalUrl);
+        }
+
+        // Notion API block creation/append schema accepts only external.url and caption.
+        // It rejects unknown properties such as `image.link` or `image.external.link`.
+        // To preserve clickable image destinations across write-back without failing Notion schema validation,
+        // attach the link destination to caption rich text if not already linked.
         if (sanitizedLink) {
-          externalObj.link = { url: sanitizedLink };
+          const hasCaptionLink = captionRichText.some(
+            (rt) =>
+              (rt.text as Record<string, unknown> | undefined)?.link ||
+              rt.href,
+          );
+          if (!hasCaptionLink) {
+            if (captionRichText.length > 0) {
+              captionRichText = captionRichText.map((rt) => {
+                const cloned = { ...rt };
+                const textObj = { ...((cloned.text as Record<string, unknown>) || { content: "" }) };
+                textObj.link = { url: sanitizedLink };
+                cloned.text = textObj;
+                return cloned;
+              });
+            } else {
+              captionRichText = [
+                {
+                  type: "text",
+                  text: {
+                    content: "image",
+                    link: { url: sanitizedLink },
+                  },
+                  plain_text: "image",
+                },
+              ];
+            }
+          }
         }
 
         cleaned.image = {
           type: "external",
-          external: externalObj,
-          ...(sanitizedLink ? { link: { url: sanitizedLink } } : {}),
-          ...(img.caption && Array.isArray(img.caption) && img.caption.length > 0
-            ? { caption: sanitizeRichText(img.caption as Array<Record<string, unknown>>, options.canonicalUrl) }
-            : {}),
+          external: { url: externalUrl },
+          ...(captionRichText.length > 0 ? { caption: captionRichText } : {}),
         };
         return cleaned;
       }

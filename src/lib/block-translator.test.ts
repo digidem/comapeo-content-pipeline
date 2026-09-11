@@ -4,6 +4,7 @@ import { convertBlocks } from "./notion-converter.js";
 import {
   extractTranslatableBlocks,
   applyTranslatedBlocks,
+  restoreEquationDelimiters,
 } from "./block-translator.js";
 
 describe("extractTranslatableBlocks", () => {
@@ -922,6 +923,17 @@ describe("applyTranslatedBlocks", () => {
     const eqItem = p.rich_text.find((r) => r.type === "equation");
     expect(eqItem).toBeDefined();
     expect(eqItem!.equation?.expression).toBe("x");
+  });
+
+  it("preserves markdown image syntax ![alt](url) and does not turn images into links during equation restoration", () => {
+    const originalText = "Original with equation $x$.";
+    const translatedWithImage = "Texto com imagem ![diagrama do fluxo](https://example.com/flow.png) e a variável x no final.";
+
+    const restored = restoreEquationDelimiters(translatedWithImage, originalText);
+
+    expect(restored).toContain("![diagrama do fluxo](https://example.com/flow.png)");
+    expect(restored).not.toMatch(/(?<!!)\[diagrama do fluxo\]\(https:\/\/example\.com\/flow\.png\)/);
+    expect(restored).toContain("$x$");
   });
 });
 

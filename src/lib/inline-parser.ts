@@ -145,25 +145,29 @@ function toNotionRichTextItem(content: string, meta: IntermediateSpan): NotionRi
     href: meta.url ?? undefined,
   };
 }
-
-/**
- * Finds the next markdown link `[link text](url)` with balanced parentheses in the URL.
- */
-export function findNextLink(
-  text: string,
-  startIndex: number,
-): {
+export interface LinkMatch {
   linkStart: number;
   linkEnd: number;
   linkText: string;
   linkUrl: string;
-} | null {
+  isImage: boolean;
+}
+
+/**
+ * Finds the next markdown link `[link text](url)` or image `![alt](url)`
+ * with balanced parentheses in the URL.
+ */
+export function findNextLink(
+  text: string,
+  startIndex: number,
+): LinkMatch | null {
   for (let i = startIndex; i < text.length; i++) {
     if (text[i] === "\\") {
       i++;
       continue;
     }
     if (text[i] === "[") {
+      const isImage = i > 0 && text[i - 1] === "!" && (i === 1 || text[i - 2] !== "\\");
       let bracketDepth = 1;
       let closeBracket = -1;
       for (let j = i + 1; j < text.length; j++) {
@@ -203,10 +207,11 @@ export function findNextLink(
 
         if (urlEnd !== -1) {
           return {
-            linkStart: i,
+            linkStart: isImage ? i - 1 : i,
             linkEnd: urlEnd + 1,
             linkText: text.slice(i + 1, closeBracket),
             linkUrl: text.slice(closeBracket + 2, urlEnd),
+            isImage,
           };
         }
       }

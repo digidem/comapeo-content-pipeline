@@ -192,10 +192,16 @@ describe("prepareBlocksForNotion", () => {
         type: "external",
         external: {
           url: "https://example.com/images/diagram.png",
-          link: { url: "https://example.com/dest" },
         },
-        link: { url: "https://example.com/dest" },
-        caption: [{ type: "text", text: { content: "Diagram" } }],
+        caption: [
+          {
+            type: "text",
+            text: {
+              content: "Diagram",
+              link: { url: "https://example.com/dest" },
+            },
+          },
+        ],
       },
     });
   });
@@ -229,9 +235,17 @@ describe("prepareBlocksForNotion", () => {
         type: "external",
         external: {
           url: "https://example.com/images/diagram.png",
-          link: { url: "https://example.com/content-dest" },
         },
-        link: { url: "https://example.com/content-dest" },
+        caption: [
+          {
+            type: "text",
+            text: {
+              content: "image",
+              link: { url: "https://example.com/content-dest" },
+            },
+            plain_text: "image",
+          },
+        ],
       },
     });
   });
@@ -279,9 +293,17 @@ describe("prepareBlocksForNotion", () => {
         type: "external",
         external: {
           url: "https://raw.githubusercontent.com/digidem/comapeo-docs/content/docs/intro/assets/switch.jpg",
-          link: { url: "https://example.com/file-dest" },
         },
-        link: { url: "https://example.com/file-dest" },
+        caption: [
+          {
+            type: "text",
+            text: {
+              content: "image",
+              link: { url: "https://example.com/file-dest" },
+            },
+            plain_text: "image",
+          },
+        ],
       },
     });
   });
@@ -315,9 +337,17 @@ describe("prepareBlocksForNotion", () => {
         type: "external",
         external: {
           url: "https://example.com/img.png",
-          link: { url: "https://docs.comapeo.app/docs/overview" },
         },
-        link: { url: "https://docs.comapeo.app/docs/overview" },
+        caption: [
+          {
+            type: "text",
+            text: {
+              content: "image",
+              link: { url: "https://docs.comapeo.app/docs/overview" },
+            },
+            plain_text: "image",
+          },
+        ],
       },
     });
   });

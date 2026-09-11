@@ -466,7 +466,8 @@ export function restoreEquationDelimiters(
     }
 
     const restoredLinkText = restoreInNonLinkText(linkMatch.linkText, originalEquations);
-    result += `[${restoredLinkText}](${linkMatch.linkUrl})`;
+    const prefix = linkMatch.isImage ? "!" : "";
+    result += `${prefix}[${restoredLinkText}](${linkMatch.linkUrl})`;
     currentIndex = linkMatch.linkEnd;
   }
 
