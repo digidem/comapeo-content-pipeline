@@ -13,7 +13,8 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "./lib/args.js";
 import { buildReport, type PageReport } from "./missing-translations.js";
 import { loadGlossary } from "../src/lib/glossary.js";
@@ -432,7 +433,7 @@ async function main() {
         drafting_status: meta.drafting_status ?? "automated translations generated",
         slug: meta.slug,
         docusaurus_id: meta.docusaurus_id,
-        docusaurus_path: page.paths[locale],
+        docusaurus_path: `/${meta.slug}`,
         r2_doc_key: R2_PATHS.doc(locale, meta.section, meta.slug),
         r2_metadata_key: R2_PATHS.metadata(id),
         source_url: meta.source_url,
@@ -513,7 +514,7 @@ async function main() {
   }
 }
 
-function updateManifestWithDoc(
+export function updateManifestWithDoc(
   manifestPath: string,
   doc: ManifestDoc,
   enPageId?: string,
@@ -633,7 +634,7 @@ function updateManifestWithDoc(
   if (existingIdx < 0) {
     existingIdx = data.docs.findIndex(
       (d) =>
-        (doc.docusaurus_path && d.docusaurus_path && d.docusaurus_path === doc.docusaurus_path) ||
+        (d.locale === doc.locale && doc.docusaurus_path && d.docusaurus_path && d.docusaurus_path === doc.docusaurus_path) ||
         (doc.r2_doc_key && d.r2_doc_key && d.r2_doc_key === doc.r2_doc_key),
     );
   }
@@ -672,7 +673,7 @@ function updateManifestWithDoc(
   console.log(`    [Manifest] ✓ Updated ${manifestPath} with entry [${doc.page_id}] and regenerated sidebars`);
 }
 
-function copyReferencedAssets(
+export function copyReferencedAssets(
   outputDir: string,
   inputDir: string,
   docRelativePath: string,
@@ -680,10 +681,10 @@ function copyReferencedAssets(
   pageAssets?: PageAsset[],
   writeFn?: (filePath: string, content: Buffer | string) => void,
 ): void {
-  const assetsSrcDir = join(inputDir, "assets");
+  const assetsSrcDir = resolve(inputDir, "assets");
   if (!existsSync(assetsSrcDir)) return;
 
-  const docDest = join(outputDir, docRelativePath);
+  const docDest = resolve(outputDir, docRelativePath);
   const docDir = dirname(docDest);
   const writeFile = writeFn ?? ((filePath: string, content: Buffer | string) => {
     mkdirSync(dirname(filePath), { recursive: true });
@@ -692,12 +693,20 @@ function copyReferencedAssets(
 
   // 1. Copy markdown assets to section/assets directory
   if (pageAssets && pageAssets.length > 0) {
-    const targetAssetsDir = join(docDir, "assets");
+    const targetAssetsDir = resolve(docDir, "assets");
     mkdirSync(targetAssetsDir, { recursive: true });
     for (const a of pageAssets) {
+      if (typeof a?.r2_key !== "string") continue;
       const filename = a.r2_key.replace(/^assets\//, "");
-      const src = join(assetsSrcDir, filename);
-      const dst = join(targetAssetsDir, filename);
+      // Validate the key as a single safe asset filename before using it in either path
+      if (!filename || filename.includes("/") || filename.includes("\\") || filename.includes("..")) {
+        continue;
+      }
+      const src = resolve(assetsSrcDir, filename);
+      const dst = resolve(targetAssetsDir, filename);
+      if (!src.startsWith(assetsSrcDir + "/") || !dst.startsWith(targetAssetsDir + "/")) {
+        continue;
+      }
       if (existsSync(src) && !existsSync(dst)) {
         writeFile(dst, readFileSync(src));
       }
@@ -706,12 +715,16 @@ function copyReferencedAssets(
 
   // 2. Copy inline static assets to outputDir/static/images/notion
   if (rewrittenAssets.length > 0) {
-    const staticDir = join(outputDir, "static", "images", "notion");
+    const staticDir = resolve(outputDir, "static", "images", "notion");
     mkdirSync(staticDir, { recursive: true });
     for (const f of rewrittenAssets) {
-      if (f.includes("/") || f.includes("\\") || f.includes("..")) continue;
-      const src = join(assetsSrcDir, f);
-      const dst = join(staticDir, f);
+      if (typeof f !== "string") continue;
+      if (!f || f.includes("/") || f.includes("\\") || f.includes("..")) continue;
+      const src = resolve(assetsSrcDir, f);
+      const dst = resolve(staticDir, f);
+      if (!src.startsWith(assetsSrcDir + "/") || !dst.startsWith(staticDir + "/")) {
+        continue;
+      }
       if (existsSync(src) && !existsSync(dst)) {
         writeFile(dst, readFileSync(src));
       }
@@ -719,7 +732,9 @@ function copyReferencedAssets(
   }
 }
 
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  });
+}
