@@ -248,9 +248,15 @@ function isNotionUrl(url: string): boolean {
 /**
  * Strip query-string signature and hash from an expiring or signed asset URL.
  * Produces a stable base URL (origin + pathname) for matching.
+ * For data: URIs, strips the payload (which can be multi-megabyte base64 data)
+ * to prevent inflating canonical markdown and content hashes in failure markers.
  */
 export function stripUrlSignature(url: string): string {
-	if (url.startsWith("data:")) return url;
+	if (url.startsWith("data:")) {
+		const commaIdx = url.indexOf(",");
+		const header = commaIdx >= 0 ? url.slice(0, commaIdx) : "data:";
+		return `${header},[omitted]`;
+	}
 	try {
 		const u = new URL(url);
 		return u.origin + u.pathname;
@@ -276,7 +282,8 @@ export function rehostMarkdownAssets(
 	for (const asset of sorted) {
 		if (!asset.original_url || !asset.r2_key) continue;
 
-		const base = stripUrlSignature(asset.original_url);
+		const isDataUri = asset.original_url.startsWith("data:");
+		const base = isDataUri ? asset.original_url : stripUrlSignature(asset.original_url);
 		const escaped = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 		// 1. Replace markdown images: ![alt](base?query) or [![alt](base?query)](link)

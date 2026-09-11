@@ -228,6 +228,35 @@ describe("failed-asset marker signature stripping", () => {
     expect(stripUrlSignature("not-a-url")).toBe("not-a-url");
   });
 
+  it("omits payload from failed data URI images in failed-asset marker", async () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-data",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "external",
+            external: { url: "data:image/png;base64,invalid-non-base64-!!!" },
+            caption: [],
+          },
+        },
+      ],
+    };
+
+    const result = await convertPageData({
+      pageId: "page-data-fail",
+      rawPage: makeRawPage(),
+      rawBlocks,
+      usedSlugs: new Set<string>(),
+    });
+    const { body } = parseDoc(result.canoncialMd);
+    expect(body).toContain("<!-- failed-asset: data:image/png;base64,[omitted] -->");
+    expect(body).not.toContain("invalid-non-base64-!!!");
+  });
+
   it("neutralizes linked images cleanly without leaving outer link wrapped around failure marker", async () => {
     failingFetch();
     const rawBlocks: NotionBlockList = {

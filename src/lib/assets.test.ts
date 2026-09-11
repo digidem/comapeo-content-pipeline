@@ -396,9 +396,14 @@ describe("stripUrlSignature", () => {
 		expect(stripUrlSignature(malformed)).toBe("not-a-valid-url/path");
 	});
 
-	it("preserves data URIs without corrupting them into null paths", () => {
+	it("omits payload from data URIs to avoid bloating failure markers", () => {
 		const dataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
-		expect(stripUrlSignature(dataUri)).toBe(dataUri);
+		expect(stripUrlSignature(dataUri)).toBe("data:image/png;base64,[omitted]");
+	});
+
+	it("handles data URIs without comma gracefully", () => {
+		const dataUri = "data:image/png";
+		expect(stripUrlSignature(dataUri)).toBe("data:,[omitted]");
 	});
 });
 
@@ -414,12 +419,22 @@ describe("rehostMarkdownAssets", () => {
 			original_url: "https://s3-us-west-2.amazonaws.com/public.notion-static.com/uuid/photo_2026-04-18_09-03-07.jpg",
 			r2_key: "assets/ce83f9d3ea687047295a17cb3e9e090b3f7b1e1196ac2c200404927cae1c1a25.jpg",
 		},
+		{
+			original_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==",
+			r2_key: "assets/datauri1234567890abcdef.png",
+		},
 	];
 
 	it("rehosts standard markdown images even with refreshed signature", () => {
 		const md = "![image](https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/uuid/switch_projects.jpg?X-Amz-Date=20260910T120000Z&X-Amz-Signature=xyz)";
 		const result = rehostMarkdownAssets(md, assets);
 		expect(result).toBe("![image](assets/ab2b210fb2fbe7db8225bbd0cefd33bb92d003c9fb8b3ca73a17f3703d2a38d4.jpg)");
+	});
+
+	it("rehosts data URI markdown images correctly", () => {
+		const md = "![inline](data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==)";
+		const result = rehostMarkdownAssets(md, assets);
+		expect(result).toBe("![inline](assets/datauri1234567890abcdef.png)");
 	});
 
 	it("rehosts inline HTML img tags", () => {

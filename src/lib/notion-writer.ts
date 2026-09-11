@@ -176,9 +176,11 @@ export function prepareBlocksForNotion(
         externalUrl.startsWith("data:");
 
       if (needsResolution && rawUrl) {
+        const isDataUri = rawUrl.startsWith("data:");
         const rawNoSig = stripUrlSignature(rawUrl);
         const matchedAsset = options.assets?.find((a) => {
           if (a.original_url === rawUrl) return true;
+          if (isDataUri || a.original_url.startsWith("data:")) return false;
           return stripUrlSignature(a.original_url) === rawNoSig;
         });
 

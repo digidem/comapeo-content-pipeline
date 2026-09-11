@@ -984,6 +984,24 @@ describe("applyTranslatedBlocks", () => {
     const restoredDisplay = restoreEquationDelimiters(translatedWithLostDisplay, originalText);
     expect(restoredDisplay).toBe("Ecuación en línea $E=mc^2$ y ecuación en bloque:\n$$E=mc^2$$\nusada en el cálculo.");
   });
+
+  it("does not corrupt words containing equation expressions across Unicode boundaries", () => {
+    const originalText = "Calculate $log$ and analyze the result.";
+    // Spanish/Portuguese text containing words like 'logística', 'diálogo', 'catálogo'
+    const translatedText = "A logística do diálogo no catálogo de produtos requer atenção.";
+
+    const restored = restoreEquationDelimiters(translatedText, originalText);
+    // None of the words 'logística', 'diálogo', or 'catálogo' should be mutated into '$log$ística', etc.
+    expect(restored).toBe("A logística do diálogo no catálogo de produtos requer atenção.");
+  });
+
+  it("restores equation surrounded by Unicode text when it is a distinct word/token", () => {
+    const originalText = "The function $log$ is used here.";
+    const translatedText = "A função log é usada aqui.";
+
+    const restored = restoreEquationDelimiters(translatedText, originalText);
+    expect(restored).toBe("A função $log$ é usada aqui.");
+  });
 });
 
 

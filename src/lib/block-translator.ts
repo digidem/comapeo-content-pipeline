@@ -287,7 +287,7 @@ export function extractEquationsFromText(text: string): ParsedEquation[] {
   if (!text) return [];
   const equations: ParsedEquation[] = [];
   const eqRegex =
-    /(?<!\\)\$\$(?<display>[^$\n]+?)\$\$|(?<![\w\\$])\$(?!\s)(?<inline>[^$\n]+?)(?<![\s\\$])\$(?!\d)/g;
+    /(?<!\\)\$\$(?<display>[^$\n]+?)\$\$|(?<![\p{L}\p{N}_\\$])\$(?!\s)(?<inline>[^$\n]+?)(?<![\s\\$])\$(?!\d)/gu;
   let match: RegExpExecArray | null;
   while ((match = eqRegex.exec(text)) !== null) {
     if (match.groups?.display) {
@@ -345,7 +345,7 @@ interface Segment {
 
 function collectNonLinkSegments(text: string): Segment[] {
   const NON_PROSE_REGEX =
-    /(?<code>```[\s\S]*?```|`[^`\n]+`)|(?<html><[^>]+>)|(?<equationDisplay>(?<!\\)\$\$[^$\n]+?\$\$)|(?<equationInline>(?<![\w\\$])\$(?!\s)[^$\n]+?(?<![\s\\$])\$(?!\d))/g;
+    /(?<code>```[\s\S]*?```|`[^`\n]+`)|(?<html><[^>]+>)|(?<equationDisplay>(?<!\\)\$\$[^$\n]+?\$\$)|(?<equationInline>(?<![\p{L}\p{N}_\\$])\$(?!\s)[^$\n]+?(?<![\s\\$])\$(?!\d))/gu;
 
   const segments: Segment[] = [];
   let lastIdx = 0;
@@ -487,11 +487,11 @@ export function restoreEquationDelimiters(
     if (!expr) continue;
 
     const escaped = escapeRegExp(expr);
-    const startsWithWord = /^\w/.test(expr);
-    const endsWithWord = /\w$/.test(expr);
-    const prefix = startsWithWord ? "(?<![\\w$])" : "(?<!\\$)";
-    const suffix = endsWithWord ? "(?![\\w$])" : "(?!\\$)";
-    const searchRegex = new RegExp(`${prefix}${escaped}${suffix}`, "g");
+    const startsWithWord = /^[\p{L}\p{N}_]/u.test(expr);
+    const endsWithWord = /[\p{L}\p{N}_]$/u.test(expr);
+    const prefix = startsWithWord ? "(?<![\\p{L}\\p{N}_$])" : "(?<!\\$)";
+    const suffix = endsWithWord ? "(?![\\p{L}\\p{N}_$])" : "(?!\\$)";
+    const searchRegex = new RegExp(`${prefix}${escaped}${suffix}`, "gu");
 
     // Count how many standalone matches exist across all prose segments
     let matchCount = 0;
