@@ -630,7 +630,8 @@ function convertTable(
         // Newlines inside table cells break Markdown table syntax (MD056).
         // Trim edge whitespace first (which handles trailing-newline artifacts),
         // then replace any remaining interior newlines with <br />.
-        return raw.trim().replace(/\n/g, "<br />");
+        // Also escape literal pipes so they do not create extra Markdown table columns.
+        return raw.trim().replace(/(?<!\\)\|/g, "\\|").replace(/\n/g, "<br />");
       }).join(" | ") +
       " |"
     );

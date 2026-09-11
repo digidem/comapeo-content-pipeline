@@ -66,6 +66,7 @@ export class NotionClient {
   private version: string;
   private maxRps: number;
   private lastRequestTime: number = 0;
+  private throttleQueue: Promise<void> = Promise.resolve();
   private baseUrl = NOTION_API.BASE_URL;
   private inFlightRequests: Map<string, Promise<unknown>> = new Map();
   /** Lazily instantiated SDK client for dataSources.query (DATABASE_VERSION). */
@@ -101,13 +102,19 @@ export class NotionClient {
   // ── Rate limiting ──
 
   private async throttle(): Promise<void> {
-    const now = Date.now();
     const minInterval = 1000 / this.maxRps;
-    const elapsed = now - this.lastRequestTime;
-    if (elapsed < minInterval) {
-      await sleep(minInterval - elapsed);
-    }
-    this.lastRequestTime = Date.now();
+    const queued = this.throttleQueue
+      .catch(() => {})
+      .then(async () => {
+        const now = Date.now();
+        const elapsed = now - this.lastRequestTime;
+        if (elapsed < minInterval) {
+          await sleep(minInterval - elapsed);
+        }
+        this.lastRequestTime = Date.now();
+      });
+    this.throttleQueue = queued;
+    await queued;
   }
 
   /**

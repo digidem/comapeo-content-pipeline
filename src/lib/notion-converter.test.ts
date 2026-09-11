@@ -579,6 +579,51 @@ describe("richTextToMarkdown", () => {
     expect(output).toContain("| Line1<br />Line2 |");
   });
 
+  it("escapes unescaped pipe characters in table cells", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "tbl-pipes",
+          type: "table",
+          has_children: true,
+          table: { table_width: 2, has_column_header: true, has_row_header: false },
+        },
+      ],
+      children: {
+        "tbl-pipes": [
+          {
+            object: "block",
+            id: "row-h",
+            type: "table_row",
+            has_children: false,
+            table_row: {
+              cells: [
+                [{ type: "text", plain_text: "Header", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+                [{ type: "text", plain_text: "Value", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+              ],
+            },
+          },
+          {
+            object: "block",
+            id: "row-1",
+            type: "table_row",
+            has_children: false,
+            table_row: {
+              cells: [
+                [{ type: "text", plain_text: "Bitwise", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+                [{ type: "text", plain_text: "a | b (already escaped: c \\| d)", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const output = convertBlocks(blockList);
+    expect(output).toContain("| Bitwise | a \\| b (already escaped: c \\| d) |");
+  });
+
   // ── Defect D: MD003 — divider after text becomes setext heading ──
 
   it("MD003: divider inside callout children has blank line before ---", () => {

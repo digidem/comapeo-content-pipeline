@@ -88,6 +88,15 @@ export function extractTranslatableBlocks(blockList: NotionBlockList): Extracted
           });
         }
       }
+    } else if (type === "child_page") {
+      const title = (block.child_page as { title?: string } | undefined)?.title?.trim();
+      if (title && title.length > 0) {
+        extracted.push({
+          id: block.id,
+          type: "child_page",
+          text: title,
+        });
+      }
     } else if (content?.rich_text) {
       const text = richTextToMarkdown(content.rich_text).trim();
       if (text.length > 0) {
@@ -182,7 +191,9 @@ export function applyTranslatedBlocks(
           const key = `${block.id}:cell:${index}`;
           const trans = translations[key];
           if (trans !== undefined) {
-            row.cells![index] = inlineMarkdownToRichText(trans, emojiMap);
+            // Escape literal unescaped pipes to prevent corrupting Markdown table columns
+            const safeTrans = trans.replace(/(?<!\\)\|/g, "\\|");
+            row.cells![index] = inlineMarkdownToRichText(safeTrans, emojiMap);
           }
         });
       }
@@ -200,6 +211,14 @@ export function applyTranslatedBlocks(
         const mediaContent = block[type] as BlockWithCaption | undefined;
         if (mediaContent) {
           mediaContent.caption = inlineMarkdownToRichText(trans, emojiMap);
+        }
+      }
+    } else if (type === "child_page") {
+      const trans = translations[block.id];
+      if (trans !== undefined) {
+        const childPage = block.child_page as { title?: string } | undefined;
+        if (childPage) {
+          childPage.title = trans.trim();
         }
       }
     } else {

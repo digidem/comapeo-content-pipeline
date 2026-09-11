@@ -427,6 +427,52 @@ describe("withSdkRetry (SDK 429/5xx retry policy)", () => {
   });
 });
 
+describe("NotionClient concurrent throttling", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fetchMock = vi.fn().mockImplementation(async () => okResponse({ id: "page" }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("serializes concurrent requests and spaces them according to maxRps", async () => {
+    // maxRps = 2 -> minInterval = 500ms
+    const client = new NotionClient({ token: "test-token", maxRps: 2 });
+
+    const p1 = client.getPage("page-1");
+    const p2 = client.getPage("page-2");
+    const p3 = client.getPage("page-3");
+
+    // First request should execute immediately
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // After 250ms, second request should still be waiting
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // After reaching 500ms total, second request runs
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // After another 250ms, third request still waiting
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // After another 250ms (1000ms total), third request runs
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    await Promise.all([p1, p2, p3]);
+  });
+});
+
 describe("NotionClient write operations", () => {
   let client: NotionClient;
   let fetchMock: ReturnType<typeof vi.fn>;

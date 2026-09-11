@@ -287,6 +287,32 @@ describe("extractTranslatableBlocks", () => {
       text: "Map view of the project",
     });
   });
+
+  it("extracts child_page title", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "cp1",
+          type: "child_page",
+          has_children: false,
+          child_page: {
+            title: "Subpage Title",
+          },
+        },
+      ],
+    };
+
+    const extracted = extractTranslatableBlocks(blockList);
+    expect(extracted).toEqual([
+      {
+        id: "cp1",
+        type: "child_page",
+        text: "Subpage Title",
+      },
+    ]);
+  });
 });
 
 describe("applyTranslatedBlocks", () => {
@@ -464,5 +490,66 @@ describe("applyTranslatedBlocks", () => {
     expect(md).toContain("## Primeiros passos");
     expect(md).toContain(":::note 💡 Dica");
     expect(md).toContain("Mantenha seu GPS ligado.");
+  });
+
+  it("updates child_page title", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "cp1",
+          type: "child_page",
+          has_children: false,
+          child_page: {
+            title: "Old Title",
+          },
+        },
+      ],
+    };
+
+    const updated = applyTranslatedBlocks(blockList, {
+      cp1: "Novo Título",
+    });
+
+    const cp = updated.results[0].child_page as { title?: string };
+    expect(cp.title).toBe("Novo Título");
+  });
+
+  it("escapes unescaped pipes in table cells to protect markdown table structure", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "tbl",
+          type: "table",
+          has_children: true,
+          table: {},
+        },
+      ],
+      children: {
+        tbl: [
+          {
+            object: "block",
+            id: "row1",
+            type: "table_row",
+            has_children: false,
+            table_row: {
+              cells: [
+                [{ type: "text", plain_text: "A", text: { content: "A" }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+              ],
+            },
+          },
+        ],
+      },
+    };
+
+    const updated = applyTranslatedBlocks(blockList, {
+      "row1:cell:0": "Option A | Option B",
+    });
+
+    const row = updated.children!.tbl[0].table_row as { cells: Array<Array<{ plain_text: string }>> };
+    expect(row.cells[0][0].plain_text).toBe("Option A \\| Option B");
   });
 });
