@@ -983,6 +983,73 @@ describe("writeTranslationToNotion", () => {
     expect(mockClient.createPage).not.toHaveBeenCalled();
   });
 
+  it("reconciles existing translation under shared container when both parentItemId and parentEnglishPageId are supplied", async () => {
+    // Call 1: parentEnglishPageId direct query (returns empty)
+    vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
+      results: [],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    // Call 2: getPage for parentEnglishPageId sub-items inspection (returns no sub-items)
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "en-page-id",
+      properties: {},
+    } as unknown as NotionPage);
+
+    // Call 3: queryDatabase under containerParentId by language and title (finds existing translation)
+    vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
+      results: [
+        {
+          id: "existing-es-translation-under-container",
+          properties: {
+            [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES - automated" } },
+            [NOTION_PROPERTIES.TITLE]: {
+              title: [{ plain_text: "Título Traducido" }],
+            },
+          },
+        } as unknown as NotionPage,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    // Sub-call: getPage for candidate in writeTranslationToNotion update path
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "existing-es-translation-under-container",
+      properties: {
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: {
+          select: { name: "Automated translations generated" },
+        },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [],
+      children: {},
+    });
+
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "existing-es-translation-under-container",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Título Traducido",
+      parentItemId: "shared-container-id",
+      parentEnglishPageId: "en-page-id",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("updated");
+    expect(result.pageId).toBe("existing-es-translation-under-container");
+    expect(mockClient.createPage).not.toHaveBeenCalled();
+  });
+
   it("queries by title and language when effectiveParentId is not provided", async () => {
     vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
       results: [],

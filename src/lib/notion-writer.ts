@@ -1142,77 +1142,76 @@ export async function writeTranslationToNotion(
       }
     }
 
-    // 3. For standalone pages where parentEnglishPageId is not provided, match by language AND title
-    //    under effectiveParentId (parentItemId) or database root.
-    //    Note: When parentEnglishPageId is provided, we strictly disallow matching by title alone under a
-    //    shared container to prevent title collisions from overwriting another article's translation.
-    if (!parentEnglishPageId) {
-      try {
-        const filterConditions: Record<string, unknown>[] = [
-          {
-            property: NOTION_PROPERTIES.LANGUAGE,
-            select: { equals: localeSelectName },
-          },
-          {
-            property: NOTION_PROPERTIES.TITLE,
-            title: { equals: targetTitle },
-          },
-        ];
-        if (effectiveParentId) {
-          filterConditions.push({
-            property: NOTION_PROPERTIES.PARENT_ITEM,
-            relation: { contains: effectiveParentId },
+    // 3. Match by language AND title under effectiveParentId (parentItemId or database root).
+    //    When parentEnglishPageId is provided but steps 1 & 2 did not find a page (for instance,
+    //    because newly created translations store the shared container in Parent item rather than
+    //    the English page), query by language and title under effectiveParentId to find existing
+    //    translations on retries and avoid duplicate page creation.
+    try {
+      const filterConditions: Record<string, unknown>[] = [
+        {
+          property: NOTION_PROPERTIES.LANGUAGE,
+          select: { equals: localeSelectName },
+        },
+        {
+          property: NOTION_PROPERTIES.TITLE,
+          title: { equals: targetTitle },
+        },
+      ];
+      if (effectiveParentId) {
+        filterConditions.push({
+          property: NOTION_PROPERTIES.PARENT_ITEM,
+          relation: { contains: effectiveParentId },
+        });
+      }
+
+      const existing = await client.queryDatabase({
+        filter: { and: filterConditions },
+        pageSize: 10,
+      });
+
+      const rawCandidates = existing?.results ?? [];
+      const candidates = rawCandidates.filter((p) => {
+        const lang = getPageLanguage(p);
+        return normalizeLocale(lang) === targetLocale;
+      });
+
+      if (candidates.length > 0) {
+        let hasBodyById: Record<string, boolean | undefined> | undefined;
+        if (candidates.length > 1 && typeof client.getPageBlocks === "function") {
+          const bodies: Record<string, boolean | undefined> = {};
+          await Promise.all(
+            candidates.map(async (cand) => {
+              try {
+                const blocks = await client.getPageBlocks(cand.id);
+                bodies[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
+              } catch (fetchErr) {
+                console.warn(
+                  `[notion-writer] Failed to fetch blocks for candidate [${cand.id}]: ${fetchErr}`,
+                );
+                bodies[cand.id] = undefined;
+              }
+            }),
+          );
+          hasBodyById = bodies;
+        }
+        const ranked = rankTranslationCandidates(candidates, targetTitle, hasBodyById);
+        if (ranked.length > 0) {
+          const winner = ranked[0];
+          console.warn(
+            `[notion-writer] Found existing translation page [${winner.id}] matching ${targetLocale} and title "${targetTitle}". Reusing canonical member instead of creating duplicate.`,
+          );
+          return writeTranslationToNotion({
+            ...options,
+            targetPageId: winner.id,
           });
         }
-
-        const existing = await client.queryDatabase({
-          filter: { and: filterConditions },
-          pageSize: 10,
-        });
-
-        const rawCandidates = existing?.results ?? [];
-        const candidates = rawCandidates.filter((p) => {
-          const lang = getPageLanguage(p);
-          return normalizeLocale(lang) === targetLocale;
-        });
-
-        if (candidates.length > 0) {
-          let hasBodyById: Record<string, boolean | undefined> | undefined;
-          if (candidates.length > 1 && typeof client.getPageBlocks === "function") {
-            const bodies: Record<string, boolean | undefined> = {};
-            await Promise.all(
-              candidates.map(async (cand) => {
-                try {
-                  const blocks = await client.getPageBlocks(cand.id);
-                  bodies[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
-                } catch (fetchErr) {
-                  console.warn(
-                    `[notion-writer] Failed to fetch blocks for candidate [${cand.id}]: ${fetchErr}`,
-                  );
-                  bodies[cand.id] = undefined;
-                }
-              }),
-            );
-            hasBodyById = bodies;
-          }
-          const ranked = rankTranslationCandidates(candidates, targetTitle, hasBodyById);
-          if (ranked.length > 0) {
-            const winner = ranked[0];
-            console.warn(
-              `[notion-writer] Found existing translation page [${winner.id}] matching ${targetLocale} and title "${targetTitle}". Reusing canonical member instead of creating duplicate.`,
-            );
-            return writeTranslationToNotion({
-              ...options,
-              targetPageId: winner.id,
-            });
-          }
-        }
-      } catch (queryErr) {
-        throw new Error(
-          `[notion-writer] Failed to query existing translations by language and title: ${queryErr instanceof Error ? queryErr.message : String(queryErr)}`,
-          { cause: queryErr },
-        );
       }
+    } catch (queryErr) {
+      throw new Error(
+        `[notion-writer] Failed to query existing translations by language and title: ${queryErr instanceof Error ? queryErr.message : String(queryErr)}`,
+        { cause: queryErr },
+      );
     }
   }
   const firstChunk = preparedBlocks.slice(0, 100);
