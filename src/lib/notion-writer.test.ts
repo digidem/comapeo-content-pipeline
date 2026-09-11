@@ -163,6 +163,165 @@ describe("prepareBlocksForNotion", () => {
     });
   });
 
+  it("preserves clickable links on image blocks from block.image.link", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-link-1",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "external",
+            external: {
+              url: "https://example.com/images/diagram.png",
+            },
+            link: { url: "https://example.com/dest" },
+            caption: [{ type: "text", text: { content: "Diagram" } }],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const prepared = prepareBlocksForNotion(rawBlocks);
+    expect(prepared[0]).toEqual({
+      object: "block",
+      type: "image",
+      image: {
+        type: "external",
+        external: {
+          url: "https://example.com/images/diagram.png",
+          link: { url: "https://example.com/dest" },
+        },
+        link: { url: "https://example.com/dest" },
+        caption: [{ type: "text", text: { content: "Diagram" } }],
+      },
+    });
+  });
+
+  it("preserves clickable links on image blocks from block.image.external.link", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-link-2",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "external",
+            external: {
+              url: "https://example.com/images/diagram.png",
+              link: { url: "https://example.com/content-dest" },
+            },
+            caption: [],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const prepared = prepareBlocksForNotion(rawBlocks);
+    expect(prepared[0]).toEqual({
+      object: "block",
+      type: "image",
+      image: {
+        type: "external",
+        external: {
+          url: "https://example.com/images/diagram.png",
+          link: { url: "https://example.com/content-dest" },
+        },
+        link: { url: "https://example.com/content-dest" },
+      },
+    });
+  });
+
+  it("preserves clickable links on image blocks from S3 file.link when resolved to external", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-link-3",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "file",
+            file: {
+              url: "https://prod-files-secure.s3.us-west-2.amazonaws.com/workspace/doc/switch.jpg",
+              expiry_time: "2026-01-01T00:00:00.000Z",
+              link: { url: "https://example.com/file-dest" },
+            },
+            caption: [],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const assets = [
+      {
+        original_url: "https://prod-files-secure.s3.us-west-2.amazonaws.com/workspace/doc/switch.jpg",
+        r2_key: "assets/switch.jpg",
+        sha256: "sha256:123",
+        mime_type: "image/jpeg",
+      },
+    ];
+
+    const prepared = prepareBlocksForNotion(rawBlocks, {
+      assets,
+      section: "intro",
+    });
+
+    expect(prepared[0]).toEqual({
+      object: "block",
+      type: "image",
+      image: {
+        type: "external",
+        external: {
+          url: "https://raw.githubusercontent.com/digidem/comapeo-docs/content/docs/intro/assets/switch.jpg",
+          link: { url: "https://example.com/file-dest" },
+        },
+        link: { url: "https://example.com/file-dest" },
+      },
+    });
+  });
+
+  it("sanitizes relative and hash image links to absolute URLs", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-rel",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "external",
+            external: {
+              url: "https://example.com/img.png",
+            },
+            link: { url: "/docs/overview" },
+            caption: [],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const prepared = prepareBlocksForNotion(rawBlocks);
+    expect(prepared[0]).toEqual({
+      object: "block",
+      type: "image",
+      image: {
+        type: "external",
+        external: {
+          url: "https://example.com/img.png",
+          link: { url: "https://docs.comapeo.app/docs/overview" },
+        },
+        link: { url: "https://docs.comapeo.app/docs/overview" },
+      },
+    });
+  });
+
   it("resolves Notion S3 file image blocks to permanent public URLs using assets and section", () => {
     const rawBlocks: NotionBlockList = {
       object: "list",
@@ -2025,7 +2184,8 @@ describe("writeTranslationToNotion", () => {
     expect(result.action).toBe("created");
     expect(typeof result.rollback).toBe("function");
 
-    await result.rollback!();
+    const rolledBack = await result.rollback!();
+    expect(rolledBack).toBe(true);
     expect(mockClient.deleteBlock).toHaveBeenCalledWith("created-page-to-rollback");
   });
 
@@ -2053,7 +2213,8 @@ describe("writeTranslationToNotion", () => {
 
     vi.mocked(mockClient.deleteBlock).mockClear();
 
-    await result.rollback!();
+    const rolledBack = await result.rollback!();
+    expect(rolledBack).toBe(false);
     expect(mockClient.deleteBlock).not.toHaveBeenCalled();
   });
 
@@ -2086,7 +2247,8 @@ describe("writeTranslationToNotion", () => {
 
     vi.mocked(mockClient.deleteBlock).mockClear();
 
-    await result.rollback!();
+    const rolledBack = await result.rollback!();
+    expect(rolledBack).toBe(false);
     expect(mockClient.deleteBlock).not.toHaveBeenCalled();
   });
 
@@ -2113,11 +2275,6 @@ describe("writeTranslationToNotion", () => {
       next_cursor: null,
       has_more: false,
     });
-    vi.mocked(mockClient.updatePage).mockResolvedValue({
-      id: "updated-page-to-rollback",
-      object: "page",
-    } as unknown as NotionPage);
-    vi.mocked(mockClient.deleteBlock).mockResolvedValue({ id: "old-block-a", object: "block", archived: true });
 
     const result = await writeTranslationToNotion({
       client: mockClient,
@@ -2132,7 +2289,8 @@ describe("writeTranslationToNotion", () => {
     expect(result.action).toBe("updated");
     expect(typeof result.rollback).toBe("function");
 
-    await result.rollback!();
+    const rolledBackUpdate = await result.rollback!();
+    expect(rolledBackUpdate).toBe(true);
 
     expect(mockClient.restoreBlock).toHaveBeenCalledWith("old-block-a");
     expect(mockClient.deleteBlock).toHaveBeenCalledWith("new-block-a");

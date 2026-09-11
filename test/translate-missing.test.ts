@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { copyReferencedAssets, updateManifestWithDoc } from "../scripts/translate-missing.js";
+import { copyReferencedAssets, updateManifestWithDoc, buildManifestDoc } from "../scripts/translate-missing.js";
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -176,5 +176,53 @@ describe("manifest docusaurus_path contract", () => {
     expect(secBDoc).toBeDefined();
     expect(secBDoc.section).toBe("section-b");
     expect(updated.docs.filter((d: { locale: string }) => d.locale === "es")).toHaveLength(2);
+  });
+});
+
+describe("buildManifestDoc", () => {
+  it("builds a valid manifest doc with canonical R2 keys and public docusaurus path", () => {
+    const meta = {
+      title: "Configuração do Projeto",
+      page_id: "notion-123",
+      source_url: "https://notion.so/notion123",
+      notion_last_edited_time: "2026-06-01T12:00:00.000Z",
+      content_hash: "hash-pt-123",
+      raw_hash: "raw-pt-123",
+      locale: "pt",
+      section: "managing-projects",
+      section_order: 2,
+      slug: "project-configuration",
+      docusaurus_id: "managing-projects/project-configuration",
+      element_type: "Page",
+      drafting_status: "automated translations generated",
+      status: "active",
+      properties: {},
+      assets: [],
+      keywords: [],
+      tags: [],
+      language_source: "automated",
+    };
+
+    const doc = buildManifestDoc("pt-page-123", meta as any, "pt");
+
+    expect(doc).toEqual({
+      page_id: "pt-page-123",
+      title: "Configuração do Projeto",
+      locale: "pt",
+      section: "managing-projects",
+      section_order: 2,
+      element_type: "Page",
+      drafting_status: "automated translations generated",
+      slug: "project-configuration",
+      docusaurus_id: "managing-projects/project-configuration",
+      docusaurus_path: "/project-configuration",
+      r2_doc_key: "docs/pt/docs/managing-projects/project-configuration.md",
+      r2_metadata_key: "pages/pt-page-123/metadata.json",
+      source_url: "https://notion.so/notion123",
+      notion_last_edited_time: "2026-06-01T12:00:00.000Z",
+      content_hash: "hash-pt-123",
+      status: "draft",
+      language_source: "automated",
+    });
   });
 });

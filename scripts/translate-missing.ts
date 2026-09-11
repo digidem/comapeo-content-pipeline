@@ -20,7 +20,7 @@ import { buildReport, type PageReport } from "./missing-translations.js";
 import { loadGlossary } from "../src/lib/glossary.js";
 import { AITranslator } from "../src/lib/ai-translator.js";
 import { extractTranslatableBlocks } from "../src/lib/block-translator.js";
-import { translatePageContent } from "../src/lib/page-translator.js";
+import { translatePageContent, type TranslatePageResult } from "../src/lib/page-translator.js";
 import { NotionClient } from "../src/lib/notion-client.js";
 import { writeTranslationToNotion } from "../src/lib/notion-writer.js";
 import { buildFrontmatter, serializeDoc } from "../src/lib/frontmatter.js";
@@ -38,6 +38,28 @@ interface TranslationTarget {
   enPageId: string;
   targetPageId?: string;
   needsTranslation: boolean;
+}
+
+export function buildManifestDoc(id: string, meta: PageMetadata, locale: string): ManifestDoc {
+  return {
+    page_id: id,
+    title: meta.title,
+    locale,
+    section: meta.section,
+    section_order: meta.section_order,
+    element_type: meta.element_type ?? "Page",
+    drafting_status: meta.drafting_status ?? "automated translations generated",
+    slug: meta.slug,
+    docusaurus_id: meta.docusaurus_id,
+    docusaurus_path: `/${meta.slug}`,
+    r2_doc_key: R2_PATHS.doc(locale, meta.section, meta.slug),
+    r2_metadata_key: R2_PATHS.metadata(id),
+    source_url: meta.source_url,
+    notion_last_edited_time: meta.notion_last_edited_time,
+    content_hash: meta.content_hash,
+    status: "draft",
+    language_source: "automated",
+  };
 }
 
 function isSyntheticPageId(id?: string | null): boolean {
@@ -315,7 +337,8 @@ async function main() {
     }
 
     // D. Apply Mode
-    let rollbackNotion: (() => Promise<void>) | undefined;
+    let rollbackNotion: (() => Promise<boolean>) | undefined;
+    let result: TranslatePageResult | undefined;
     const fileBackups = new Map<string, Buffer | null>();
     const trackAndWriteFile = (filePath: string, content: string | Buffer) => {
       if (!fileBackups.has(filePath)) {
@@ -329,7 +352,7 @@ async function main() {
       console.log(
         `${progress} Translating "${page.title}" to ${locale.toUpperCase()} (${translatable.length} blocks)...`,
       );
-      const result = await translatePageContent({
+      result = await translatePageContent({
         enRawBlocks,
         enMetadata,
         targetLocale: locale,
@@ -423,29 +446,9 @@ async function main() {
       }
 
       // Update manifest.json with the finalized translation entry using canonical R2 paths
-      const buildManifestEntry = (id: string, meta: PageMetadata): ManifestDoc => ({
-        page_id: id,
-        title: meta.title,
-        locale,
-        section: meta.section,
-        section_order: meta.section_order,
-        element_type: meta.element_type ?? "Page",
-        drafting_status: meta.drafting_status ?? "automated translations generated",
-        slug: meta.slug,
-        docusaurus_id: meta.docusaurus_id,
-        docusaurus_path: `/${meta.slug}`,
-        r2_doc_key: R2_PATHS.doc(locale, meta.section, meta.slug),
-        r2_metadata_key: R2_PATHS.metadata(id),
-        source_url: meta.source_url,
-        notion_last_edited_time: meta.notion_last_edited_time,
-        content_hash: meta.content_hash,
-        status: "draft",
-        language_source: "automated",
-      });
-
       updateManifestWithDoc(
         input,
-        buildManifestEntry(targetPageId, result.translatedMetadata),
+        buildManifestDoc(targetPageId, result.translatedMetadata, locale),
         enPageId,
         target.targetPageId,
         {
@@ -463,32 +466,99 @@ async function main() {
       );
       successCount++;
     } catch (err) {
+      let notionRolledBack = false;
       if (rollbackNotion) {
         console.warn(
           `${progress} Rolling back Notion changes on [${targetPageId}] due to persistence failure...`,
         );
         try {
-          await rollbackNotion();
-          console.log(`${progress} ✓ Rollback of Notion changes complete.`);
+          notionRolledBack = (await rollbackNotion()) === true;
+          if (notionRolledBack) {
+            console.log(`${progress} ✓ Rollback of Notion changes complete.`);
+          } else {
+            console.warn(
+              `${progress} ⚠ Rollback of Notion changes declined or failed on [${targetPageId}]. Notion retained translated page.`,
+            );
+          }
         } catch (rollErr) {
           console.error(`${progress} Failed to rollback Notion changes on [${targetPageId}]:`, rollErr);
+          notionRolledBack = false;
         }
       }
 
-      // Roll back / remove any partially written local files so no orphaned artifacts remain
-      for (const [filePath, originalContent] of fileBackups.entries()) {
-        try {
-          if (originalContent === null) {
-            if (existsSync(filePath)) {
-              rmSync(filePath, { force: true });
-              console.log(`${progress} [Cleanup] Removed orphaned file: ${filePath}`);
+      if (!rollbackNotion || notionRolledBack) {
+        // Notion was either never touched or was cleanly rolled back.
+        // Revert local files and manifest to avoid orphaned/partial artifacts.
+        for (const [filePath, originalContent] of fileBackups.entries()) {
+          try {
+            if (originalContent === null) {
+              if (existsSync(filePath)) {
+                rmSync(filePath, { force: true });
+                console.log(`${progress} [Cleanup] Removed orphaned file: ${filePath}`);
+              }
+            } else {
+              writeFileSync(filePath, originalContent);
+              console.log(`${progress} [Cleanup] Restored previous file: ${filePath}`);
             }
-          } else {
-            writeFileSync(filePath, originalContent);
-            console.log(`${progress} [Cleanup] Restored previous file: ${filePath}`);
+          } catch (cleanupErr) {
+            console.error(`${progress} Failed to clean up file ${filePath}:`, cleanupErr);
           }
-        } catch (cleanupErr) {
-          console.error(`${progress} Failed to clean up file ${filePath}:`, cleanupErr);
+        }
+      } else {
+        // Rollback was declined or failed: Notion retained the translation.
+        // Preserve generated local files and synchronize manifest so local state
+        // remains consistent with Notion and avoids duplicate creation on retry.
+        console.warn(
+          `${progress} [Warning] Notion retained translation for [${targetPageId}]. Preserving local files and synchronizing manifest to prevent divergent state.`,
+        );
+        if (result) {
+          try {
+            const finalPageId = targetPageId || result.translatedMetadata.page_id || `${enPageId}-${locale}`;
+            const outMdPath = join(inputDir, `${finalPageId}.md`);
+            const outMetaPath = join(inputDir, `${finalPageId}.metadata.json`);
+            const outBlocksPath = join(inputDir, `${finalPageId}.raw-blocks.json`);
+            mkdirSync(dirname(outMdPath), { recursive: true });
+            writeFileSync(outMdPath, result.translatedMd);
+            writeFileSync(outMetaPath, JSON.stringify(result.translatedMetadata, null, 2));
+            writeFileSync(outBlocksPath, JSON.stringify(result.translatedBlocks, null, 2));
+
+            if (outputDir && page.paths[locale]) {
+              const docDest = join(outputDir, page.paths[locale]);
+              const rewritten = rewriteRawImgSrcToStatic(result.translatedMd);
+              mkdirSync(dirname(docDest), { recursive: true });
+              writeFileSync(docDest, rewritten.content);
+              copyReferencedAssets(
+                outputDir,
+                inputDir,
+                page.paths[locale],
+                rewritten.assets,
+                enMetadata?.assets,
+                (fp, c) => {
+                  mkdirSync(dirname(fp), { recursive: true });
+                  writeFileSync(fp, c);
+                },
+              );
+            }
+
+            updateManifestWithDoc(
+              input,
+              buildManifestDoc(finalPageId, result.translatedMetadata, locale),
+              enPageId,
+              target.targetPageId,
+              {
+                inputDir,
+                includeDrafts,
+              },
+            );
+            console.log(
+              `${progress} [Recovery] Successfully recorded retained translation [${finalPageId}] in manifest and local storage.`,
+            );
+          } catch (syncErr) {
+            console.error(
+              `${progress} Failed to persist retained translation [${targetPageId ?? "unknown"}] to manifest:`,
+              syncErr,
+            );
+          }
         }
       }
       fileBackups.clear();

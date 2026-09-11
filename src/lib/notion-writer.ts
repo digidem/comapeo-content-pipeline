@@ -44,7 +44,7 @@ export interface WriteNotionResult {
   action: "created" | "updated" | "skipped";
   pageId?: string;
   reason?: string;
-  rollback?: () => Promise<void>;
+  rollback?: () => Promise<boolean>;
 }
 
 const SKIP_BLOCK_TYPES = new Set([
@@ -125,9 +125,10 @@ export function prepareBlocksForNotion(
     if (block.type === "image") {
       const img = typePayload as {
         type?: string;
-        file?: { url?: string };
-        external?: { url?: string };
+        file?: { url?: string; link?: { url?: string } };
+        external?: { url?: string; link?: { url?: string } };
         caption?: unknown[];
+        link?: { url?: string };
       };
 
       let externalUrl = img.external?.url;
@@ -137,6 +138,7 @@ export function prepareBlocksForNotion(
       const needsResolution =
         !externalUrl ||
         externalUrl.includes("prod-files-secure.s3") ||
+        externalUrl.includes("s3.us-west-2.amazonaws.com") ||
         externalUrl.startsWith("data:");
 
       if (needsResolution && rawUrl) {
@@ -172,9 +174,21 @@ export function prepareBlocksForNotion(
 
       // If externalUrl is present and not a raw data URI (which Notion rejects), write external image block
       if (externalUrl && !externalUrl.startsWith("data:")) {
+        const rawLinkUrl =
+          img.link?.url ??
+          img.external?.link?.url ??
+          img.file?.link?.url;
+        const sanitizedLink = rawLinkUrl ? sanitizeLinkUrl(rawLinkUrl, options.canonicalUrl) : null;
+
+        const externalObj: Record<string, unknown> = { url: externalUrl };
+        if (sanitizedLink) {
+          externalObj.link = { url: sanitizedLink };
+        }
+
         cleaned.image = {
           type: "external",
-          external: { url: externalUrl },
+          external: externalObj,
+          ...(sanitizedLink ? { link: { url: sanitizedLink } } : {}),
           ...(img.caption && Array.isArray(img.caption) && img.caption.length > 0
             ? { caption: sanitizeRichText(img.caption as Array<Record<string, unknown>>, options.canonicalUrl) }
             : {}),
@@ -862,7 +876,7 @@ export async function writeTranslationToNotion(
         // fallback to updatedPage timestamp
       }
 
-      const rollback = async (): Promise<void> => {
+      const rollback = async (): Promise<boolean> => {
         const isSafeToRollback = await verifyPageStateBeforeRollback(
           client,
           targetPageId,
@@ -873,7 +887,7 @@ export async function writeTranslationToNotion(
           },
         );
         if (!isSafeToRollback) {
-          return;
+          return false;
         }
 
         const failedRestoreIds: string[] = [];
@@ -891,11 +905,13 @@ export async function writeTranslationToNotion(
 
         // Only delete new replacement blocks if old blocks were safely restored
         if (failedRestoreIds.length === 0) {
+          let secondaryErrors = false;
           for (const b of newlyAppended) {
             try {
               await client.deleteBlock(b.id);
             } catch {
               // ignore secondary errors during rollback
+              secondaryErrors = true;
             }
           }
           if (Object.keys(originalPropertiesToRestore).length > 0) {
@@ -905,12 +921,15 @@ export async function writeTranslationToNotion(
               });
             } catch {
               // ignore secondary errors during rollback
+              secondaryErrors = true;
             }
           }
+          return !secondaryErrors;
         } else {
           console.error(
             `[notion-writer] Rollback on ${targetPageId} failed to restore ${failedRestoreIds.length} old block(s) [${failedRestoreIds.join(", ")}]. Preserved newly appended blocks to prevent content loss.`,
           );
+          return false;
         }
       };
 
@@ -1179,7 +1198,7 @@ export async function writeTranslationToNotion(
     // ignore
   }
 
-  const rollback = async (): Promise<void> => {
+  const rollback = async (): Promise<boolean> => {
     if (newPage?.id) {
       const isSafeToRollback = await verifyPageStateBeforeRollback(
         client,
@@ -1191,15 +1210,18 @@ export async function writeTranslationToNotion(
         },
       );
       if (!isSafeToRollback) {
-        return;
+        return false;
       }
 
       try {
         await client.deleteBlock(newPage.id);
-      } catch {
-        // ignore
+        return true;
+      } catch (delErr) {
+        console.error(`[notion-writer] Failed to delete page ${newPage.id} during rollback:`, delErr);
+        return false;
       }
     }
+    return false;
   };
 
   return {
@@ -1208,6 +1230,28 @@ export async function writeTranslationToNotion(
     pageId: newPage.id,
     rollback,
   };
+}
+
+/**
+ * Sanitizes a URL for Notion link objects.
+ * Ensures relative links (e.g. /docs/...) are converted to absolute URLs,
+ * prepends canonicalUrl for hash fragments, and ensures https:// protocol.
+ */
+export function sanitizeLinkUrl(rawUrl: string, canonicalUrl?: string): string | null {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("/")) {
+    return `https://docs.comapeo.app${trimmed}`;
+  }
+  if (trimmed.startsWith("#")) {
+    return canonicalUrl
+      ? `${canonicalUrl.replace(/\/+$/, "")}${trimmed}`
+      : `https://docs.comapeo.app/${trimmed}`;
+  }
+  if (!/^(https?|mailto):/i.test(trimmed)) {
+    return `https://${trimmed}`;
+  }
+  return trimmed;
 }
 
 /**
@@ -1246,19 +1290,12 @@ export function sanitizeRichText(
       const textObj = { ...(cloned.text as Record<string, unknown>) };
       if (textObj.link && typeof textObj.link === "object") {
         const linkObj = { ...(textObj.link as Record<string, unknown>) };
-        const rawUrl = typeof linkObj.url === "string" ? linkObj.url.trim() : "";
-        if (!rawUrl) {
+        const rawUrl = typeof linkObj.url === "string" ? linkObj.url : "";
+        const sanitized = sanitizeLinkUrl(rawUrl, canonicalUrl);
+        if (!sanitized) {
           textObj.link = null;
-        } else if (rawUrl.startsWith("/")) {
-          linkObj.url = `https://docs.comapeo.app${rawUrl}`;
-          textObj.link = linkObj;
-        } else if (rawUrl.startsWith("#")) {
-          linkObj.url = canonicalUrl
-            ? `${canonicalUrl.replace(/\/+$/, "")}${rawUrl}`
-            : `https://docs.comapeo.app/${rawUrl}`;
-          textObj.link = linkObj;
-        } else if (!/^(https?|mailto):/i.test(rawUrl)) {
-          linkObj.url = `https://${rawUrl}`;
+        } else {
+          linkObj.url = sanitized;
           textObj.link = linkObj;
         }
       }
