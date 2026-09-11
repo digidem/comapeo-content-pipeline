@@ -1,9 +1,10 @@
 import { z } from "zod";
+import { PageIdSchema } from "./manifest.js";
 
 /** A single RAG chunk generated from canonical Markdown */
 export const RagChunkSchema = z.object({
   chunk_id: z.string(),
-  page_id: z.string(),
+  page_id: PageIdSchema,
   title: z.string(),
   locale: z.string(),
   slug: z.string(),

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { copyReferencedAssets, updateManifestWithDoc, buildManifestDoc, restoreFileBackups } from "../scripts/translate-missing.js";
+import { copyReferencedAssets, updateManifestWithDoc, buildManifestDoc, restoreFileBackups, assertSafePageId, resolveSafePath } from "../scripts/translate-missing.js";
 import { writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -558,5 +558,73 @@ describe("restoreFileBackups", () => {
 
     // Manifest must be preserved in its initial state
     expect(readFileSync(manifestPath, "utf8")).toBe(initialManifest);
+  });
+});
+
+describe("security: assertSafePageId and resolveSafePath", () => {
+  const baseDir = join(tmpdir(), "test-sec-base-" + Date.now());
+
+  beforeEach(() => {
+    mkdirSync(baseDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(baseDir, { recursive: true, force: true });
+  });
+
+  it("accepts valid alphanumeric, hyphenated, and underscore page IDs", () => {
+    expect(assertSafePageId("en-1")).toBe("en-1");
+    expect(assertSafePageId("23c683b5-ecff-80c1-be5a-d1e56b46440c")).toBe("23c683b5-ecff-80c1-be5a-d1e56b46440c");
+    expect(assertSafePageId("pt_page_123")).toBe("pt_page_123");
+    expect(assertSafePageId("abc123")).toBe("abc123");
+  });
+
+  it("rejects page IDs with path traversal or invalid characters", () => {
+    const malicious = [
+      "../../outside/page",
+      "../page",
+      "/etc/passwd",
+      "path/to/page",
+      "path\\to\\page",
+      "page name",
+      "page..name",
+      "",
+    ];
+    for (const id of malicious) {
+      expect(() => assertSafePageId(id)).toThrow(/Security error/);
+    }
+  });
+
+  it("resolves safe relative paths beneath base directory", () => {
+    const resolved = resolveSafePath(baseDir, "child/file.md");
+    expect(resolved).toBe(join(baseDir, "child/file.md"));
+  });
+
+  it("throws security error when path attempts to escape base directory", () => {
+    expect(() => resolveSafePath(baseDir, "../../escaped.md")).toThrow(/Security error/);
+    expect(() => resolveSafePath(baseDir, "/etc/passwd")).toThrow(/Security error/);
+  });
+
+  it("rejects buildManifestDoc with traversal page ID", () => {
+    expect(() =>
+      buildManifestDoc("../../escaped", { title: "T", slug: "t" } as any, "es"),
+    ).toThrow(/Security error/);
+  });
+
+  it("rejects updateManifestWithDoc when doc page ID attempts path traversal", () => {
+    const manifestPath = join(baseDir, "manifest.json");
+    writeFileSync(manifestPath, JSON.stringify({ docs: [] }, null, 2));
+
+    expect(() =>
+      updateManifestWithDoc(
+        manifestPath,
+        {
+          page_id: "../../outside/doc",
+          title: "Malicious",
+          locale: "es",
+          slug: "malicious",
+        } as any,
+      ),
+    ).toThrow(/Security error/);
   });
 });

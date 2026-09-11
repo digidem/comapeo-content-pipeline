@@ -27,7 +27,7 @@ import { buildFrontmatter, serializeDoc } from "../src/lib/frontmatter.js";
 import { rewriteRawImgSrcToStatic } from "../src/lib/img-rewrite.js";
 import type { NotionBlockList } from "../src/lib/notion-converter.js";
 import type { PageMetadata, PageAsset } from "../src/schemas/metadata.js";
-import type { ManifestDoc } from "../src/schemas/manifest.js";
+import { type ManifestDoc, PAGE_ID_REGEX } from "../src/schemas/manifest.js";
 import { R2_PATHS } from "../src/persistence/r2.js";
 import { buildSidebarsFromPlan } from "../src/lib/manifest.js";
 import { isStubBody } from "../src/lib/stub-body.js";
@@ -41,7 +41,28 @@ interface TranslationTarget {
   needsTranslation: boolean;
 }
 
+/** Validates that a page ID does not contain path traversal or invalid characters */
+export function assertSafePageId(pageId: string, label = "page ID"): string {
+  if (!pageId || typeof pageId !== "string" || !PAGE_ID_REGEX.test(pageId)) {
+    throw new Error(`Security error: invalid or unsafe ${label} [${pageId}]`);
+  }
+  return pageId;
+}
+
+/** Resolves a path beneath baseDir and ensures it does not escape baseDir */
+export function resolveSafePath(baseDir: string, relativeOrChildPath: string, label = "path"): string {
+  const resolvedBase = resolve(baseDir);
+  const resolvedTarget = resolve(resolvedBase, relativeOrChildPath);
+  if (!resolvedTarget.startsWith(resolvedBase + "/") && resolvedTarget !== resolvedBase) {
+    throw new Error(
+      `Security error: resolved ${label} [${resolvedTarget}] escapes base directory [${resolvedBase}]`,
+    );
+  }
+  return resolvedTarget;
+}
+
 export function buildManifestDoc(id: string, meta: PageMetadata, locale: string): ManifestDoc {
+  assertSafePageId(id, "manifest doc page ID");
   return {
     page_id: id,
     title: meta.title,
@@ -258,8 +279,16 @@ async function main() {
     let { targetPageId } = target;
     const progress = `[${i + 1}/${queue.length}]`;
 
+    assertSafePageId(enPageId, "English source page ID");
+    if (targetPageId) {
+      assertSafePageId(targetPageId, "target page ID");
+    }
+    if (target.replaceablePageId) {
+      assertSafePageId(target.replaceablePageId, "replaceable page ID");
+    }
+
     // A. Load English Blocks
-    const rawBlocksPath = join(inputDir, `${enPageId}.raw-blocks.json`);
+    const rawBlocksPath = resolveSafePath(inputDir, `${enPageId}.raw-blocks.json`, "English raw-blocks path");
     let enRawBlocks: NotionBlockList | null = null;
 
     if (existsSync(rawBlocksPath)) {
@@ -290,7 +319,7 @@ async function main() {
     }
 
     // B. Load English Metadata
-    const metaPath = join(inputDir, `${enPageId}.metadata.json`);
+    const metaPath = resolveSafePath(inputDir, `${enPageId}.metadata.json`, "English metadata path");
     let enMetadata: PageMetadata | null = null;
 
     if (existsSync(metaPath)) {
@@ -410,7 +439,7 @@ async function main() {
             `${progress} [Notion] ✓ ${notionRes.action === "created" ? "Created new page" : "Updated stub"} [${notionRes.pageId}]`,
           );
           if (notionRes.pageId && notionRes.pageId !== targetPageId) {
-            targetPageId = notionRes.pageId;
+            targetPageId = assertSafePageId(notionRes.pageId, "Notion page ID");
             result.translatedMetadata.page_id = targetPageId;
             result.translatedMetadata.source_url = `https://notion.so/${targetPageId.replace(/-/g, "")}`;
             const updatedFrontmatter = buildFrontmatter(result.translatedMetadata);
@@ -426,17 +455,19 @@ async function main() {
       // If write-back was not enabled or targetPageId was not assigned by Notion,
       // fall back to synthetic ID for local files.
       if (!targetPageId) {
-        targetPageId = `${enPageId}-${locale}`;
+        targetPageId = assertSafePageId(`${enPageId}-${locale}`, "synthetic page ID");
         result.translatedMetadata.page_id = targetPageId;
         result.translatedMetadata.source_url = `https://notion.so/${targetPageId.replace(/-/g, "")}`;
         const updatedFrontmatter = buildFrontmatter(result.translatedMetadata);
         result.translatedMd = serializeDoc(updatedFrontmatter, result.markdownBody);
       }
 
+      assertSafePageId(targetPageId, "target page ID");
+
       // Write output files in inputDir (pipeline output dir) using final targetPageId
-      const outMdPath = join(inputDir, `${targetPageId}.md`);
-      const outMetaPath = join(inputDir, `${targetPageId}.metadata.json`);
-      const outBlocksPath = join(inputDir, `${targetPageId}.raw-blocks.json`);
+      const outMdPath = resolveSafePath(inputDir, `${targetPageId}.md`, "output markdown path");
+      const outMetaPath = resolveSafePath(inputDir, `${targetPageId}.metadata.json`, "output metadata path");
+      const outBlocksPath = resolveSafePath(inputDir, `${targetPageId}.raw-blocks.json`, "output raw blocks path");
 
       trackAndWriteFile(outMdPath, result.translatedMd);
       trackAndWriteFile(outMetaPath, JSON.stringify(result.translatedMetadata, null, 2));
@@ -444,14 +475,8 @@ async function main() {
 
       // If outputDir or Docusaurus path specified, write there too
       if (outputDir) {
-        const resolvedOutputDir = resolve(outputDir);
         const docRelativePath = page.paths[locale];
-        const docDest = resolve(resolvedOutputDir, docRelativePath);
-        if (!docDest.startsWith(resolvedOutputDir + "/") && docDest !== resolvedOutputDir) {
-          throw new Error(
-            `Security error: resolved document destination [${docDest}] escapes output directory [${resolvedOutputDir}]`,
-          );
-        }
+        const docDest = resolveSafePath(outputDir, docRelativePath, "document destination");
         const rewritten = rewriteRawImgSrcToStatic(result.translatedMd);
         trackAndWriteFile(docDest, rewritten.content);
         copyReferencedAssets(outputDir, inputDir, page.paths[locale], rewritten.assets, enMetadata?.assets, trackAndWriteFile);
@@ -528,18 +553,20 @@ async function main() {
             writeFileSync(filePath, content);
           };
           try {
-            const finalPageId = targetPageId || result.translatedMetadata.page_id || `${enPageId}-${locale}`;
-            const outMdPath = join(inputDir, `${finalPageId}.md`);
-            const outMetaPath = join(inputDir, `${finalPageId}.metadata.json`);
-            const outBlocksPath = join(inputDir, `${finalPageId}.raw-blocks.json`);
+            const finalPageId = assertSafePageId(
+              targetPageId || result.translatedMetadata.page_id || `${enPageId}-${locale}`,
+              "recovery page ID",
+            );
+            const outMdPath = resolveSafePath(inputDir, `${finalPageId}.md`, "recovery markdown path");
+            const outMetaPath = resolveSafePath(inputDir, `${finalPageId}.metadata.json`, "recovery metadata path");
+            const outBlocksPath = resolveSafePath(inputDir, `${finalPageId}.raw-blocks.json`, "recovery raw blocks path");
             trackRecovery(outMdPath, result.translatedMd);
             trackRecovery(outMetaPath, JSON.stringify(result.translatedMetadata, null, 2));
             trackRecovery(outBlocksPath, JSON.stringify(result.translatedBlocks, null, 2));
 
             if (outputDir && page.paths[locale]) {
-              const resolvedOutputDir = resolve(outputDir);
-              const docDest = resolve(resolvedOutputDir, page.paths[locale]);
-              if (docDest.startsWith(resolvedOutputDir + "/") || docDest === resolvedOutputDir) {
+              try {
+                const docDest = resolveSafePath(outputDir, page.paths[locale], "recovery document destination");
                 const rewritten = rewriteRawImgSrcToStatic(result.translatedMd);
                 trackRecovery(docDest, rewritten.content);
                 copyReferencedAssets(
@@ -550,6 +577,8 @@ async function main() {
                   enMetadata?.assets,
                   trackRecovery,
                 );
+              } catch (destErr) {
+                console.warn(`${progress} Skipping recovery doc in outputDir:`, destErr);
               }
             }
 
@@ -646,6 +675,14 @@ export function updateManifestWithDoc(
     includeDrafts?: boolean;
   },
 ): void {
+  assertSafePageId(doc.page_id, "document page ID");
+  if (enPageId) {
+    assertSafePageId(enPageId, "English parent page ID");
+  }
+  if (replacedPageId) {
+    assertSafePageId(replacedPageId, "replaced page ID");
+  }
+
   if (!existsSync(manifestPath)) {
     throw new Error(`Manifest file does not exist at ${manifestPath}`);
   }
@@ -672,7 +709,8 @@ export function updateManifestWithDoc(
       hasBodyById[d.page_id] = true;
       continue;
     }
-    const mdPath = join(inputDir, `${d.page_id}.md`);
+    assertSafePageId(d.page_id, "manifest doc page ID");
+    const mdPath = resolveSafePath(inputDir, `${d.page_id}.md`, "manifest markdown path");
     if (existsSync(mdPath)) {
       try {
         hasBodyById[d.page_id] = !isStubBody(readFileSync(mdPath, "utf8"));
@@ -842,7 +880,11 @@ export function copyReferencedAssets(
   pageAssets?: PageAsset[],
   writeFn?: (filePath: string, content: Buffer | string) => void,
 ): void {
-  const assetsSrcDir = resolve(inputDir, "assets");
+  const resolvedInputDir = resolve(inputDir);
+  const assetsSrcDir = resolve(resolvedInputDir, "assets");
+  if (!assetsSrcDir.startsWith(resolvedInputDir + "/") && assetsSrcDir !== resolvedInputDir) {
+    return;
+  }
   if (!existsSync(assetsSrcDir)) return;
 
   const resolvedOutputDir = resolve(outputDir);

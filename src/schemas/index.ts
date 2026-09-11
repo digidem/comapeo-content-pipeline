@@ -1,6 +1,8 @@
 export {
   ContentManifestSchema,
   ManifestDocSchema,
+  PageIdSchema,
+  PAGE_ID_REGEX,
 } from "./manifest.js";
 export type { ContentManifest, ManifestDoc } from "./manifest.js";
 

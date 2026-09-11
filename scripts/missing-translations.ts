@@ -24,12 +24,12 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildHierarchyPlan, toSectionDir, type CanonicalPage } from "../src/lib/hierarchy.js";
 import { SECTION_NAMES } from "../src/lib/notion-properties.js";
 import { isStubBody } from "../src/lib/stub-body.js";
-import { ContentManifestSchema, type ContentManifest, type ManifestDoc } from "../src/schemas/manifest.js";
+import { ContentManifestSchema, PAGE_ID_REGEX, type ContentManifest, type ManifestDoc } from "../src/schemas/manifest.js";
 import { parseArgs } from "./lib/args.js";
 
 const SUPPORTED_LOCALES = ["en", "es", "pt"] as const;
@@ -45,12 +45,21 @@ function preflight(inputDir: string, docs: ManifestDoc[]): {
   const hasBodyById: Record<string, boolean> = {};
   const hasSourceById: Record<string, boolean> = {};
 
+  const resolvedInputDir = resolve(inputDir);
+
   for (const doc of docs) {
     if (doc.language_source) {
       languageSourceById[doc.page_id] = doc.language_source;
     }
 
-    const metaPath = join(inputDir, `${doc.page_id}.metadata.json`);
+    if (!doc.page_id || !PAGE_ID_REGEX.test(doc.page_id)) {
+      continue;
+    }
+
+    const metaPath = resolve(resolvedInputDir, `${doc.page_id}.metadata.json`);
+    if (!metaPath.startsWith(resolvedInputDir + "/") && metaPath !== resolvedInputDir) {
+      continue;
+    }
     try {
       if (existsSync(metaPath)) {
         const raw = JSON.parse(readFileSync(metaPath, "utf8"));
@@ -69,7 +78,10 @@ function preflight(inputDir: string, docs: ManifestDoc[]): {
       }
     } catch { /* ignore unreadable blob */ }
 
-    const mdPath = join(inputDir, `${doc.page_id}.md`);
+    const mdPath = resolve(resolvedInputDir, `${doc.page_id}.md`);
+    if (!mdPath.startsWith(resolvedInputDir + "/") && mdPath !== resolvedInputDir) {
+      continue;
+    }
     try {
       if (existsSync(mdPath)) {
         hasSourceById[doc.page_id] = true;

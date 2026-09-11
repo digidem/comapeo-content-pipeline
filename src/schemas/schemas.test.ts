@@ -42,6 +42,28 @@ describe("ManifestDocSchema", () => {
       ManifestDocSchema.parse({ ...validDoc, section: null, section_order: null })
     ).not.toThrow();
   });
+
+  it("rejects page_id containing path traversal or illegal characters", () => {
+    const maliciousIds = [
+      "../../outside/page",
+      "../page",
+      "/etc/passwd",
+      "path/to/page",
+      "path\\to\\page",
+      "page..name",
+      "page name",
+      "",
+    ];
+    for (const page_id of maliciousIds) {
+      expect(() => ManifestDocSchema.parse({ ...validDoc, page_id })).toThrow();
+    }
+  });
+
+  it("rejects sub_items containing path traversal", () => {
+    expect(() =>
+      ManifestDocSchema.parse({ ...validDoc, sub_items: ["../../escaped"] })
+    ).toThrow();
+  });
 });
 
 describe("ContentManifestSchema", () => {
@@ -138,6 +160,15 @@ describe("PageMetadataSchema", () => {
       })
     ).not.toThrow();
   });
+
+  it("rejects page_id with path traversal", () => {
+    expect(() =>
+      PageMetadataSchema.parse({
+        ...validMetadata,
+        page_id: "../../outside/doc",
+      })
+    ).toThrow();
+  });
 });
 
 describe("RagChunkSchema", () => {
@@ -172,6 +203,24 @@ describe("RagChunkSchema", () => {
         docusaurus_path: "/t",
         content_hash: "h",
         status: "draft",
+      })
+    ).toThrow();
+  });
+
+  it("rejects page_id with path traversal", () => {
+    expect(() =>
+      RagChunkSchema.parse({
+        chunk_id: "id",
+        page_id: "../../outside/chunk",
+        title: "T",
+        locale: "en",
+        slug: "t",
+        heading_path: [],
+        text: "x",
+        source_url: "url",
+        docusaurus_path: "/t",
+        content_hash: "h",
+        status: "active" as const,
       })
     ).toThrow();
   });
