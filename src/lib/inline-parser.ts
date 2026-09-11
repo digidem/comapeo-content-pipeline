@@ -327,13 +327,15 @@ function parseFormatting(
       }
     } else if (match.groups?.html) {
       if (matchedStr.startsWith("<img")) {
-        const isEmoji = /className=["']emoji["']/.test(matchedStr);
+        const altMatch = matchedStr.match(/alt=["']([^"']*)["']/);
+        const srcMatch = matchedStr.match(/src=["']([^"']*)["']/);
+        const alt = altMatch ? altMatch[1] : "";
+        const src = srcMatch ? srcMatch[1] : "";
+        const isEmoji =
+          /className=["']emoji["']/.test(matchedStr) ||
+          !!(emojiMap && ((alt && emojiMap.has(alt)) || (src && emojiMap.has(src))));
         if (isEmoji) {
           const idMatch = matchedStr.match(/data-emoji-id=["']([^"']+)["']/);
-          const altMatch = matchedStr.match(/alt=["']([^"']*)["']/);
-          const srcMatch = matchedStr.match(/src=["']([^"']*)["']/);
-          const alt = altMatch ? altMatch[1] : "";
-          const src = srcMatch ? srcMatch[1] : "";
 
           const emojiId =
             idMatch?.[1] || (emojiMap && (emojiMap.get(alt) || emojiMap.get(src)));

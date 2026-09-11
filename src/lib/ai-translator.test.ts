@@ -307,4 +307,118 @@ describe("AITranslator", () => {
     expect((validTranslator as unknown as { timeoutMs: number }).timeoutMs).toBe(5000);
     expect((validTranslator as unknown as { batchSize: number }).batchSize).toBe(10);
   });
+
+  it("includes instruction to preserve equation delimiters verbatim in system prompt", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                p1: "A fórmula é $E = mc^2$.",
+              }),
+            },
+          },
+        ],
+      }),
+    });
+
+    const translator = new AITranslator({
+      apiKey: "test-key",
+      fetchFn: mockFetch as unknown as typeof fetch,
+    });
+
+    await translator.translate({
+      targetLocale: "pt",
+      blocks: [{ id: "p1", text: "The formula is $E = mc^2$." }],
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [, req] = mockFetch.mock.calls[0];
+    const body = JSON.parse(req.body);
+    const systemPrompt = body.messages[0].content;
+    expect(systemPrompt).toContain("Preserve all inline math and equations exactly, maintaining their $...$ or $$...$$ delimiters");
+  });
+
+  it("retries when LLM drops equation delimiters and succeeds on subsequent try", async () => {
+    const mockFetch = vi
+      .fn()
+      // First attempt: dropped $ delimiters around E = mc^2
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ b1: "A fórmula é E = mc^2." }),
+              },
+            },
+          ],
+        }),
+      })
+      // Second attempt: properly preserved delimiters
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ b1: "A fórmula é $E = mc^2$." }),
+              },
+            },
+          ],
+        }),
+      });
+
+    const translator = new AITranslator({
+      apiKey: "test-key",
+      maxRetries: 2,
+      fetchFn: mockFetch as unknown as typeof fetch,
+    });
+
+    const result = await translator.translate({
+      targetLocale: "pt",
+      blocks: [{ id: "b1", text: "The formula is $E = mc^2$." }],
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    // Verify retry message was sent
+    const [, secondReq] = mockFetch.mock.calls[1];
+    const secondBody = JSON.parse(secondReq.body);
+    const retryPrompt = secondBody.messages[secondBody.messages.length - 1].content;
+    expect(retryPrompt).toContain("Error: The translation dropped equation delimiters ($...$ or $$...$$)");
+    expect(retryPrompt).toContain("$E = mc^2$");
+
+    expect(result).toEqual({ b1: "A fórmula é $E = mc^2$." });
+  });
+
+  it("restores dropped equation delimiters on final attempt if LLM persistently drops them", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({ b1: "A taxa para avaliação de x é alta." }),
+            },
+          },
+        ],
+      }),
+    });
+
+    const translator = new AITranslator({
+      apiKey: "test-key",
+      maxRetries: 1,
+      fetchFn: mockFetch as unknown as typeof fetch,
+    });
+
+    const result = await translator.translate({
+      targetLocale: "pt",
+      blocks: [{ id: "b1", text: "The rate for evaluation of $x$ is high." }],
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ b1: "A taxa para avaliação de $x$ é alta." });
+  });
 });

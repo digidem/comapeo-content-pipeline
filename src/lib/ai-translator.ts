@@ -5,6 +5,12 @@
  * injection, and a hard deterministic ID verification gate.
  */
 
+import {
+  escapeRegExp,
+  extractEquationsFromText,
+  restoreEquationDelimiters,
+} from "./block-translator.js";
+
 export interface AITranslatorConfig {
   apiKey?: string;
   baseUrl?: string;
@@ -148,6 +154,7 @@ export class AITranslator {
       `6. Return an entry for EVERY block ID. Do not omit any ID and do not add new IDs.`,
       `7. Output valid, raw JSON only. Do not wrap in Markdown fences, do not output explanations or notes.`,
       `8. Preserve all placeholder tokens formatted like ⟦TAG_0⟧ verbatim and in their exact positions without altering, removing, or translating them.`,
+      `9. Preserve all inline math and equations exactly, maintaining their $...$ or $$...$$ delimiters without translating or altering the mathematical expressions, and never omit or strip the surrounding $ or $$ delimiters.`,
     ].join("\n");
 
     if (request.glossaryPrompt) {
@@ -293,6 +300,53 @@ export class AITranslator {
             continue;
           }
           throw new Error(`Translation validation failed: ${errMessage} after ${this.maxRetries} attempts`);
+        }
+
+        // Verify that equation delimiters ($...$ or $$...$$) from source blocks are preserved in translations
+        const droppedEquationBlocks: Array<{ id: string; equations: string[] }> = [];
+        for (const b of blocks) {
+          const trans = parsed[b.id];
+          if (!trans) continue;
+          const origEquations = extractEquationsFromText(b.text);
+          if (origEquations.length === 0) continue;
+
+          const missingEquations: string[] = [];
+          for (const eq of origEquations) {
+            const escaped = escapeRegExp(eq.expression);
+            const delimitedRegex = new RegExp(
+              eq.isDisplay
+                ? `(?<!\\\\)\\$\\$(?:\\s*)${escaped}(?:\\s*)\\$\\$`
+                : `(?<![\\w\\\\$])\\$(?!\\s)(?:\\s*)${escaped}(?:\\s*)(?<![\\s\\\\$])\\$(?!\\d)`,
+            );
+            if (!delimitedRegex.test(trans)) {
+              missingEquations.push(eq.raw);
+            }
+          }
+
+          if (missingEquations.length > 0) {
+            droppedEquationBlocks.push({ id: b.id, equations: missingEquations });
+          }
+        }
+
+        if (droppedEquationBlocks.length > 0) {
+          if (attempt < this.maxRetries) {
+            messages.push({ role: "assistant", content: rawContent });
+            const details = droppedEquationBlocks
+              .map((d) => `Block "${d.id}": missing delimiters for ${d.equations.join(", ")}`)
+              .join("; ");
+            messages.push({
+              role: "user",
+              content: `Error: The translation dropped equation delimiters ($...$ or $$...$$) for the following: ${details}. Please output the complete JSON object preserving all equation delimiters ($...$ or $$...$$) verbatim.`,
+            });
+            await sleep(1000 * attempt);
+            continue;
+          }
+          // On final attempt, apply delimiter restoration post-processing to recover missing equation delimiters
+          for (const b of blocks) {
+            if (parsed[b.id]) {
+              parsed[b.id] = restoreEquationDelimiters(parsed[b.id], b.text);
+            }
+          }
         }
 
         return parsed;

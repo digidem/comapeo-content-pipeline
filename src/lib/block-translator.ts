@@ -158,6 +158,14 @@ export function applyTranslatedBlocks(
       const type = b.type;
       const content = b[type] as (BlockWithRichText & BlockWithCaption) | undefined;
       const items = [...(content?.rich_text ?? []), ...(content?.caption ?? [])];
+      if (type === "table_row") {
+        const row = b.table_row as TableRowContent | undefined;
+        if (row?.cells) {
+          for (const cell of row.cells) {
+            items.push(...cell);
+          }
+        }
+      }
       for (const item of items) {
         if (item.type === "mention") {
           const mention = item.mention as
@@ -191,7 +199,9 @@ export function applyTranslatedBlocks(
           const key = `${block.id}:cell:${index}`;
           const trans = translations[key];
           if (trans !== undefined) {
-            row.cells![index] = inlineMarkdownToRichText(trans, emojiMap);
+            const origCell = row.cells![index];
+            const restored = restoreEquationDelimiters(trans, origCell);
+            row.cells![index] = inlineMarkdownToRichText(restored, emojiMap);
           }
         });
       }
@@ -200,7 +210,9 @@ export function applyTranslatedBlocks(
       if (trans !== undefined) {
         const codeContent = block.code as BlockWithCaption | undefined;
         if (codeContent) {
-          codeContent.caption = inlineMarkdownToRichText(trans, emojiMap);
+          const origCaption = codeContent.caption;
+          const restored = restoreEquationDelimiters(trans, origCaption);
+          codeContent.caption = inlineMarkdownToRichText(restored, emojiMap);
         }
       }
     } else if (type === "image" || type === "video" || type === "file") {
@@ -208,7 +220,9 @@ export function applyTranslatedBlocks(
       if (trans !== undefined) {
         const mediaContent = block[type] as BlockWithCaption | undefined;
         if (mediaContent) {
-          mediaContent.caption = inlineMarkdownToRichText(trans, emojiMap);
+          const origCaption = mediaContent.caption;
+          const restored = restoreEquationDelimiters(trans, origCaption);
+          mediaContent.caption = inlineMarkdownToRichText(restored, emojiMap);
         }
       }
     } else if (type === "child_page") {
@@ -224,7 +238,9 @@ export function applyTranslatedBlocks(
       if (trans !== undefined) {
         const content = block[type] as BlockWithRichText | undefined;
         if (content) {
-          content.rich_text = inlineMarkdownToRichText(trans, emojiMap);
+          const origRichText = content.rich_text;
+          const restored = restoreEquationDelimiters(trans, origRichText);
+          content.rich_text = inlineMarkdownToRichText(restored, emojiMap);
         }
       }
     }
@@ -250,3 +266,144 @@ export function applyTranslatedBlocks(
 
   return cloned;
 }
+
+/**
+ * Escapes regex special characters in a string.
+ */
+export function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export interface ParsedEquation {
+  raw: string;
+  expression: string;
+  isDisplay: boolean;
+}
+
+/**
+ * Extracts display ($$...$$) and inline ($...$) equations from markdown text.
+ */
+export function extractEquationsFromText(text: string): ParsedEquation[] {
+  if (!text) return [];
+  const equations: ParsedEquation[] = [];
+  const eqRegex =
+    /(?<!\\)\$\$(?<display>[^$\n]+?)\$\$|(?<![\w\\$])\$(?!\s)(?<inline>[^$\n]+?)(?<![\s\\$])\$(?!\d)/g;
+  let match: RegExpExecArray | null;
+  while ((match = eqRegex.exec(text)) !== null) {
+    if (match.groups?.display) {
+      equations.push({
+        raw: match[0],
+        expression: match.groups.display.trim(),
+        isDisplay: true,
+      });
+    } else if (match.groups?.inline) {
+      equations.push({
+        raw: match[0],
+        expression: match.groups.inline.trim(),
+        isDisplay: false,
+      });
+    }
+  }
+  return equations;
+}
+
+/**
+ * Extracts equations from Notion rich text items (both native equation items and markdown-style math).
+ */
+export function extractEquationsFromRichText(items?: NotionRichText[]): ParsedEquation[] {
+  if (!items || items.length === 0) return [];
+  const equations: ParsedEquation[] = [];
+  const seen = new Set<string>();
+
+  for (const item of items) {
+    if (item.type === "equation") {
+      const expr = (
+        (item.equation as { expression?: string } | undefined)?.expression ??
+        item.plain_text ??
+        ""
+      ).trim();
+      if (expr && !seen.has(expr)) {
+        seen.add(expr);
+        equations.push({
+          raw: `$${expr}$`,
+          expression: expr,
+          isDisplay: false,
+        });
+      }
+    }
+  }
+
+  // Also check if richTextToMarkdown serialized equations into $...$ or $$...$$
+  const md = richTextToMarkdown(items);
+  for (const eq of extractEquationsFromText(md)) {
+    if (!seen.has(eq.expression)) {
+      seen.add(eq.expression);
+      equations.push(eq);
+    }
+  }
+
+  return equations;
+}
+
+/**
+ * Restores dropped equation delimiters ($...$ or $$...$$) in translated text
+ * if the original source contained equations and the translation dropped their delimiters.
+ * Uses token/word boundary checks to prevent corrupting ordinary prose words.
+ */
+export function restoreEquationDelimiters(
+  translatedText: string,
+  original: NotionRichText[] | string | undefined,
+): string {
+  if (!translatedText || !original) return translatedText;
+
+  const originalEquations = Array.isArray(original)
+    ? extractEquationsFromRichText(original)
+    : extractEquationsFromText(original);
+
+  if (originalEquations.length === 0) return translatedText;
+
+  let result = translatedText;
+
+  for (const eq of originalEquations) {
+    const expr = eq.expression;
+    if (!expr) continue;
+
+    const escaped = escapeRegExp(expr);
+    const isDisplay = eq.isDisplay;
+
+    // If the expression is already delimited in the translated text, do not touch it
+    const delimitedRegex = new RegExp(
+      isDisplay
+        ? `(?<!\\\\)\\$\\$(?:\\s*)${escaped}(?:\\s*)\\$\\$`
+        : `(?<![\\w\\\\$])\\$(?!\\s)(?:\\s*)${escaped}(?:\\s*)(?<![\\s\\\\$])\\$(?!\\d)`,
+    );
+    if (delimitedRegex.test(result)) {
+      continue;
+    }
+
+    // Build boundary pattern to safely match un-delimited occurrences of the expression
+    const startsWithWord = /^\w/.test(expr);
+    const endsWithWord = /\w$/.test(expr);
+
+    const prefix = startsWithWord ? "(?<![\\w$])" : "(?<!\\$)";
+    const suffix = endsWithWord ? "(?![\\w$])" : "(?!\\$)";
+
+    const searchRegex = new RegExp(`${prefix}${escaped}${suffix}`, "g");
+
+    // If the expression is a single vowel stop word (e.g. 'a', 'e', 'o'),
+    // only restore if there is a single standalone occurrence to avoid corrupting articles/prepositions
+    const isSingleVowelStopWord = expr.length === 1 && /^[aeoAEIOU]$/.test(expr);
+    if (isSingleVowelStopWord) {
+      const matches = result.match(searchRegex);
+      if (!matches || matches.length !== 1) {
+        continue;
+      }
+    }
+
+    const delimiter = isDisplay ? `$$${expr}$$` : `$${expr}$`;
+    result = result.replace(searchRegex, delimiter);
+  }
+
+  return result;
+}
+

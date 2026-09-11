@@ -613,4 +613,265 @@ describe("applyTranslatedBlocks", () => {
     expect(p.rich_text[2].type).toBe("text");
     expect(p.rich_text[2].plain_text).toBe(" en física.");
   });
+
+  it("preserves custom emojis inside table_row cells when translating tables", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "tbl1",
+          type: "table",
+          has_children: true,
+          table: {
+            table_width: 2,
+            has_column_header: false,
+            has_row_header: false,
+          },
+        },
+      ],
+      children: {
+        tbl1: [
+          {
+            object: "block",
+            id: "row1",
+            type: "table_row",
+            has_children: false,
+            table_row: {
+              cells: [
+                [
+                  {
+                    type: "mention",
+                    plain_text: "@custom_star",
+                    mention: {
+                      type: "custom_emoji",
+                      custom_emoji: {
+                        id: "emoji-uuid-12345",
+                        name: "custom_star",
+                        url: "https://notion.so/custom_star.png",
+                      },
+                    },
+                    annotations: {
+                      bold: false,
+                      italic: false,
+                      strikethrough: false,
+                      underline: false,
+                      code: false,
+                      color: "default",
+                    },
+                  },
+                  {
+                    type: "text",
+                    plain_text: " Star feature",
+                    text: { content: " Star feature" },
+                    annotations: {
+                      bold: false,
+                      italic: false,
+                      strikethrough: false,
+                      underline: false,
+                      code: false,
+                      color: "default",
+                    },
+                  },
+                ],
+                [
+                  {
+                    type: "text",
+                    plain_text: "Description",
+                    text: { content: "Description" },
+                    annotations: {
+                      bold: false,
+                      italic: false,
+                      strikethrough: false,
+                      underline: false,
+                      code: false,
+                      color: "default",
+                    },
+                  },
+                ],
+              ],
+            },
+          },
+        ],
+      },
+    };
+
+    // 1. Extract translatable blocks
+    const extracted = extractTranslatableBlocks(blockList);
+    expect(extracted).toHaveLength(2);
+    expect(extracted[0].id).toBe("row1:cell:0");
+    expect(extracted[0].text).toContain("custom_star.png");
+
+    // 2. Apply translation where LLM preserved the img tag with URL but omitted data-emoji-id
+    const updated = applyTranslatedBlocks(blockList, {
+      "row1:cell:0":
+        '<img src="https://notion.so/custom_star.png" alt="custom_star" /> Recurso estrela',
+      "row1:cell:1": "Descrição",
+    });
+
+    const row = updated.children!.tbl1[0].table_row as { cells: NotionRichText[][] };
+    const cell0 = row.cells[0];
+
+    // Verify cell 0 still receives a native custom_emoji mention thanks to collectEmojis scanning table_row.cells
+    expect(cell0[0].type).toBe("mention");
+    expect(cell0[0].mention).toEqual({
+      type: "custom_emoji",
+      custom_emoji: {
+        id: "emoji-uuid-12345",
+        name: "custom_star",
+        url: "https://notion.so/custom_star.png",
+      },
+    });
+    expect(cell0[1].plain_text).toBe(" Recurso estrela");
+  });
+
+  it("restores dropped equation delimiters across prose, captions, and table cells without corrupting words", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "p1",
+          type: "paragraph",
+          has_children: false,
+          paragraph: {
+            rich_text: [
+              {
+                type: "text",
+                plain_text: "A variable ",
+                text: { content: "A variable " },
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+              {
+                type: "equation",
+                plain_text: "x",
+                equation: { expression: "x" },
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+              {
+                type: "text",
+                plain_text: " in the rate equation.",
+                text: { content: " in the rate equation." },
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+          },
+        },
+        {
+          object: "block",
+          id: "img1",
+          type: "image",
+          has_children: false,
+          image: {
+            caption: [
+              {
+                type: "text",
+                plain_text: "Plot of ",
+                text: { content: "Plot of " },
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+              {
+                type: "equation",
+                plain_text: "f(x)",
+                equation: { expression: "f(x)" },
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+          },
+        },
+        {
+          object: "block",
+          id: "tbl1",
+          type: "table",
+          has_children: true,
+          table: { table_width: 1, has_column_header: false, has_row_header: false },
+        },
+      ],
+      children: {
+        tbl1: [
+          {
+            object: "block",
+            id: "row1",
+            type: "table_row",
+            has_children: false,
+            table_row: {
+              cells: [
+                [
+                  {
+                    type: "text",
+                    plain_text: "Compute ",
+                    text: { content: "Compute " },
+                    annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+                  },
+                  {
+                    type: "equation",
+                    plain_text: "a + b",
+                    equation: { expression: "a + b" },
+                    annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+                  },
+                ],
+              ],
+            },
+          },
+        ],
+      },
+    };
+
+    // Translation where equation delimiters were dropped by LLM
+    // Notice that p1 translation contains words with 'x' ("taxa", "avaliação")
+    const updated = applyTranslatedBlocks(blockList, {
+      p1: "A taxa para avaliação de x é alta.",
+      "img1:caption": "Gráfico de f(x)",
+      "row1:cell:0": "Calcular a + b",
+    });
+
+    // Verify paragraph: x is restored as an equation, and "taxa" is NOT split or corrupted
+    const p = updated.results[0].paragraph as { rich_text: NotionRichText[] };
+    expect(p.rich_text.some((r) => r.type === "equation" && r.equation?.expression === "x")).toBe(true);
+    const plainTextFull = p.rich_text.map((r) => r.plain_text).join("");
+    expect(plainTextFull).toBe("A taxa para avaliação de x é alta.");
+    // Confirm "taxa" is intact text item, not corrupted
+    expect(p.rich_text[0].plain_text).toContain("taxa");
+
+    // Verify image caption: f(x) is restored as an equation
+    const img = updated.results[1].image as { caption: NotionRichText[] };
+    expect(img.caption.some((r) => r.type === "equation" && r.equation?.expression === "f(x)")).toBe(true);
+
+    // Verify table cell: a + b is restored as an equation
+    const row = updated.children!.tbl1[0].table_row as { cells: NotionRichText[][] };
+    expect(row.cells[0].some((r) => r.type === "equation" && r.equation?.expression === "a + b")).toBe(true);
+  });
+
+  it("does not double-wrap equations when delimiters are already preserved in translation", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "p1",
+          type: "paragraph",
+          has_children: false,
+          paragraph: {
+            rich_text: [
+              {
+                type: "equation",
+                plain_text: "E = mc^2",
+                equation: { expression: "E = mc^2" },
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    const updated = applyTranslatedBlocks(blockList, {
+      p1: "Fórmula $E = mc^2$ preservada.",
+    });
+
+    const p = updated.results[0].paragraph as { rich_text: NotionRichText[] };
+    expect(p.rich_text).toHaveLength(3);
+    expect(p.rich_text[1].type).toBe("equation");
+    expect(p.rich_text[1].equation).toEqual({ expression: "E = mc^2" });
+  });
 });
