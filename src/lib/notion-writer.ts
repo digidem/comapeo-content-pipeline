@@ -10,7 +10,7 @@ import type { NotionBlockList } from "./notion-converter.js";
 import { NOTION_PROPERTIES } from "./notion-properties.js";
 import { isStubBody } from "./stub-body.js";
 import { toSectionDir } from "./hierarchy.js";
-import type { PageAsset } from "../schemas/manifest.js";
+import type { PageAsset } from "../schemas/metadata.js";
 
 export interface WriteNotionOptions {
   client: NotionClient;
@@ -256,7 +256,7 @@ export async function writeTranslationToNotion(
     targetLocale,
     targetTitle,
     parentItemId,
-    parentEnglishPageId,
+    parentEnglishPageId: _parentEnglishPageId,
     targetPageId,
     translatedBlocks,
     force = false,

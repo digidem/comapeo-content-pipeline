@@ -450,7 +450,7 @@ describe("writeTranslationToNotion", () => {
     });
 
     const updateArgs = vi.mocked(mockClient.updatePage).mock.calls[0];
-    expect(updateArgs[1].properties["Parent item"]).toEqual({
+    expect(updateArgs![1].properties!["Parent item"]).toEqual({
       relation: [{ id: "container-parent-row-id" }],
     });
   });
