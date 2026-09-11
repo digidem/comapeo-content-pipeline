@@ -204,17 +204,35 @@ export class AITranslator {
           if (rawParsed && typeof rawParsed === "object") {
             const maybeObj = rawParsed as { blocks?: unknown };
             if (Array.isArray(maybeObj.blocks)) {
-              const entries = (maybeObj.blocks as Array<{ id?: string; text?: string }>)
-                .filter((b) => b && typeof b.id === "string")
-                .map((b) => [b.id!, String(b.text ?? "")]);
+              const entries: [string, string][] = [];
+              for (const b of maybeObj.blocks) {
+                if (b && typeof b === "object") {
+                  const item = b as { id?: unknown; text?: unknown };
+                  if (typeof item.id === "string" && typeof item.text === "string") {
+                    entries.push([item.id, item.text]);
+                  }
+                }
+              }
               parsed = Object.fromEntries(entries);
             } else if (Array.isArray(rawParsed)) {
-              const entries = (rawParsed as Array<{ id?: string; text?: string }>)
-                .filter((b) => b && typeof b.id === "string")
-                .map((b) => [b.id!, String(b.text ?? "")]);
+              const entries: [string, string][] = [];
+              for (const b of rawParsed) {
+                if (b && typeof b === "object") {
+                  const item = b as { id?: unknown; text?: unknown };
+                  if (typeof item.id === "string" && typeof item.text === "string") {
+                    entries.push([item.id, item.text]);
+                  }
+                }
+              }
               parsed = Object.fromEntries(entries);
             } else {
-              parsed = rawParsed as Record<string, string>;
+              const entries: [string, string][] = [];
+              for (const [k, v] of Object.entries(rawParsed as Record<string, unknown>)) {
+                if (typeof v === "string") {
+                  entries.push([k, v]);
+                }
+              }
+              parsed = Object.fromEntries(entries);
             }
           } else {
             parsed = {};
@@ -226,7 +244,23 @@ export class AITranslator {
           );
         }
 
-        // Verify that every input block ID is present and has non-empty text if input was non-empty
+        // Verify that only expected IDs are present and none are missing/empty
+        const expectedIds = new Set(blocks.map((b) => b.id));
+        const unexpectedIds = Object.keys(parsed).filter((id) => !expectedIds.has(id));
+        if (unexpectedIds.length > 0) {
+          const errMessage = `Response contained unexpected block IDs not in request: ${unexpectedIds.slice(0, 5).join(", ")}`;
+          if (attempt < this.maxRetries) {
+            messages.push({ role: "assistant", content: rawContent });
+            messages.push({
+              role: "user",
+              content: `Error: The response contained unknown IDs (${unexpectedIds.join(", ")}). Only translate the exact IDs provided. Please re-output the JSON mapping.`,
+            });
+            await sleep(1000 * attempt);
+            continue;
+          }
+          throw new Error(errMessage);
+        }
+
         const missingOrEmptyIds = blocks
           .filter((b) => {
             if (!(b.id in parsed)) return true;
@@ -261,4 +295,8 @@ export class AITranslator {
 
     throw lastError ?? new Error("Translation failed unexpectedly");
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

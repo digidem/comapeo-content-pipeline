@@ -144,6 +144,10 @@ export function prepareBlocksForNotion(
           return stripUrlSignature(a.original_url) === rawNoSig;
         });
 
+        const isTemporaryS3 =
+          rawUrl.includes("prod-files-secure.s3") ||
+          rawUrl.includes("s3.us-west-2.amazonaws.com");
+
         if (matchedAsset) {
           const filename = matchedAsset.r2_key.replace(/^assets\//, "");
           const baseUrl =
@@ -154,10 +158,7 @@ export function prepareBlocksForNotion(
           externalUrl = sectionDir
             ? `${baseUrl}/docs/${sectionDir}${togglePath}/assets/${filename}`
             : `${baseUrl}/docs/assets/${filename}`;
-        } else if (
-          options.assets &&
-          (rawUrl.includes("prod-files-secure.s3") || rawUrl.includes("s3.us-west-2.amazonaws.com"))
-        ) {
+        } else if (isTemporaryS3) {
           console.warn(
             `[notion-writer] Image at ${rawUrl} was not found in rehosted assets; omitting external block to avoid expired link.`,
           );
@@ -303,7 +304,9 @@ export function isStubPage(
     return true;
   }
 
-  if (/^(\*\*Work in progress\*\*|Work in progress)[\s\S]*$/i.test(combinedText)) {
+  // A page is only a WIP stub if "Work in progress" is the ENTIRE content (no substantive content afterwards)
+  const wipStripped = combinedText.replace(/^(\*\*Work in progress\*\*|Work in progress)/i, "").trim();
+  if (wipStripped.length === 0) {
     return true;
   }
 
@@ -360,32 +363,42 @@ export async function writeTranslationToNotion(
     }
 
     // Atomic replacement: Append new blocks first so if it fails, old content is preserved
-    if (preparedBlocks.length > 0) {
-      await client.appendBlockChildren(targetPageId, preparedBlocks);
-    }
+    const newlyAppended: NotionBlock[] = [];
+    try {
+      if (preparedBlocks.length > 0) {
+        const appendRes = await client.appendBlockChildren(targetPageId, preparedBlocks);
+        if (appendRes?.results) newlyAppended.push(...appendRes.results);
+      }
 
-    // Update page properties
-    const updateProperties: Record<string, unknown> = {
-      [NOTION_PROPERTIES.TITLE]: {
-        title: [{ type: "text", text: { content: targetTitle } }],
-      },
-      [NOTION_PROPERTIES.LANGUAGE]: {
-        select: { name: localeSelectName },
-      },
-      [NOTION_PROPERTIES.PUBLISH_STATUS]: {
-        select: { name: "Automated translations generated" },
-      },
-    };
-
-    if (effectiveParentId) {
-      updateProperties[NOTION_PROPERTIES.PARENT_ITEM] = {
-        relation: [{ id: effectiveParentId }],
+      // Update page properties
+      const updateProperties: Record<string, unknown> = {
+        [NOTION_PROPERTIES.TITLE]: {
+          title: [{ type: "text", text: { content: targetTitle } }],
+        },
+        [NOTION_PROPERTIES.LANGUAGE]: {
+          select: { name: localeSelectName },
+        },
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: {
+          select: { name: "Automated translations generated" },
+        },
       };
-    }
 
-    await client.updatePage(targetPageId, {
-      properties: updateProperties,
-    });
+      if (effectiveParentId) {
+        updateProperties[NOTION_PROPERTIES.PARENT_ITEM] = {
+          relation: [{ id: effectiveParentId }],
+        };
+      }
+
+      await client.updatePage(targetPageId, {
+        properties: updateProperties,
+      });
+    } catch (err) {
+      // Rollback newly appended blocks on error to keep existing content intact
+      for (const b of newlyAppended) {
+        await client.deleteBlock(b.id).catch(() => {});
+      }
+      throw err;
+    }
 
     // Delete old blocks only after new blocks and properties have committed successfully
     for (const b of existingBlocks.results) {
@@ -403,34 +416,42 @@ export async function writeTranslationToNotion(
   const firstChunk = preparedBlocks.slice(0, 100);
   const remainingChunks = preparedBlocks.slice(100);
 
-  const newPage = await client.createPage({
-    parent: { database_id: databaseId },
-    properties: {
-      [NOTION_PROPERTIES.TITLE]: {
-        title: [{ type: "text", text: { content: targetTitle } }],
+  let newPage: NotionPage | null = null;
+  try {
+    newPage = await client.createPage({
+      parent: { database_id: databaseId },
+      properties: {
+        [NOTION_PROPERTIES.TITLE]: {
+          title: [{ type: "text", text: { content: targetTitle } }],
+        },
+        [NOTION_PROPERTIES.LANGUAGE]: {
+          select: { name: localeSelectName },
+        },
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: {
+          select: { name: "Automated translations generated" },
+        },
+        ...(effectiveParentId
+          ? {
+              [NOTION_PROPERTIES.PARENT_ITEM]: {
+                relation: [{ id: effectiveParentId }],
+              },
+            }
+          : {}),
+        [NOTION_PROPERTIES.ELEMENT_TYPE]: {
+          select: { name: "Page" },
+        },
       },
-      [NOTION_PROPERTIES.LANGUAGE]: {
-        select: { name: localeSelectName },
-      },
-      [NOTION_PROPERTIES.PUBLISH_STATUS]: {
-        select: { name: "Automated translations generated" },
-      },
-      ...(effectiveParentId
-        ? {
-            [NOTION_PROPERTIES.PARENT_ITEM]: {
-              relation: [{ id: effectiveParentId }],
-            },
-          }
-        : {}),
-      [NOTION_PROPERTIES.ELEMENT_TYPE]: {
-        select: { name: "Page" },
-      },
-    },
-    children: firstChunk,
-  });
+      children: firstChunk,
+    });
 
-  if (remainingChunks.length > 0) {
-    await client.appendBlockChildren(newPage.id, remainingChunks);
+    if (remainingChunks.length > 0) {
+      await client.appendBlockChildren(newPage.id, remainingChunks);
+    }
+  } catch (err) {
+    if (newPage) {
+      await client.updatePage(newPage.id, { archived: true }).catch(() => {});
+    }
+    throw err;
   }
 
   return {

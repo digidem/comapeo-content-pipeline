@@ -96,7 +96,7 @@ describe("prepareBlocksForNotion", () => {
     expect(p.paragraph.rich_text[0].href).toBeUndefined();
   });
 
-  it("converts Notion S3 file image blocks to external image blocks", () => {
+  it("omits Notion S3 file image blocks without rehosted asset metadata to prevent expired links", () => {
     const rawBlocks: NotionBlockList = {
       object: "list",
       results: [
@@ -118,13 +118,37 @@ describe("prepareBlocksForNotion", () => {
     };
 
     const prepared = prepareBlocksForNotion(rawBlocks);
+    expect(prepared).toHaveLength(0);
+  });
+
+  it("preserves external image blocks with permanent public URLs", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-1",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "external",
+            external: {
+              url: "https://example.com/images/logo.png",
+            },
+            caption: [{ type: "text", text: { content: "Legenda" } }],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const prepared = prepareBlocksForNotion(rawBlocks);
     expect(prepared[0]).toEqual({
       object: "block",
       type: "image",
       image: {
         type: "external",
         external: {
-          url: "https://prod-files-secure.s3.us-west-2.amazonaws.com/image.png?sig=123",
+          url: "https://example.com/images/logo.png",
         },
         caption: [{ type: "text", text: { content: "Legenda" } }],
       },

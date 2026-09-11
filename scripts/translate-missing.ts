@@ -71,7 +71,12 @@ async function main() {
   // 1. Load Glossary
   let glossary;
   try {
-    glossary = loadGlossary();
+    const glossaryPath = args.glossary || join(process.cwd(), "config/glossary.json");
+    let rawGlossary: unknown = undefined;
+    if (existsSync(glossaryPath)) {
+      rawGlossary = JSON.parse(readFileSync(glossaryPath, "utf8"));
+    }
+    glossary = loadGlossary(rawGlossary);
     console.log(`Loaded domain glossary with ${glossary.terms.length} terms.`);
   } catch (err) {
     console.error("Failed to load domain glossary:", err);
@@ -297,6 +302,10 @@ async function main() {
           (enMetadata?.properties?.["Parent item"] as { relation?: Array<{ id: string }> } | undefined)
             ?.relation?.[0]?.id;
 
+        const canonicalBaseUrl = process.env.DOCS_BASE_URL || "https://docs.comapeo.net";
+        const docRoute = page.paths[locale]?.replace(/\.md$/, "") ?? page.slug;
+        const canonicalUrl = `${canonicalBaseUrl.replace(/\/+$/, "")}/${docRoute.replace(/^\/+/, "")}`;
+
         const notionRes = await writeTranslationToNotion({
           client,
           databaseId,
@@ -308,6 +317,8 @@ async function main() {
           translatedBlocks: result.translatedBlocks,
           assets: enMetadata?.assets,
           section: page.section,
+          toggleDir: page.toggleDir,
+          canonicalUrl,
           assetBaseUrl: process.env.PUBLIC_ASSET_BASE_URL,
           force,
         });

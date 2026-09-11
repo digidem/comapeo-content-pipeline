@@ -132,10 +132,16 @@ export async function translatePageContent(
       for (const [placeholder] of tagMap.entries()) {
         const idMatch = placeholder.match(/\d+/);
         const tagId = idMatch ? idMatch[0] : "";
-        const checkPattern = new RegExp(`(?:⟦|\\[\\[|\\[|«)\\s*TAG_${tagId}\\s*(?:⟧|\\]\\]|\\]|»)`, "i");
-        if (!checkPattern.test(transText)) {
+        const checkPattern = new RegExp(`(?:⟦|\\[\\[|\\[|«)\\s*TAG_${tagId}\\s*(?:⟧|\\]\\]|\\]|»)`, "gi");
+        const matches = transText.match(checkPattern);
+        if (!matches || matches.length === 0) {
           throw new Error(
             `Translation validation failed: block "${id}" dropped required tag placeholder "${placeholder}". Output: ${transText}`,
+          );
+        }
+        if (matches.length > 1) {
+          throw new Error(
+            `Translation validation failed: block "${id}" duplicated tag placeholder "${placeholder}" (${matches.length} occurrences). Output: ${transText}`,
           );
         }
       }

@@ -120,6 +120,7 @@ export interface PageReport {
   title: string;
   section: string;
   parentId?: string;
+  toggleDir?: string;
   present: string[];
   missing: string[];
   english_content: string[];
@@ -246,6 +247,7 @@ export function buildReport(opts: ReportOptions = {}): TranslationReport {
       title: rep.title,
       section: rep.canonicalSection,
       parentId: rep.parentId,
+      toggleDir: rep.toggleDir,
       present,
       missing,
       english_content: englishContent,
