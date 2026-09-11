@@ -336,6 +336,8 @@ async function main() {
           }
         } else {
           console.warn(`${progress} [Notion] ⚠ Skipped write-back: ${notionRes.reason}`);
+          skippedCount++;
+          continue;
         }
       }
 
