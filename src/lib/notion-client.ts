@@ -511,19 +511,28 @@ export class NotionClient {
   async appendBlockChildren(
     blockId: string,
     children: unknown[],
+    options?: { onChunk?: (blocks: NotionBlock[]) => void },
   ): Promise<NotionBlockResponse> {
     const allResults: NotionBlock[] = [];
     const chunkSize = 100;
 
     for (let i = 0; i < children.length; i += chunkSize) {
       const chunk = children.slice(i, i + chunkSize);
-      const resp = await this.request<NotionBlockResponse>(`/blocks/${blockId}/children`, {
-        method: "PATCH",
-        body: { children: chunk },
-        retry: false,
-      });
-      if (resp.results) {
-        allResults.push(...resp.results);
+      try {
+        const resp = await this.request<NotionBlockResponse>(`/blocks/${blockId}/children`, {
+          method: "PATCH",
+          body: { children: chunk },
+          retry: false,
+        });
+        if (resp.results) {
+          allResults.push(...resp.results);
+          options?.onChunk?.(resp.results);
+        }
+      } catch (err) {
+        if (allResults.length > 0 && err && typeof err === "object") {
+          (err as { appendedBlocks?: NotionBlock[] }).appendedBlocks = allResults;
+        }
+        throw err;
       }
     }
 

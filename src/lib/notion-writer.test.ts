@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { prepareBlocksForNotion, writeTranslationToNotion, isStubPage } from "./notion-writer.js";
 import type { NotionBlockList } from "./notion-converter.js";
 import type { NotionBlock, NotionClient, NotionPage } from "./notion-client.js";
+import { ClassifiedError, ErrorCategory } from "./errors.js";
+import { NOTION_PROPERTIES } from "./notion-properties.js";
 
 describe("prepareBlocksForNotion", () => {
   it("strips read-only metadata fields from blocks", () => {
@@ -515,7 +517,14 @@ describe("writeTranslationToNotion", () => {
   });
 
   it("falls back to creating a new page if targetPageId returns 404 from Notion", async () => {
-    vi.mocked(mockClient.getPage).mockRejectedValueOnce({ status: 404, code: "object_not_found" });
+    // Test with real ClassifiedError shape from NotionClient
+    vi.mocked(mockClient.getPage).mockRejectedValueOnce(
+      new ClassifiedError(
+        "[Notion /pages/nonexistent-page-id] Notion API error 404: Not Found — object_not_found",
+        ErrorCategory.HTTP_CLIENT,
+        404,
+      ),
+    );
     vi.mocked(mockClient.createPage).mockResolvedValueOnce({
       id: "new-page-after-404",
       object: "page",
@@ -533,6 +542,28 @@ describe("writeTranslationToNotion", () => {
     expect(result.written).toBe(true);
     expect(result.action).toBe("created");
     expect(result.pageId).toBe("new-page-after-404");
+    expect(mockClient.createPage).toHaveBeenCalled();
+  });
+
+  it("falls back to creating a new page if targetPageId returns status 400 or validation_error", async () => {
+    vi.mocked(mockClient.getPage).mockRejectedValueOnce({ status: 400, code: "validation_error" });
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "new-page-after-400",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Título Nuevo",
+      targetPageId: "invalid-page-id",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("created");
+    expect(result.pageId).toBe("new-page-after-400");
     expect(mockClient.createPage).toHaveBeenCalled();
   });
 
@@ -1068,7 +1099,10 @@ describe("writeTranslationToNotion", () => {
     expect(mockClient.updatePage).toHaveBeenCalledTimes(2);
     expect(mockClient.updatePage).toHaveBeenLastCalledWith("stub-page-rollback", {
       properties: {
-        "Publish Status": { select: { name: "Automated translations generated" } },
+        [NOTION_PROPERTIES.TITLE]: { title: [] },
+        [NOTION_PROPERTIES.LANGUAGE]: { select: null },
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        [NOTION_PROPERTIES.PARENT_ITEM]: { relation: [] },
       },
     });
   });
@@ -1121,6 +1155,50 @@ describe("writeTranslationToNotion", () => {
     expect(mockClient.restoreBlock).toHaveBeenCalledWith("old-1");
     // new-1 was appended, so it must be deleted during rollback
     expect(mockClient.deleteBlock).toHaveBeenCalledWith("new-1");
+    // Stub properties that were not present on page must be explicitly reset to null/empty
+    expect(mockClient.updatePage).toHaveBeenLastCalledWith("stub-partial-delete", {
+      properties: {
+        [NOTION_PROPERTIES.TITLE]: { title: [] },
+        [NOTION_PROPERTIES.LANGUAGE]: { select: null },
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: null },
+        [NOTION_PROPERTIES.PARENT_ITEM]: { relation: [] },
+      },
+    });
+  });
+
+  it("rolls back all previously appended chunks when appendBlockChildren fails on a later chunk", async () => {
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "stub-multi-chunk",
+      properties: {},
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [],
+      children: {},
+    });
+
+    const chunk1 = [{ id: "chunk1-b1", type: "paragraph", object: "block" } as unknown as NotionBlock];
+    const chunkError = Object.assign(new Error("Append chunk 2 failed"), {
+      appendedBlocks: chunk1,
+    });
+
+    vi.mocked(mockClient.appendBlockChildren).mockImplementationOnce(async (_pageId, _blocks, options) => {
+      options?.onChunk?.(chunk1);
+      throw chunkError;
+    });
+
+    await expect(
+      writeTranslationToNotion({
+        client: mockClient,
+        databaseId: "db-123",
+        targetLocale: "pt",
+        targetTitle: "Multi Chunk",
+        targetPageId: "stub-multi-chunk",
+        translatedBlocks: mockTranslatedBlocks,
+      }),
+    ).rejects.toThrow("Append chunk 2 failed");
+
+    expect(mockClient.deleteBlock).toHaveBeenCalledWith("chunk1-b1");
   });
 
   describe("isStubPage block type checks", () => {

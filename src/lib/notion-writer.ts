@@ -348,16 +348,22 @@ export async function writeTranslationToNotion(
       page = await client.getPage(targetPageId);
       existingBlocks = await client.getPageBlocks(targetPageId);
     } catch (err: unknown) {
-      const status = (err as { status?: number }).status;
+      const statusCode =
+        (err as { statusCode?: number }).statusCode ??
+        (err as { status?: number }).status;
       const code = (err as { code?: string }).code;
-      if (
-        status === 404 ||
-        status === 400 ||
+      const isNotFoundOrInvalid =
+        statusCode === 404 ||
+        statusCode === 400 ||
         code === "object_not_found" ||
-        code === "validation_error"
-      ) {
+        code === "validation_error" ||
+        (err instanceof Error &&
+          (/\b(?:404|400)\b/.test(err.message) ||
+            /object_not_found|validation_error/i.test(err.message)));
+
+      if (isNotFoundOrInvalid) {
         console.warn(
-          `[notion-writer] Target page ${targetPageId} not found or invalid in Notion (${status || code}); falling back to page creation.`,
+          `[notion-writer] Target page ${targetPageId} not found or invalid in Notion (${statusCode || code || "404"}); falling back to page creation.`,
         );
       } else {
         throw err;
@@ -386,25 +392,44 @@ export async function writeTranslationToNotion(
       // Atomic replacement: Append new blocks first so if it fails, old content is preserved
       const newlyAppended: NotionBlock[] = [];
 
-      // Snapshot original properties before updating so we can restore them if deletion fails
-      const originalPropertiesToRestore: Record<string, unknown> = {};
-      if (page.properties?.[NOTION_PROPERTIES.TITLE]) {
-        originalPropertiesToRestore[NOTION_PROPERTIES.TITLE] = page.properties[NOTION_PROPERTIES.TITLE];
-      }
-      if (page.properties?.[NOTION_PROPERTIES.LANGUAGE]) {
-        originalPropertiesToRestore[NOTION_PROPERTIES.LANGUAGE] = page.properties[NOTION_PROPERTIES.LANGUAGE];
-      }
-      if (page.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS]) {
-        originalPropertiesToRestore[NOTION_PROPERTIES.PUBLISH_STATUS] = page.properties[NOTION_PROPERTIES.PUBLISH_STATUS];
-      }
-      if (page.properties?.[NOTION_PROPERTIES.PARENT_ITEM]) {
-        originalPropertiesToRestore[NOTION_PROPERTIES.PARENT_ITEM] = page.properties[NOTION_PROPERTIES.PARENT_ITEM];
+      // Snapshot original properties before updating so we can restore them if deletion fails.
+      // Explicitly clear properties that did not exist on the original page so rollback
+      // does not leave newly added properties behind on the stub.
+      const originalPropertiesToRestore: Record<string, unknown> = {
+        [NOTION_PROPERTIES.TITLE]:
+          page.properties?.[NOTION_PROPERTIES.TITLE] ?? {
+            title: [],
+          },
+        [NOTION_PROPERTIES.LANGUAGE]:
+          page.properties?.[NOTION_PROPERTIES.LANGUAGE] ?? {
+            select: null,
+          },
+        [NOTION_PROPERTIES.PUBLISH_STATUS]:
+          page.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS] ?? {
+            select: null,
+          },
+      };
+      if (effectiveParentId) {
+        originalPropertiesToRestore[NOTION_PROPERTIES.PARENT_ITEM] =
+          page.properties?.[NOTION_PROPERTIES.PARENT_ITEM] ?? {
+            relation: [],
+          };
       }
 
       try {
         if (preparedBlocks.length > 0) {
-          const appendRes = await client.appendBlockChildren(targetPageId, preparedBlocks);
-          if (appendRes?.results) newlyAppended.push(...appendRes.results);
+          const appendRes = await client.appendBlockChildren(targetPageId, preparedBlocks, {
+            onChunk: (blocks) => {
+              newlyAppended.push(...blocks);
+            },
+          });
+          if (appendRes?.results) {
+            for (const b of appendRes.results) {
+              if (!newlyAppended.some((existing) => existing.id === b.id)) {
+                newlyAppended.push(b);
+              }
+            }
+          }
         }
 
         // Update page properties
@@ -430,7 +455,16 @@ export async function writeTranslationToNotion(
           properties: updateProperties,
         });
       } catch (err) {
-        // Rollback newly appended blocks on error to keep existing content intact
+        // Rollback newly appended blocks on error to keep existing content intact.
+        // Include any chunks appended before a chunk error occurred.
+        const partialBlocks = (err as { appendedBlocks?: NotionBlock[] })?.appendedBlocks;
+        if (partialBlocks) {
+          for (const b of partialBlocks) {
+            if (!newlyAppended.some((existing) => existing.id === b.id)) {
+              newlyAppended.push(b);
+            }
+          }
+        }
         for (const b of newlyAppended) {
           try {
             await client.deleteBlock(b.id);

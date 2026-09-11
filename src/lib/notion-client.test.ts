@@ -553,4 +553,37 @@ describe("NotionClient write operations", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("appendBlockChildren invokes onChunk callback per batch and attaches appendedBlocks on failure", async () => {
+    const blocks = Array.from({ length: 150 }, (_, i) => ({
+      object: "block" as const,
+      type: "paragraph",
+      id: `block-${i}`,
+      paragraph: { rich_text: [{ text: { content: `Line ${i}` } }] },
+    }));
+
+    const chunk1Results = blocks.slice(0, 100);
+    fetchMock
+      .mockResolvedValueOnce(okResponse({ object: "list", results: chunk1Results }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: "Second chunk failed" }), {
+          status: 500,
+          statusText: "Internal Server Error",
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+    const onChunk = vi.fn();
+    let caughtErr: unknown = null;
+    try {
+      await client.appendBlockChildren("parent-block-id", blocks, { onChunk });
+    } catch (err) {
+      caughtErr = err;
+    }
+
+    expect(caughtErr).not.toBeNull();
+    expect(onChunk).toHaveBeenCalledTimes(1);
+    expect(onChunk).toHaveBeenCalledWith(chunk1Results);
+    expect((caughtErr as { appendedBlocks?: unknown[] }).appendedBlocks).toEqual(chunk1Results);
+  });
 });

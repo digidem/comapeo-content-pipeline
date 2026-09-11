@@ -309,9 +309,8 @@ async function main() {
           (enMetadata?.properties?.["Parent item"] as { relation?: Array<{ id: string }> } | undefined)
             ?.relation?.[0]?.id;
 
-        const canonicalBaseUrl = process.env.DOCS_BASE_URL || "https://docs.comapeo.net";
-        const docRoute = page.paths[locale]?.replace(/\.md$/, "") ?? page.slug;
-        const canonicalUrl = `${canonicalBaseUrl.replace(/\/+$/, "")}/${docRoute.replace(/^\/+/, "")}`;
+        const canonicalBaseUrl = process.env.DOCS_BASE_URL || "https://docs.comapeo.app";
+        const canonicalUrl = `${canonicalBaseUrl.replace(/\/+$/, "")}/${locale}/docs/${page.slug.replace(/^\/+/, "")}`;
 
         const notionRes = await writeTranslationToNotion({
           client,
