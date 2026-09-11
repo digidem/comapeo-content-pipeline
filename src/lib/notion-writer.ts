@@ -458,14 +458,12 @@ async function verifyPageStateBeforeRollback(
   pageId: string,
   options?: {
     committedLastEditedTime?: string;
-    skipLastEditedTimeCheck?: boolean;
     expectedTitle?: string;
     expectedLocale?: string;
   },
 ): Promise<boolean> {
   const {
     committedLastEditedTime,
-    skipLastEditedTimeCheck = false,
     expectedTitle,
     expectedLocale,
   } = options ?? {};
@@ -479,13 +477,7 @@ async function verifyPageStateBeforeRollback(
       return false;
     }
 
-    // If block operations (archive/restore) were performed during error recovery,
-    // Notion advances the page's last_edited_time for our own mutations. In that case,
-    // skip comparing last_edited_time against the pre-deletion timestamp to avoid mistaking
-    // our own mutations for concurrent human edits. Otherwise, verify that last_edited_time
-    // has not changed.
     if (
-      !skipLastEditedTimeCheck &&
       committedLastEditedTime &&
       currentPage.last_edited_time &&
       currentPage.last_edited_time !== committedLastEditedTime
@@ -739,8 +731,11 @@ export async function writeTranslationToNotion(
         if (typeof client.restoreBlock === "function") {
           for (const id of deletedOldBlockIds) {
             try {
-              await client.restoreBlock(id);
+              const restored = await client.restoreBlock(id);
               restoredBlockIds.push(id);
+              if (typeof restored?.last_edited_time === "string") {
+                committedLastEditedTime = restored.last_edited_time;
+              }
             } catch {
               failedRestoreIds.push(id);
             }
@@ -752,17 +747,43 @@ export async function writeTranslationToNotion(
         // Only delete newly appended replacement blocks if ALL deleted old blocks were restored,
         // avoiding total content loss if restore fails, AND if the page was not concurrently modified.
         if (failedRestoreIds.length === 0) {
-          const hadBlockMutations = deletedOldBlockIds.length > 0;
-          const isSafeToRollback = await verifyPageStateBeforeRollback(
-            client,
-            targetPageId,
-            {
+          // Check for concurrent body edits: verify that no unexpected blocks were added or existing blocks removed
+          let hasConcurrentBodyEdit = false;
+          try {
+            const currentBlocks = await client.getPageBlocks(targetPageId);
+            if (Array.isArray(currentBlocks?.results)) {
+              const expectedIds = new Set([
+                ...existingBlocks.results.map((b) => b.id),
+                ...newlyAppended.map((b) => b.id),
+              ]);
+              if (currentBlocks.results.length !== expectedIds.size) {
+                hasConcurrentBodyEdit = true;
+              } else {
+                for (const b of currentBlocks.results) {
+                  if (!expectedIds.has(b.id)) {
+                    hasConcurrentBodyEdit = true;
+                    break;
+                  }
+                }
+              }
+            }
+          } catch {
+            // Ignore if block retrieval is not supported/mocked
+          }
+
+          if (hasConcurrentBodyEdit) {
+            console.warn(
+              `[notion-writer] Rollback aborted on ${targetPageId}: page body was modified concurrently during deletion recovery. Preserving concurrent edits and replacement blocks.`,
+            );
+          }
+
+          const isSafeToRollback =
+            !hasConcurrentBodyEdit &&
+            (await verifyPageStateBeforeRollback(client, targetPageId, {
               committedLastEditedTime,
-              skipLastEditedTimeCheck: hadBlockMutations,
               expectedTitle: targetTitle,
               expectedLocale: localeSelectName,
-            },
-          );
+            }));
           if (isSafeToRollback) {
             for (const b of newlyAppended) {
               try {
