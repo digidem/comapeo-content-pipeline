@@ -149,7 +149,7 @@ function toNotionRichTextItem(content: string, meta: IntermediateSpan): NotionRi
 /**
  * Finds the next markdown link `[link text](url)` with balanced parentheses in the URL.
  */
-function findNextLink(
+export function findNextLink(
   text: string,
   startIndex: number,
 ): {

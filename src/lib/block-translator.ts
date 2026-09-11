@@ -8,7 +8,7 @@
 
 import type { NotionBlockList, NotionBlock, NotionRichText } from "./notion-converter.js";
 import { richTextToMarkdown } from "./notion-converter.js";
-import { inlineMarkdownToRichText } from "./inline-parser.js";
+import { inlineMarkdownToRichText, findNextLink } from "./inline-parser.js";
 
 export interface ExtractedBlock {
   id: string;
@@ -345,10 +345,96 @@ export function extractEquationsFromRichText(items?: NotionRichText[]): ParsedEq
   return equations;
 }
 
+function restoreEquationInProse(prose: string, eq: ParsedEquation): string {
+  const expr = eq.expression;
+  if (!expr) return prose;
+
+  const escaped = escapeRegExp(expr);
+  const isDisplay = eq.isDisplay;
+
+  // If the expression is already delimited in this prose segment, do not touch it
+  const delimitedRegex = new RegExp(
+    isDisplay
+      ? `(?<!\\\\)\\$\\$(?:\\s*)${escaped}(?:\\s*)\\$\\$`
+      : `(?<![\\w\\\\$])\\$(?!\\s)(?:\\s*)${escaped}(?:\\s*)(?<![\\s\\\\$])\\$(?!\\d)`,
+  );
+  if (delimitedRegex.test(prose)) {
+    return prose;
+  }
+
+  // Build boundary pattern to safely match un-delimited occurrences of the expression
+  const startsWithWord = /^\w/.test(expr);
+  const endsWithWord = /\w$/.test(expr);
+
+  const prefix = startsWithWord ? "(?<![\\w$])" : "(?<!\\$)";
+  const suffix = endsWithWord ? "(?![\\w$])" : "(?!\\$)";
+
+  const searchRegex = new RegExp(`${prefix}${escaped}${suffix}`, "g");
+
+  // If the expression is a single vowel stop word (e.g. 'a', 'e', 'o'),
+  // only restore if there is a single standalone occurrence to avoid corrupting articles/prepositions
+  const isSingleVowelStopWord = expr.length === 1 && /^[aeoAEIOU]$/.test(expr);
+  if (isSingleVowelStopWord) {
+    const matches = prose.match(searchRegex);
+    if (!matches || matches.length !== 1) {
+      return prose;
+    }
+  }
+
+  const delimiter = isDisplay ? `$$${expr}$$` : `$${expr}$`;
+  return prose.replace(searchRegex, delimiter);
+}
+
+function restoreInNonLinkText(text: string, equations: ParsedEquation[]): string {
+  const NON_PROSE_REGEX =
+    /(?<code>```[\s\S]*?```|`[^`\n]+`)|(?<html><[^>]+>)|(?<equationDisplay>(?<!\\)\$\$[^$\n]+?\$\$)|(?<equationInline>(?<![\w\\$])\$(?!\s)[^$\n]+?(?<![\s\\$])\$(?!\d))/g;
+
+  interface Segment {
+    text: string;
+    isProse: boolean;
+  }
+
+  const segments: Segment[] = [];
+  let lastIdx = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = NON_PROSE_REGEX.exec(text)) !== null) {
+    if (match.index > lastIdx) {
+      segments.push({
+        text: text.slice(lastIdx, match.index),
+        isProse: true,
+      });
+    }
+    segments.push({
+      text: match[0],
+      isProse: false,
+    });
+    lastIdx = NON_PROSE_REGEX.lastIndex;
+  }
+
+  if (lastIdx < text.length) {
+    segments.push({
+      text: text.slice(lastIdx),
+      isProse: true,
+    });
+  }
+
+  for (const eq of equations) {
+    for (const seg of segments) {
+      if (seg.isProse) {
+        seg.text = restoreEquationInProse(seg.text, eq);
+      }
+    }
+  }
+
+  return segments.map((s) => s.text).join("");
+}
+
 /**
  * Restores dropped equation delimiters ($...$ or $$...$$) in translated text
  * if the original source contained equations and the translation dropped their delimiters.
- * Uses token/word boundary checks to prevent corrupting ordinary prose words.
+ * Uses token/word boundary checks to prevent corrupting ordinary prose words,
+ * and preserves code spans, HTML tags, and link destinations untouched.
  */
 export function restoreEquationDelimiters(
   translatedText: string,
@@ -362,48 +448,29 @@ export function restoreEquationDelimiters(
 
   if (originalEquations.length === 0) return translatedText;
 
-  let result = translatedText;
+  let result = "";
+  let currentIndex = 0;
 
-  for (const eq of originalEquations) {
-    const expr = eq.expression;
-    if (!expr) continue;
-
-    const escaped = escapeRegExp(expr);
-    const isDisplay = eq.isDisplay;
-
-    // If the expression is already delimited in the translated text, do not touch it
-    const delimitedRegex = new RegExp(
-      isDisplay
-        ? `(?<!\\\\)\\$\\$(?:\\s*)${escaped}(?:\\s*)\\$\\$`
-        : `(?<![\\w\\\\$])\\$(?!\\s)(?:\\s*)${escaped}(?:\\s*)(?<![\\s\\\\$])\\$(?!\\d)`,
-    );
-    if (delimitedRegex.test(result)) {
-      continue;
+  while (currentIndex < translatedText.length) {
+    const linkMatch = findNextLink(translatedText, currentIndex);
+    if (!linkMatch) {
+      result += restoreInNonLinkText(translatedText.slice(currentIndex), originalEquations);
+      break;
     }
 
-    // Build boundary pattern to safely match un-delimited occurrences of the expression
-    const startsWithWord = /^\w/.test(expr);
-    const endsWithWord = /\w$/.test(expr);
-
-    const prefix = startsWithWord ? "(?<![\\w$])" : "(?<!\\$)";
-    const suffix = endsWithWord ? "(?![\\w$])" : "(?!\\$)";
-
-    const searchRegex = new RegExp(`${prefix}${escaped}${suffix}`, "g");
-
-    // If the expression is a single vowel stop word (e.g. 'a', 'e', 'o'),
-    // only restore if there is a single standalone occurrence to avoid corrupting articles/prepositions
-    const isSingleVowelStopWord = expr.length === 1 && /^[aeoAEIOU]$/.test(expr);
-    if (isSingleVowelStopWord) {
-      const matches = result.match(searchRegex);
-      if (!matches || matches.length !== 1) {
-        continue;
-      }
+    if (linkMatch.linkStart > currentIndex) {
+      result += restoreInNonLinkText(
+        translatedText.slice(currentIndex, linkMatch.linkStart),
+        originalEquations,
+      );
     }
 
-    const delimiter = isDisplay ? `$$${expr}$$` : `$${expr}$`;
-    result = result.replace(searchRegex, delimiter);
+    const restoredLinkText = restoreInNonLinkText(linkMatch.linkText, originalEquations);
+    result += `[${restoredLinkText}](${linkMatch.linkUrl})`;
+    currentIndex = linkMatch.linkEnd;
   }
 
   return result;
 }
+
 

@@ -698,6 +698,68 @@ describe("writeTranslationToNotion", () => {
     });
   });
 
+  it("aborts safely and never calls createPage if queryDatabase fails during parentEnglishPageId query", async () => {
+    vi.mocked(mockClient.queryDatabase).mockRejectedValueOnce(
+      new Error("Notion API 500 Internal Server Error"),
+    );
+
+    await expect(
+      writeTranslationToNotion({
+        client: mockClient,
+        databaseId: "db-123",
+        targetLocale: "es",
+        targetTitle: "New Translation Page",
+        parentEnglishPageId: "en-family-root",
+        translatedBlocks: mockTranslatedBlocks,
+      }),
+    ).rejects.toThrow(/Failed to query existing translations for parentEnglishPageId/);
+
+    expect(mockClient.createPage).not.toHaveBeenCalled();
+  });
+
+  it("aborts safely and never calls createPage if queryDatabase fails during title and language query", async () => {
+    vi.mocked(mockClient.queryDatabase).mockRejectedValueOnce(
+      new Error("Notion API 429 Rate Limit Exceeded"),
+    );
+
+    await expect(
+      writeTranslationToNotion({
+        client: mockClient,
+        databaseId: "db-123",
+        targetLocale: "es",
+        targetTitle: "Standalone Page",
+        translatedBlocks: mockTranslatedBlocks,
+      }),
+    ).rejects.toThrow(/Failed to query existing translations by language and title/);
+
+    expect(mockClient.createPage).not.toHaveBeenCalled();
+  });
+
+  it("aborts safely and never calls createPage if getPage fails during parentEnglishPageId sub-items inspection", async () => {
+    vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
+      results: [],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    vi.mocked(mockClient.getPage).mockRejectedValueOnce(
+      new Error("Notion API Network Timeout"),
+    );
+
+    await expect(
+      writeTranslationToNotion({
+        client: mockClient,
+        databaseId: "db-123",
+        targetLocale: "es",
+        targetTitle: "New Translation Page",
+        parentEnglishPageId: "en-family-root",
+        translatedBlocks: mockTranslatedBlocks,
+      }),
+    ).rejects.toThrow(/Failed to inspect parentEnglishPageId/);
+
+    expect(mockClient.createPage).not.toHaveBeenCalled();
+  });
+
   it("skips write and preserves Notion content when translated blocks result in 0 writeable blocks after preparation", async () => {
     const emptyBlocks: NotionBlockList = {
       object: "list",

@@ -874,4 +874,54 @@ describe("applyTranslatedBlocks", () => {
     expect(p.rich_text[1].type).toBe("equation");
     expect(p.rich_text[1].equation).toEqual({ expression: "E = mc^2" });
   });
+
+  it("does not corrupt markdown link URLs, inline code, or HTML tags during equation restoration", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "p1",
+          type: "paragraph",
+          has_children: false,
+          paragraph: {
+            rich_text: [
+              {
+                type: "equation",
+                plain_text: "x",
+                equation: { expression: "x" },
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    // Translation where equation delimiters were dropped around 'x',
+    // but the text also contains [details](https://example.com/x), `x`, and `<img src="https://example.com/x" />`
+    const updated = applyTranslatedBlocks(blockList, {
+      p1: 'Veja [detalhes](https://example.com/x) onde o código `x` difere da variável x em <img src="https://example.com/x" alt="x" />.',
+    });
+
+    const p = updated.results[0].paragraph as { rich_text: NotionRichText[] };
+
+    // Find the link rich text item
+    const linkItem = p.rich_text.find((r) => r.href);
+    expect(linkItem).toBeDefined();
+    // Link URL must NOT have $x$ injected
+    expect(linkItem!.href).toBe("https://example.com/x");
+
+    // Find the code rich text item
+    const codeItem = p.rich_text.find((r) => r.annotations?.code);
+    expect(codeItem).toBeDefined();
+    // Inline code must NOT have $x$ injected
+    expect(codeItem!.plain_text).toBe("x");
+
+    // Verify equation item was restored for the prose variable
+    const eqItem = p.rich_text.find((r) => r.type === "equation");
+    expect(eqItem).toBeDefined();
+    expect(eqItem!.equation?.expression).toBe("x");
+  });
 });
+

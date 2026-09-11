@@ -982,7 +982,10 @@ export async function writeTranslationToNotion(
           }
         }
       } catch (queryErr) {
-        console.warn(`[notion-writer] Could not query by parentEnglishPageId: ${queryErr}`);
+        throw new Error(
+          `[notion-writer] Failed to query existing translations for parentEnglishPageId [${parentEnglishPageId}]: ${queryErr instanceof Error ? queryErr.message : String(queryErr)}`,
+          { cause: queryErr },
+        );
       }
     }
 
@@ -1049,7 +1052,10 @@ export async function writeTranslationToNotion(
         }
       }
     } catch (queryErr) {
-      console.warn(`[notion-writer] Could not query for existing translation before creation: ${queryErr}`);
+      throw new Error(
+        `[notion-writer] Failed to query existing translations by language and title: ${queryErr instanceof Error ? queryErr.message : String(queryErr)}`,
+        { cause: queryErr },
+      );
     }
   }
 
@@ -1071,8 +1077,11 @@ export async function writeTranslationToNotion(
               subItemPages.push(childPage);
             }
           }
-        } catch {
-          // ignore individual child fetch error
+        } catch (childErr) {
+          throw new Error(
+            `[notion-writer] Failed to fetch sub-item child page [${childId}] of parentEnglishPageId [${parentEnglishPageId}]: ${childErr instanceof Error ? childErr.message : String(childErr)}`,
+            { cause: childErr },
+          );
         }
       }
       if (subItemPages.length > 0) {
@@ -1107,7 +1116,10 @@ export async function writeTranslationToNotion(
         }
       }
     } catch (err) {
-      console.warn(`[notion-writer] Could not inspect parentEnglishPageId sub-items: ${err}`);
+      throw new Error(
+        `[notion-writer] Failed to inspect parentEnglishPageId [${parentEnglishPageId}] sub-items: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
     }
   }
   const firstChunk = preparedBlocks.slice(0, 100);
