@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { prepareBlocksForNotion, writeTranslationToNotion, isStubPage } from "./notion-writer.js";
+import {
+  prepareBlocksForNotion,
+  writeTranslationToNotion,
+  isStubPage,
+  isDeadPage,
+  rankTranslationCandidates,
+} from "./notion-writer.js";
 import type { NotionBlockList } from "./notion-converter.js";
 import type { NotionBlock, NotionClient, NotionPage } from "./notion-client.js";
 import { ClassifiedError, ErrorCategory } from "./errors.js";
@@ -435,6 +441,8 @@ describe("writeTranslationToNotion", () => {
           id: "already-created-id",
           object: "page",
           properties: {
+            [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Título Reconciliado" }] },
+            [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "PT - automated" } },
             "Publish Status": { select: { name: "Automated translations generated" } },
           },
         } as unknown as NotionPage,
@@ -481,7 +489,7 @@ describe("writeTranslationToNotion", () => {
           { property: NOTION_PROPERTIES.PARENT_ITEM, relation: { contains: "container-parent-id" } },
         ],
       },
-      pageSize: 1,
+      pageSize: 10,
     });
   });
 
@@ -493,6 +501,7 @@ describe("writeTranslationToNotion", () => {
           object: "page",
           properties: {
             [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Old Renamed Title" }] },
+            [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES - automated" } },
             [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
           },
         } as unknown as NotionPage,
@@ -538,7 +547,7 @@ describe("writeTranslationToNotion", () => {
           { property: NOTION_PROPERTIES.PARENT_ITEM, relation: { contains: "en-family-root" } },
         ],
       },
-      pageSize: 1,
+      pageSize: 10,
     });
   });
 
@@ -621,7 +630,7 @@ describe("writeTranslationToNotion", () => {
           { property: NOTION_PROPERTIES.TITLE, title: { equals: "Standalone Page" } },
         ],
       },
-      pageSize: 1,
+      pageSize: 10,
     });
   });
 
@@ -1807,6 +1816,208 @@ describe("writeTranslationToNotion", () => {
         ],
       };
       expect(isStubPage(page, blocks)).toBe(true);
+    });
+  });
+
+  describe("isDeadPage", () => {
+    it("returns true for archived or in_trash pages", () => {
+      expect(isDeadPage({ id: "p1", archived: true } as unknown as NotionPage)).toBe(true);
+      expect(isDeadPage({ id: "p2", in_trash: true } as unknown as NotionPage)).toBe(true);
+    });
+
+    it("returns true for pages with dead Publish Status values", () => {
+      const makePage = (status: string) =>
+        ({
+          id: "p",
+          properties: {
+            "Publish Status": { select: { name: status } },
+          },
+        }) as unknown as NotionPage;
+
+      expect(isDeadPage(makePage("Remove"))).toBe(true);
+      expect(isDeadPage(makePage("remove"))).toBe(true);
+      expect(isDeadPage(makePage("Unplublished"))).toBe(true);
+      expect(isDeadPage(makePage("Unpublished"))).toBe(true);
+      expect(isDeadPage(makePage("Deleted"))).toBe(true);
+      expect(isDeadPage(makePage("deprecated"))).toBe(true);
+    });
+
+    it("returns false for live or draft Publish Status values and missing statuses", () => {
+      const makePage = (status?: string) =>
+        ({
+          id: "p",
+          properties: status
+            ? { "Publish Status": { select: { name: status } } }
+            : {},
+        }) as unknown as NotionPage;
+
+      expect(isDeadPage(makePage("Published"))).toBe(false);
+      expect(isDeadPage(makePage("Draft published"))).toBe(false);
+      expect(isDeadPage(makePage("Ready to publish"))).toBe(false);
+      expect(isDeadPage(makePage("Automated translations generated"))).toBe(false);
+      expect(isDeadPage(makePage("Not started"))).toBe(false);
+      expect(isDeadPage(makePage())).toBe(false);
+    });
+  });
+
+  describe("rankTranslationCandidates", () => {
+    it("filters out dead/archived candidates even if they match targetTitle exactly", () => {
+      const deadCandidate = {
+        id: "dead-id",
+        archived: true,
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Target Title" }] },
+          [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES - automated" } },
+        },
+      } as unknown as NotionPage;
+
+      const liveCandidate = {
+        id: "live-id",
+        archived: false,
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Old Title" }] },
+          [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES - automated" } },
+        },
+      } as unknown as NotionPage;
+
+      const ranked = rankTranslationCandidates([deadCandidate, liveCandidate], "Target Title");
+      expect(ranked).toHaveLength(1);
+      expect(ranked[0].id).toBe("live-id");
+    });
+
+    it("returns empty array if all candidates are dead", () => {
+      const dead1 = {
+        id: "d1",
+        properties: { "Publish Status": { select: { name: "Remove" } } },
+      } as unknown as NotionPage;
+      const dead2 = {
+        id: "d2",
+        properties: { "Publish Status": { select: { name: "Unplublished" } } },
+      } as unknown as NotionPage;
+
+      const ranked = rankTranslationCandidates([dead1, dead2], "Any Title");
+      expect(ranked).toHaveLength(0);
+    });
+
+    it("ranks candidates with real body ahead of stubs", () => {
+      const stub = {
+        id: "stub-id",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Target" }] },
+        },
+      } as unknown as NotionPage;
+
+      const withBody = {
+        id: "body-id",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Target" }] },
+        },
+      } as unknown as NotionPage;
+
+      const ranked = rankTranslationCandidates(
+        [stub, withBody],
+        "Target",
+        { "stub-id": false, "body-id": true },
+      );
+      expect(ranked[0].id).toBe("body-id");
+    });
+
+    it("ranks explicit language source over automated over fallback", () => {
+      const explicit = {
+        id: "exp-id",
+        properties: {
+          [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES" } },
+        },
+      } as unknown as NotionPage;
+
+      const automated = {
+        id: "auto-id",
+        properties: {
+          [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES - automated" } },
+        },
+      } as unknown as NotionPage;
+
+      const fallback = {
+        id: "fb-id",
+        properties: {},
+      } as unknown as NotionPage;
+
+      const ranked = rankTranslationCandidates([fallback, automated, explicit], "Title");
+      expect(ranked.map((p) => p.id)).toEqual(["exp-id", "auto-id", "fb-id"]);
+    });
+
+    it("ranks typed element type over untyped", () => {
+      const untyped = {
+        id: "untyped-id",
+        properties: {},
+      } as unknown as NotionPage;
+
+      const typed = {
+        id: "typed-id",
+        properties: {
+          [NOTION_PROPERTIES.ELEMENT_TYPE]: { select: { name: "page" } },
+        },
+      } as unknown as NotionPage;
+
+      const ranked = rankTranslationCandidates([untyped, typed], "Title");
+      expect(ranked.map((p) => p.id)).toEqual(["typed-id", "untyped-id"]);
+    });
+
+    it("ranks non-staging title over staging suffix", () => {
+      const staging = {
+        id: "staging-id",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Doc - 2026-05-12 translation" }] },
+        },
+      } as unknown as NotionPage;
+
+      const normal = {
+        id: "normal-id",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Doc" }] },
+        },
+      } as unknown as NotionPage;
+
+      const ranked = rankTranslationCandidates([staging, normal], "Other Title");
+      expect(ranked.map((p) => p.id)).toEqual(["normal-id", "staging-id"]);
+    });
+
+    it("ranks exact title match over alternate title", () => {
+      const alternate = {
+        id: "alt-id",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Alternate Title" }] },
+        },
+      } as unknown as NotionPage;
+
+      const exact = {
+        id: "exact-id",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Exact Target Title" }] },
+        },
+      } as unknown as NotionPage;
+
+      const ranked = rankTranslationCandidates([alternate, exact], "Exact Target Title");
+      expect(ranked.map((p) => p.id)).toEqual(["exact-id", "alt-id"]);
+    });
+
+    it("ranks lower order number ahead of higher order number", () => {
+      const order2 = {
+        id: "o2",
+        properties: {
+          [NOTION_PROPERTIES.ORDER]: { number: 2 },
+        },
+      } as unknown as NotionPage;
+
+      const order1 = {
+        id: "o1",
+        properties: {
+          [NOTION_PROPERTIES.ORDER]: { number: 1 },
+        },
+      } as unknown as NotionPage;
+
+      const ranked = rankTranslationCandidates([order2, order1], "Title");
+      expect(ranked.map((p) => p.id)).toEqual(["o1", "o2"]);
     });
   });
 });

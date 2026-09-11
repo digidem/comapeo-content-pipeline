@@ -7,7 +7,8 @@
 
 import type { NotionBlock, NotionClient, NotionPage } from "./notion-client.js";
 import type { NotionBlockList } from "./notion-converter.js";
-import { NOTION_PROPERTIES } from "./notion-properties.js";
+import { NOTION_PROPERTIES, DEAD_STATUSES, normalizeLocale } from "./notion-properties.js";
+import { mapStatus } from "./status.js";
 import { isStubBody } from "./stub-body.js";
 import { toSectionDir } from "./hierarchy.js";
 import type { PageAsset } from "../schemas/metadata.js";
@@ -312,6 +313,131 @@ export function isStubPage(
   }
 
   return false;
+}
+
+/**
+ * Determines whether a Notion page is archived, deleted, or marked with a dead Publish Status.
+ */
+export function isDeadPage(page: NotionPage): boolean {
+  if (page.archived || (page as Record<string, unknown>).in_trash) {
+    return true;
+  }
+  const statusProp = page.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS] as
+    | { select?: { name?: string } | null }
+    | undefined;
+  const statusName = statusProp?.select?.name?.trim();
+  if (!statusName) return false;
+  if (DEAD_STATUSES.some((d) => d.toLowerCase() === statusName.toLowerCase())) {
+    return true;
+  }
+  const mapped = mapStatus(statusName);
+  return mapped === "deprecated" || mapped === "archived";
+}
+
+export function getPageLanguage(page: NotionPage): string | null {
+  const langProp = page.properties?.[NOTION_PROPERTIES.LANGUAGE] as
+    | { select?: { name?: string } | null }
+    | undefined;
+  return langProp?.select?.name ?? null;
+}
+
+export function getPageLanguageSource(page: NotionPage): "explicit" | "automated" | "fallback" {
+  const langName = getPageLanguage(page);
+  if (!langName) return "fallback";
+  if (/\bautomated\b/i.test(langName)) return "automated";
+  return "explicit";
+}
+
+export function getPageElementType(page: NotionPage): string {
+  const etProp = page.properties?.[NOTION_PROPERTIES.ELEMENT_TYPE] as
+    | { select?: { name?: string } | null }
+    | undefined;
+  return etProp?.select?.name ?? "";
+}
+
+export function getPageTitle(page: NotionPage): string {
+  const titleProp =
+    page.properties?.[NOTION_PROPERTIES.TITLE] ||
+    page.properties?.[NOTION_PROPERTIES.TITLE_FALLBACK_NAME] ||
+    page.properties?.[NOTION_PROPERTIES.TITLE_FALLBACK_TITLE] ||
+    page.properties?.[NOTION_PROPERTIES.TITLE_FALLBACK_LOWERCASE];
+  const tp = titleProp as { title?: Array<{ plain_text?: string }> } | undefined;
+  if (tp?.title && tp.title.length > 0) {
+    return tp.title.map((t) => t.plain_text || "").join("");
+  }
+  return "";
+}
+
+export function getPageOrder(page: NotionPage): number {
+  const orderProp = page.properties?.[NOTION_PROPERTIES.ORDER] as
+    | { number?: number | null }
+    | undefined;
+  return typeof orderProp?.number === "number" ? orderProp.number : 99999;
+}
+
+const STAGING_SUFFIX = /[-_]\s*\d{4}-\d{2}-\d{2}\s*translation/i;
+
+/**
+ * Applies the hierarchy's canonical-member ranking across translation candidate pages:
+ * 1. Filter out dead / archived / removed pages.
+ * 2. Real body over stub (matches hierarchy.ts selectLocaleMember).
+ * 3. Language source: explicit > automated > fallback.
+ * 4. Typed element over untyped.
+ * 5. Non-staging over staging suffix.
+ * 6. Exact targetTitle match over alternate title.
+ * 7. Lower order number.
+ * 8. Tie-breaker: newest last_edited_time.
+ */
+export function rankTranslationCandidates(
+  candidates: NotionPage[],
+  targetTitle: string,
+  hasBodyById?: Record<string, boolean>,
+): NotionPage[] {
+  const alive = candidates.filter((p) => !isDeadPage(p));
+  if (alive.length <= 1) return alive;
+
+  const srcRank: Record<string, number> = { explicit: 0, automated: 1, fallback: 2 };
+
+  return [...alive].sort((a, b) => {
+    // 1. Real body over stub
+    if (hasBodyById) {
+      const aBody = hasBodyById[a.id] ? 0 : 1;
+      const bBody = hasBodyById[b.id] ? 0 : 1;
+      if (aBody !== bBody) return aBody - bBody;
+    }
+
+    // 2. Language source: explicit > automated > fallback
+    const sa = srcRank[getPageLanguageSource(a)] ?? 2;
+    const sb = srcRank[getPageLanguageSource(b)] ?? 2;
+    if (sa !== sb) return sa - sb;
+
+    // 3. Typed over untyped
+    const at = getPageElementType(a) !== "" ? 0 : 1;
+    const bt = getPageElementType(b) !== "" ? 0 : 1;
+    if (at !== bt) return at - bt;
+
+    // 4. Non-staging over staging suffix
+    const aTitle = getPageTitle(a);
+    const bTitle = getPageTitle(b);
+    const as = STAGING_SUFFIX.test(aTitle) ? 1 : 0;
+    const bs = STAGING_SUFFIX.test(bTitle) ? 1 : 0;
+    if (as !== bs) return as - bs;
+
+    // 5. Exact targetTitle match over alternate title
+    const aExact = aTitle === targetTitle ? 0 : 1;
+    const bExact = bTitle === targetTitle ? 0 : 1;
+    if (aExact !== bExact) return aExact - bExact;
+
+    // 6. Lower order number
+    const ao = getPageOrder(a);
+    const bo = getPageOrder(b);
+    if (ao !== bo) return ao - bo;
+
+    // 7. Most recently edited time
+    const aTime = a.last_edited_time ? new Date(a.last_edited_time).getTime() : 0;
+    const bTime = b.last_edited_time ? new Date(b.last_edited_time).getTime() : 0;
+    return bTime - aTime;
+  });
 }
 
 /**
@@ -670,17 +796,38 @@ export async function writeTranslationToNotion(
               },
             ],
           },
-          pageSize: 1,
+          pageSize: 10,
         });
-        if (directFamilyMatch?.results && directFamilyMatch.results.length > 0) {
-          const found = directFamilyMatch.results[0];
-          console.warn(
-            `[notion-writer] Found existing translation page [${found.id}] parented by English page ${parentEnglishPageId}. Reusing instead of creating duplicate.`,
-          );
-          return writeTranslationToNotion({
-            ...options,
-            targetPageId: found.id,
-          });
+        const rawCandidates = directFamilyMatch?.results ?? [];
+        const candidates = rawCandidates.filter((p) => {
+          const lang = getPageLanguage(p);
+          return normalizeLocale(lang) === targetLocale;
+        });
+        if (candidates.length > 0) {
+          const hasBodyById: Record<string, boolean> = {};
+          if (candidates.length > 1 && typeof client.getPageBlocks === "function") {
+            await Promise.all(
+              candidates.map(async (cand) => {
+                try {
+                  const blocks = await client.getPageBlocks(cand.id);
+                  hasBodyById[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
+                } catch {
+                  hasBodyById[cand.id] = false;
+                }
+              }),
+            );
+          }
+          const ranked = rankTranslationCandidates(candidates, targetTitle, hasBodyById);
+          if (ranked.length > 0) {
+            const winner = ranked[0];
+            console.warn(
+              `[notion-writer] Found existing translation page [${winner.id}] parented by English page ${parentEnglishPageId}. Reusing canonical member instead of creating duplicate.`,
+            );
+            return writeTranslationToNotion({
+              ...options,
+              targetPageId: winner.id,
+            });
+          }
         }
       } catch (queryErr) {
         console.warn(`[notion-writer] Could not query by parentEnglishPageId: ${queryErr}`);
@@ -709,18 +856,40 @@ export async function writeTranslationToNotion(
 
       const existing = await client.queryDatabase({
         filter: { and: filterConditions },
-        pageSize: 1,
+        pageSize: 10,
       });
 
-      if (existing?.results && existing.results.length > 0) {
-        const found = existing.results[0];
-        console.warn(
-          `[notion-writer] Found existing translation page [${found.id}] matching ${targetLocale} and title "${targetTitle}". Reusing instead of creating duplicate.`,
-        );
-        return writeTranslationToNotion({
-          ...options,
-          targetPageId: found.id,
-        });
+      const rawCandidates = existing?.results ?? [];
+      const candidates = rawCandidates.filter((p) => {
+        const lang = getPageLanguage(p);
+        return normalizeLocale(lang) === targetLocale;
+      });
+
+      if (candidates.length > 0) {
+        const hasBodyById: Record<string, boolean> = {};
+        if (candidates.length > 1 && typeof client.getPageBlocks === "function") {
+          await Promise.all(
+            candidates.map(async (cand) => {
+              try {
+                const blocks = await client.getPageBlocks(cand.id);
+                hasBodyById[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
+              } catch {
+                hasBodyById[cand.id] = false;
+              }
+            }),
+          );
+        }
+        const ranked = rankTranslationCandidates(candidates, targetTitle, hasBodyById);
+        if (ranked.length > 0) {
+          const winner = ranked[0];
+          console.warn(
+            `[notion-writer] Found existing translation page [${winner.id}] matching ${targetLocale} and title "${targetTitle}". Reusing canonical member instead of creating duplicate.`,
+          );
+          return writeTranslationToNotion({
+            ...options,
+            targetPageId: winner.id,
+          });
+        }
       }
     } catch (queryErr) {
       console.warn(`[notion-writer] Could not query for existing translation before creation: ${queryErr}`);
@@ -735,23 +904,44 @@ export async function writeTranslationToNotion(
         | { relation?: Array<{ id: string }> }
         | undefined;
       const subItemIds = subItemProp?.relation?.map((r) => r.id) || [];
+      const subItemPages: NotionPage[] = [];
       for (const childId of subItemIds) {
         try {
           const childPage = await client.getPage(childId);
-          const childLang = (
-            childPage?.properties?.[NOTION_PROPERTIES.LANGUAGE] as { select?: { name?: string } } | undefined
-          )?.select?.name;
-          if (childLang === localeSelectName) {
-            console.warn(
-              `[notion-writer] Found existing translation page [${childId}] in sub-items of English page ${parentEnglishPageId}. Reusing instead of creating duplicate.`,
-            );
-            return writeTranslationToNotion({
-              ...options,
-              targetPageId: childId,
-            });
+          if (childPage) {
+            const childLang = getPageLanguage(childPage);
+            if (normalizeLocale(childLang) === targetLocale) {
+              subItemPages.push(childPage);
+            }
           }
         } catch {
           // ignore individual child fetch error
+        }
+      }
+      if (subItemPages.length > 0) {
+        const hasBodyById: Record<string, boolean> = {};
+        if (subItemPages.length > 1 && typeof client.getPageBlocks === "function") {
+          await Promise.all(
+            subItemPages.map(async (cand) => {
+              try {
+                const blocks = await client.getPageBlocks(cand.id);
+                hasBodyById[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
+              } catch {
+                hasBodyById[cand.id] = false;
+              }
+            }),
+          );
+        }
+        const ranked = rankTranslationCandidates(subItemPages, targetTitle, hasBodyById);
+        if (ranked.length > 0) {
+          const winner = ranked[0];
+          console.warn(
+            `[notion-writer] Found existing translation page [${winner.id}] in sub-items of English page ${parentEnglishPageId}. Reusing canonical member instead of creating duplicate.`,
+          );
+          return writeTranslationToNotion({
+            ...options,
+            targetPageId: winner.id,
+          });
         }
       }
     } catch (err) {
