@@ -1262,6 +1262,12 @@ describe("writeTranslationToNotion", () => {
       id: "created-page-to-rollback",
       object: "page",
     } as unknown as NotionPage);
+    vi.mocked(mockClient.getPage).mockResolvedValue({
+      id: "created-page-to-rollback",
+      properties: {
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+      },
+    } as unknown as NotionPage);
 
     const result = await writeTranslationToNotion({
       client: mockClient,
@@ -1279,8 +1285,69 @@ describe("writeTranslationToNotion", () => {
     expect(mockClient.deleteBlock).toHaveBeenCalledWith("created-page-to-rollback");
   });
 
+  it("aborts rollback on created page if getPage rejects or returns null", async () => {
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "created-page-abort-test",
+      object: "page",
+    } as unknown as NotionPage);
+    vi.mocked(mockClient.getPage)
+      .mockResolvedValueOnce({
+        id: "created-page-abort-test",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage)
+      .mockRejectedValueOnce(new Error("Network error fetching page"));
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Rollback Abort Test",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    vi.mocked(mockClient.deleteBlock).mockClear();
+
+    await result.rollback!();
+    expect(mockClient.deleteBlock).not.toHaveBeenCalled();
+  });
+
+  it("aborts rollback on created page if publish status changed to a human review state", async () => {
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "created-page-status-test",
+      object: "page",
+    } as unknown as NotionPage);
+    vi.mocked(mockClient.getPage)
+      .mockResolvedValueOnce({
+        id: "created-page-status-test",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage)
+      .mockResolvedValueOnce({
+        id: "created-page-status-test",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Published" } },
+        },
+      } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Rollback Status Test",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    vi.mocked(mockClient.deleteBlock).mockClear();
+
+    await result.rollback!();
+    expect(mockClient.deleteBlock).not.toHaveBeenCalled();
+  });
+
   it("provides a rollback function when updating an existing page that restores old blocks and original properties", async () => {
-    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+    vi.mocked(mockClient.getPage).mockResolvedValue({
       id: "updated-page-to-rollback",
       properties: {
         [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
@@ -1332,6 +1399,65 @@ describe("writeTranslationToNotion", () => {
         [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
       },
     });
+  });
+
+  it("aborts rollback on an updated page if getPage rejects during rollback", async () => {
+    vi.mocked(mockClient.getPage)
+      .mockResolvedValueOnce({
+        id: "fetch-error-rollback-page",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage)
+      .mockResolvedValueOnce({
+        id: "fetch-error-rollback-page",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage)
+      .mockRejectedValueOnce(new Error("Network timeout during rollback verification"));
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [
+        { id: "old-block-a", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      children: {},
+    });
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "new-block-a", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+    vi.mocked(mockClient.updatePage).mockResolvedValue({
+      id: "fetch-error-rollback-page",
+      object: "page",
+    } as unknown as NotionPage);
+    vi.mocked(mockClient.deleteBlock).mockResolvedValue({ id: "old-block-a", object: "block", archived: true });
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Fetch Error Check",
+      targetPageId: "fetch-error-rollback-page",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    // Clear calls from the successful write
+    vi.mocked(mockClient.deleteBlock).mockClear();
+    vi.mocked(mockClient.restoreBlock!).mockClear();
+    vi.mocked(mockClient.updatePage).mockClear();
+
+    await result.rollback!();
+
+    // Must NOT delete new blocks or restore old blocks
+    expect(mockClient.deleteBlock).not.toHaveBeenCalled();
+    expect(mockClient.restoreBlock).not.toHaveBeenCalled();
+    expect(mockClient.updatePage).not.toHaveBeenCalled();
   });
 
   it("aborts rollback on an updated page if concurrent edits changed last_edited_time", async () => {

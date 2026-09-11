@@ -576,12 +576,18 @@ export async function writeTranslationToNotion(
               );
               return;
             }
+          } else {
+            console.error(
+              `[notion-writer] Rollback aborted on ${targetPageId}: page could not be retrieved before rollback. Preserving content to prevent destroying concurrent edits.`,
+            );
+            return;
           }
         } catch (fetchErr) {
-          console.warn(
-            `[notion-writer] Could not verify page state before rollback on ${targetPageId}:`,
+          console.error(
+            `[notion-writer] Rollback aborted on ${targetPageId}: could not verify page state before rollback. Preserving content to prevent destroying concurrent edits:`,
             fetchErr,
           );
+          return;
         }
 
         const failedRestoreIds: string[] = [];
@@ -753,12 +759,18 @@ export async function writeTranslationToNotion(
             );
             return;
           }
+        } else {
+          console.error(
+            `[notion-writer] Rollback aborted on created page ${newPage.id}: page could not be retrieved before rollback. Preserving created page to prevent destroying concurrent edits.`,
+          );
+          return;
         }
       } catch (fetchErr) {
-        console.warn(
-          `[notion-writer] Could not verify page state before rollback on ${newPage.id}:`,
+        console.error(
+          `[notion-writer] Rollback aborted on created page ${newPage.id}: could not verify page state before rollback. Preserving created page to prevent destroying concurrent edits:`,
           fetchErr,
         );
+        return;
       }
 
       try {
