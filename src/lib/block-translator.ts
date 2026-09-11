@@ -150,14 +150,23 @@ export function applyTranslatedBlocks(
   const visited = new Set<string>();
   const childrenMap = cloned.children ?? {};
 
-  // Build emoji map from original blocks (name/url -> emojiId)
+  // Build emoji map and equation set from original blocks
   const emojiMap = new Map<string, string>();
-  function collectEmojis(blocks: NotionBlock[]): void {
+  const equationSet = new Set<string>();
+  function collectMetadata(blocks: NotionBlock[]): void {
     for (const b of blocks) {
       if (!b) continue;
       const type = b.type;
-      const content = b[type] as (BlockWithRichText & BlockWithCaption) | undefined;
-      const items = [...(content?.rich_text ?? []), ...(content?.caption ?? [])];
+      const content = b[type] as (BlockWithRichText & BlockWithCaption & TableRowContent) | undefined;
+      const items: NotionRichText[] = [
+        ...(content?.rich_text ?? []),
+        ...(content?.caption ?? []),
+      ];
+      if (type === "table_row" && content?.cells) {
+        for (const cell of content.cells) {
+          items.push(...cell);
+        }
+      }
       for (const item of items) {
         if (item.type === "mention") {
           const mention = item.mention as
@@ -167,14 +176,21 @@ export function applyTranslatedBlocks(
             if (mention.custom_emoji.name) emojiMap.set(mention.custom_emoji.name, mention.custom_emoji.id);
             if (mention.custom_emoji.url) emojiMap.set(mention.custom_emoji.url, mention.custom_emoji.id);
           }
+        } else if (item.type === "equation") {
+          const expr =
+            (item.equation as { expression?: string } | undefined)?.expression ??
+            item.plain_text;
+          if (expr && expr.trim()) {
+            equationSet.add(expr.trim());
+          }
         }
       }
     }
   }
-  collectEmojis(blockList.results);
+  collectMetadata(blockList.results);
   if (blockList.children) {
     for (const children of Object.values(blockList.children)) {
-      collectEmojis(children);
+      collectMetadata(children);
     }
   }
 
@@ -191,7 +207,7 @@ export function applyTranslatedBlocks(
           const key = `${block.id}:cell:${index}`;
           const trans = translations[key];
           if (trans !== undefined) {
-            row.cells![index] = inlineMarkdownToRichText(trans, emojiMap);
+            row.cells![index] = inlineMarkdownToRichText(trans, emojiMap, equationSet);
           }
         });
       }
@@ -200,7 +216,7 @@ export function applyTranslatedBlocks(
       if (trans !== undefined) {
         const codeContent = block.code as BlockWithCaption | undefined;
         if (codeContent) {
-          codeContent.caption = inlineMarkdownToRichText(trans, emojiMap);
+          codeContent.caption = inlineMarkdownToRichText(trans, emojiMap, equationSet);
         }
       }
     } else if (type === "image" || type === "video" || type === "file") {
@@ -208,7 +224,7 @@ export function applyTranslatedBlocks(
       if (trans !== undefined) {
         const mediaContent = block[type] as BlockWithCaption | undefined;
         if (mediaContent) {
-          mediaContent.caption = inlineMarkdownToRichText(trans, emojiMap);
+          mediaContent.caption = inlineMarkdownToRichText(trans, emojiMap, equationSet);
         }
       }
     } else if (type === "child_page") {
@@ -224,7 +240,7 @@ export function applyTranslatedBlocks(
       if (trans !== undefined) {
         const content = block[type] as BlockWithRichText | undefined;
         if (content) {
-          content.rich_text = inlineMarkdownToRichText(trans, emojiMap);
+          content.rich_text = inlineMarkdownToRichText(trans, emojiMap, equationSet);
         }
       }
     }

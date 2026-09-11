@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { NotionBlockList, NotionBlock } from "./notion-converter.js";
+import type { NotionBlockList, NotionBlock, NotionRichText } from "./notion-converter.js";
 import { convertBlocks } from "./notion-converter.js";
 import {
   extractTranslatableBlocks,
@@ -556,5 +556,61 @@ describe("applyTranslatedBlocks", () => {
     // Markdown conversion correctly escapes the pipe to prevent column misalignment
     const md = convertBlocks(updated);
     expect(md).toContain("| Option A \\| Option B |");
+  });
+
+  it("extracts inline equations as $expression$ and reconstructs native equation rich text items", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "p1",
+          type: "paragraph",
+          has_children: false,
+          paragraph: {
+            rich_text: [
+              {
+                type: "text",
+                plain_text: "Energy formula: ",
+                text: { content: "Energy formula: " },
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+              {
+                type: "equation",
+                plain_text: "E = mc^2",
+                equation: { expression: "E = mc^2" },
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+              {
+                type: "text",
+                plain_text: " in physics.",
+                text: { content: " in physics." },
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    // 1. Extraction converts equation to $E = mc^2$
+    const extracted = extractTranslatableBlocks(blockList);
+    expect(extracted).toHaveLength(1);
+    expect(extracted[0].text).toBe("Energy formula: $E = mc^2$ in physics.");
+
+    // 2. Application reconstructs native equation rich text item
+    const updated = applyTranslatedBlocks(blockList, {
+      p1: "Fórmula de energía: $E = mc^2$ en física.",
+    });
+
+    const p = updated.results[0].paragraph as { rich_text: NotionRichText[] };
+    expect(p.rich_text).toHaveLength(3);
+    expect(p.rich_text[0].type).toBe("text");
+    expect(p.rich_text[0].plain_text).toBe("Fórmula de energía: ");
+    expect(p.rich_text[1].type).toBe("equation");
+    expect(p.rich_text[1].equation).toEqual({ expression: "E = mc^2" });
+    expect(p.rich_text[1].plain_text).toBe("E = mc^2");
+    expect(p.rich_text[2].type).toBe("text");
+    expect(p.rich_text[2].plain_text).toBe(" en física.");
   });
 });

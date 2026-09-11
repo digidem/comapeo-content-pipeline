@@ -21,7 +21,7 @@ export interface NotionRichText {
   };
   href?: string;
   mention?: unknown;
-  equation?: unknown;
+  equation?: { expression: string };
 }
 
 export interface NotionBlock {
@@ -122,6 +122,20 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
           const emojiIdAttr = mention.custom_emoji.id ? ` data-emoji-id="${mention.custom_emoji.id}"` : "";
           return `<img src="${mention.custom_emoji.url}" alt="${emojiName}"${emojiIdAttr} className="emoji" style={{display:"inline",height:"1.2em",width:"auto",verticalAlign:"text-bottom",margin:"0 0.1em"}} />`;
         }
+      }
+
+      if (rt.type === "equation") {
+        const expression =
+          (rt.equation as { expression?: string } | undefined)?.expression ??
+          rt.plain_text ??
+          "";
+        if (!expression) return "";
+        let eqText = `$${expression}$`;
+        if (rt.annotations?.bold) eqText = `**${eqText}**`;
+        if (rt.annotations?.italic) eqText = `*${eqText}*`;
+        if (rt.annotations?.strikethrough) eqText = `~~${eqText}~~`;
+        if (rt.annotations?.underline) eqText = `<u>${eqText}</u>`;
+        return eqText;
       }
 
       let text = rt.plain_text || "";

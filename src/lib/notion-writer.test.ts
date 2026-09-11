@@ -1666,6 +1666,144 @@ describe("writeTranslationToNotion", () => {
     expect(mockClient.updatePage).toHaveBeenCalledTimes(1);
   });
 
+  it("aborts deletion failure rollback if a non-restored block was modified concurrently during recovery", async () => {
+    vi.mocked(mockClient.getPage)
+      .mockResolvedValueOnce({
+        id: "stub-concurrent-block-mod",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage)
+      .mockResolvedValueOnce({
+        id: "stub-concurrent-block-mod",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks)
+      .mockResolvedValueOnce({
+        results: [
+          { id: "old-1", last_edited_time: "2026-09-01T10:00:00Z", type: "paragraph", object: "block" } as unknown as NotionBlock,
+          { id: "old-2", last_edited_time: "2026-09-01T10:00:00Z", type: "paragraph", object: "block" } as unknown as NotionBlock,
+        ],
+        children: {},
+      })
+      .mockResolvedValueOnce({
+        results: [
+          { id: "old-1", last_edited_time: "2026-09-01T10:07:00Z", type: "paragraph", object: "block" } as unknown as NotionBlock, // restored by writer
+          { id: "old-2", last_edited_time: "2026-09-01T10:08:00Z", type: "paragraph", object: "block" } as unknown as NotionBlock, // modified concurrently by human
+          { id: "new-b", last_edited_time: "2026-09-01T10:05:00Z", type: "paragraph", object: "block" } as unknown as NotionBlock,
+        ],
+        children: {},
+      });
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "new-b", last_edited_time: "2026-09-01T10:05:00Z", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "stub-concurrent-block-mod",
+      last_edited_time: "2026-09-01T10:05:00Z",
+      object: "page",
+    } as unknown as NotionPage);
+
+    // old-1 delete succeeds, old-2 delete fails
+    vi.mocked(mockClient.deleteBlock)
+      .mockResolvedValueOnce({ id: "old-1", object: "block", archived: true })
+      .mockRejectedValueOnce(new Error("Delete old-2 failed"));
+
+    await expect(
+      writeTranslationToNotion({
+        client: mockClient,
+        databaseId: "db-123",
+        targetLocale: "pt",
+        targetTitle: "Concurrent Block Mod Test",
+        targetPageId: "stub-concurrent-block-mod",
+        translatedBlocks: mockTranslatedBlocks,
+      }),
+    ).rejects.toThrow("preserved newly appended blocks and properties to prevent destroying concurrent edits");
+
+    expect(mockClient.restoreBlock).toHaveBeenCalledWith("old-1");
+    expect(mockClient.deleteBlock).not.toHaveBeenCalledWith("new-b");
+    expect(mockClient.updatePage).toHaveBeenCalledTimes(1);
+  });
+
+  it("successfully rolls back newly appended blocks when restoreBlock succeeds and no concurrent edits occurred", async () => {
+    vi.mocked(mockClient.getPage)
+      .mockResolvedValueOnce({
+        id: "stub-successful-restore",
+        last_edited_time: "2026-09-01T10:00:00Z",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage)
+      .mockResolvedValueOnce({
+        id: "stub-successful-restore",
+        last_edited_time: "2026-09-01T10:07:00Z", // page time advanced by restoreBlock
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks)
+      .mockResolvedValueOnce({
+        results: [
+          { id: "old-1", last_edited_time: "2026-09-01T10:00:00Z", type: "paragraph", object: "block" } as unknown as NotionBlock,
+          { id: "old-2", last_edited_time: "2026-09-01T10:00:00Z", type: "paragraph", object: "block" } as unknown as NotionBlock,
+        ],
+        children: {},
+      })
+      .mockResolvedValueOnce({
+        results: [
+          { id: "old-1", last_edited_time: "2026-09-01T10:07:00Z", type: "paragraph", object: "block" } as unknown as NotionBlock, // restored by writer
+          { id: "old-2", last_edited_time: "2026-09-01T10:00:00Z", type: "paragraph", object: "block" } as unknown as NotionBlock, // untouched
+          { id: "new-b", last_edited_time: "2026-09-01T10:05:00Z", type: "paragraph", object: "block" } as unknown as NotionBlock,
+        ],
+        children: {},
+      });
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "new-b", last_edited_time: "2026-09-01T10:05:00Z", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "stub-successful-restore",
+      last_edited_time: "2026-09-01T10:05:00Z",
+      object: "page",
+    } as unknown as NotionPage);
+
+    // old-1 delete succeeds, old-2 delete fails
+    vi.mocked(mockClient.deleteBlock)
+      .mockResolvedValueOnce({ id: "old-1", object: "block", archived: true })
+      .mockRejectedValueOnce(new Error("Delete old-2 failed"));
+
+    await expect(
+      writeTranslationToNotion({
+        client: mockClient,
+        databaseId: "db-123",
+        targetLocale: "pt",
+        targetTitle: "Successful Restore Rollback Test",
+        targetPageId: "stub-successful-restore",
+        translatedBlocks: mockTranslatedBlocks,
+      }),
+    ).rejects.toThrow("rolled back newly appended blocks, and restored original page properties");
+
+    expect(mockClient.restoreBlock).toHaveBeenCalledWith("old-1");
+    // new-b should be deleted during rollback because no concurrent edits occurred
+    expect(mockClient.deleteBlock).toHaveBeenCalledWith("new-b");
+    // Properties should be restored
+    expect(mockClient.updatePage).toHaveBeenCalledTimes(2);
+  });
+
   it("aborts deletion failure rollback if getPage fails during rollback verification", async () => {
     vi.mocked(mockClient.getPage)
       .mockResolvedValueOnce({

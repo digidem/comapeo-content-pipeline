@@ -458,12 +458,14 @@ async function verifyPageStateBeforeRollback(
   pageId: string,
   options?: {
     committedLastEditedTime?: string;
+    skipLastEditedTimeCheck?: boolean;
     expectedTitle?: string;
     expectedLocale?: string;
   },
 ): Promise<boolean> {
   const {
     committedLastEditedTime,
+    skipLastEditedTimeCheck = false,
     expectedTitle,
     expectedLocale,
   } = options ?? {};
@@ -478,6 +480,7 @@ async function verifyPageStateBeforeRollback(
     }
 
     if (
+      !skipLastEditedTimeCheck &&
       committedLastEditedTime &&
       currentPage.last_edited_time &&
       currentPage.last_edited_time !== committedLastEditedTime
@@ -731,11 +734,8 @@ export async function writeTranslationToNotion(
         if (typeof client.restoreBlock === "function") {
           for (const id of deletedOldBlockIds) {
             try {
-              const restored = await client.restoreBlock(id);
+              await client.restoreBlock(id);
               restoredBlockIds.push(id);
-              if (typeof restored?.last_edited_time === "string") {
-                committedLastEditedTime = restored.last_edited_time;
-              }
             } catch {
               failedRestoreIds.push(id);
             }
@@ -747,7 +747,8 @@ export async function writeTranslationToNotion(
         // Only delete newly appended replacement blocks if ALL deleted old blocks were restored,
         // avoiding total content loss if restore fails, AND if the page was not concurrently modified.
         if (failedRestoreIds.length === 0) {
-          // Check for concurrent body edits: verify that no unexpected blocks were added or existing blocks removed
+          // Check for concurrent body edits: verify that no unexpected blocks were added,
+          // no existing blocks were removed, and no non-restored blocks were modified concurrently.
           let hasConcurrentBodyEdit = false;
           try {
             const currentBlocks = await client.getPageBlocks(targetPageId);
@@ -759,10 +760,36 @@ export async function writeTranslationToNotion(
               if (currentBlocks.results.length !== expectedIds.size) {
                 hasConcurrentBodyEdit = true;
               } else {
+                const restoredSet = new Set(restoredBlockIds);
+                const priorTimestampMap = new Map<string, string>();
+                for (const b of existingBlocks.results) {
+                  if (b.last_edited_time && typeof b.last_edited_time === "string") {
+                    priorTimestampMap.set(b.id, b.last_edited_time);
+                  }
+                }
+                for (const b of newlyAppended) {
+                  if (b.last_edited_time && typeof b.last_edited_time === "string") {
+                    priorTimestampMap.set(b.id, b.last_edited_time);
+                  }
+                }
+
                 for (const b of currentBlocks.results) {
                   if (!expectedIds.has(b.id)) {
                     hasConcurrentBodyEdit = true;
                     break;
+                  }
+                  // Check if any block not restored by our writer was modified
+                  if (!restoredSet.has(b.id)) {
+                    const priorTime = priorTimestampMap.get(b.id);
+                    if (
+                      priorTime &&
+                      b.last_edited_time &&
+                      typeof b.last_edited_time === "string" &&
+                      b.last_edited_time !== priorTime
+                    ) {
+                      hasConcurrentBodyEdit = true;
+                      break;
+                    }
                   }
                 }
               }
@@ -777,10 +804,16 @@ export async function writeTranslationToNotion(
             );
           }
 
+          // If our writer mutated blocks during recovery (archived and restored), Notion advanced the
+          // page-level last_edited_time for our own operations. In that case, skip comparing the page-level
+          // timestamp against the pre-deletion timestamp (concurrency is verified above via body structure
+          // and non-restored block timestamps). If no blocks were deleted, enforce the page timestamp check.
+          const hadBlockMutations = deletedOldBlockIds.length > 0;
           const isSafeToRollback =
             !hasConcurrentBodyEdit &&
             (await verifyPageStateBeforeRollback(client, targetPageId, {
               committedLastEditedTime,
+              skipLastEditedTimeCheck: hadBlockMutations,
               expectedTitle: targetTitle,
               expectedLocale: localeSelectName,
             }));

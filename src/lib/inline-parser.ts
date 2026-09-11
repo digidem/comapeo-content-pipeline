@@ -22,6 +22,7 @@ interface IntermediateSpan {
   color: NotionRichText["annotations"]["color"];
   url: string | null;
   mention?: unknown;
+  equation?: { expression: string };
 }
 
 const VALID_NOTION_COLORS = new Set<NotionRichText["annotations"]["color"]>([
@@ -52,10 +53,11 @@ const VALID_NOTION_COLORS = new Set<NotionRichText["annotations"]["color"]>([
 export function inlineMarkdownToRichText(
   markdown: string,
   emojiMap?: Map<string, string>,
+  knownEquations?: Set<string>,
 ): NotionRichText[] {
   if (!markdown) return [];
 
-  const rawSpans = parseInlineSegments(markdown, emojiMap);
+  const rawSpans = parseInlineSegments(markdown, emojiMap, knownEquations);
   const result: NotionRichText[] = [];
 
   for (const span of rawSpans) {
@@ -91,6 +93,25 @@ export function inlineMarkdownToRichText(
 }
 
 function toNotionRichTextItem(content: string, meta: IntermediateSpan): NotionRichText {
+  if (meta.equation) {
+    return {
+      type: "equation",
+      equation: {
+        expression: meta.equation.expression,
+      },
+      annotations: {
+        bold: meta.bold,
+        italic: meta.italic,
+        strikethrough: meta.strikethrough,
+        underline: meta.underline,
+        code: meta.code,
+        color: meta.color,
+      },
+      plain_text: meta.equation.expression,
+      href: meta.url ?? undefined,
+    };
+  }
+
   if (meta.mention) {
     return {
       type: "mention",
@@ -198,23 +219,27 @@ function findNextLink(
 /**
  * Top-level inline segment parser that handles links, code, bold, italic, and strikethrough.
  */
-function parseInlineSegments(text: string, emojiMap?: Map<string, string>): IntermediateSpan[] {
+function parseInlineSegments(
+  text: string,
+  emojiMap?: Map<string, string>,
+  knownEquations?: Set<string>,
+): IntermediateSpan[] {
   const spans: IntermediateSpan[] = [];
   let currentIndex = 0;
 
   while (currentIndex < text.length) {
     const linkMatch = findNextLink(text, currentIndex);
     if (!linkMatch) {
-      spans.push(...parseFormatting(text.slice(currentIndex), null, emojiMap));
+      spans.push(...parseFormatting(text.slice(currentIndex), null, emojiMap, knownEquations));
       break;
     }
 
     if (linkMatch.linkStart > currentIndex) {
       const before = text.slice(currentIndex, linkMatch.linkStart);
-      spans.push(...parseFormatting(before, null, emojiMap));
+      spans.push(...parseFormatting(before, null, emojiMap, knownEquations));
     }
 
-    spans.push(...parseFormatting(linkMatch.linkText, linkMatch.linkUrl, emojiMap));
+    spans.push(...parseFormatting(linkMatch.linkText, linkMatch.linkUrl, emojiMap, knownEquations));
     currentIndex = linkMatch.linkEnd;
   }
 
@@ -231,25 +256,20 @@ interface FormatContext {
 }
 
 /**
- * Parses inline formatting (code, bold, italic, strike, underline, color spans) within a non-link or link segment.
+ * Parses inline formatting (code, bold, italic, strike, underline, color spans, equations) within a non-link or link segment.
  */
 function parseFormatting(
   text: string,
   linkUrl: string | null,
   emojiMap?: Map<string, string>,
+  knownEquations?: Set<string>,
   ctx: FormatContext = {},
 ): IntermediateSpan[] {
   const result: IntermediateSpan[] = [];
 
-  const tokenRegex =
-    /(?<html><img\b[^>]*\/?>|<br\s*\/?>)|(?<underline><u>[\s\S]*?<\/u>)|(?<colorSpan><span\s+style=(?:\{\{\s*color:\s*["'](?<jsxColor>[^"']+)["']\s*\}\}|["']\s*color:\s*(?<htmlColor>[^"';]+);?\s*["'])[^>]*>(?<colorSpanInner>[\s\S]*?)<\/span>)|(?<code>`[^`]+`)|(?<boldItalic>(?<![\w*])\*\*\*[^*]+\*\*\*(?![\w*]))|(?<bold>(?<![\w*])\*\*[^*]+\*\*(?![\w*]))|(?<italic>(?<![\w*])\*(?:[^\s*](?:[^*]*?[^\s*])?)\*(?![\w*])|(?<!\w)_(?:[^\s_](?:[^_]*?[^\s_])?)_(?!\w))|(?<strike>~~[^~]+~~)/g;
-
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = tokenRegex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      const plain = text.slice(lastIndex, match.index);
+  const pushPlainText = (plain: string) => {
+    if (!plain) return;
+    if (!knownEquations || knownEquations.size === 0) {
       result.push({
         content: plain,
         bold: !!ctx.bold,
@@ -260,13 +280,81 @@ function parseFormatting(
         color: ctx.color ?? "default",
         url: linkUrl,
       });
+      return;
+    }
+
+    const sortedEquations = Array.from(knownEquations).sort((a, b) => b.length - a.length);
+    let remaining = plain;
+    while (remaining.length > 0) {
+      let earliestIndex = -1;
+      let matchedEq = "";
+      for (const eq of sortedEquations) {
+        const idx = remaining.indexOf(eq);
+        if (idx !== -1 && (earliestIndex === -1 || idx < earliestIndex)) {
+          earliestIndex = idx;
+          matchedEq = eq;
+        }
+      }
+
+      if (earliestIndex === -1) {
+        result.push({
+          content: remaining,
+          bold: !!ctx.bold,
+          italic: !!ctx.italic,
+          code: !!ctx.code,
+          strikethrough: !!ctx.strikethrough,
+          underline: !!ctx.underline,
+          color: ctx.color ?? "default",
+          url: linkUrl,
+        });
+        break;
+      }
+
+      if (earliestIndex > 0) {
+        result.push({
+          content: remaining.slice(0, earliestIndex),
+          bold: !!ctx.bold,
+          italic: !!ctx.italic,
+          code: !!ctx.code,
+          strikethrough: !!ctx.strikethrough,
+          underline: !!ctx.underline,
+          color: ctx.color ?? "default",
+          url: linkUrl,
+        });
+      }
+
+      result.push({
+        content: matchedEq,
+        bold: !!ctx.bold,
+        italic: !!ctx.italic,
+        code: !!ctx.code,
+        strikethrough: !!ctx.strikethrough,
+        underline: !!ctx.underline,
+        color: ctx.color ?? "default",
+        url: linkUrl,
+        equation: { expression: matchedEq },
+      });
+
+      remaining = remaining.slice(earliestIndex + matchedEq.length);
+    }
+  };
+
+  const tokenRegex =
+    /(?<html><img\b[^>]*\/?>|<br\s*\/?>)|(?<underline><u>[\s\S]*?<\/u>)|(?<colorSpan><span\s+style=(?:\{\{\s*color:\s*["'](?<jsxColor>[^"']+)["']\s*\}\}|["']\s*color:\s*(?<htmlColor>[^"';]+);?\s*["'])[^>]*>(?<colorSpanInner>[\s\S]*?)<\/span>)|(?<code>`[^`]+`)|(?<equationDisplay>(?<!\\)\$\$(?<equationDisplayInner>[^$\n]+?)\$\$)|(?<equationInline>(?<![\w\\$])\$(?!\s)(?<equationInlineInner>[^$\n]+?)(?<![\s\\$])\$(?!\d))|(?<boldItalic>(?<![\w*])\*\*\*[^*]+\*\*\*(?![\w*]))|(?<bold>(?<![\w*])\*\*[^*]+\*\*(?![\w*]))|(?<italic>(?<![\w*])\*(?:[^\s*](?:[^*]*?[^\s*])?)\*(?![\w*])|(?<!\w)_(?:[^\s_](?:[^_]*?[^\s_])?)_(?!\w))|(?<strike>~~[^~]+~~)/g;
+
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenRegex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      pushPlainText(text.slice(lastIndex, match.index));
     }
 
     const matchedStr = match[0];
     if (match.groups?.underline) {
       const inner = matchedStr.slice(3, -4);
       result.push(
-        ...parseFormatting(inner, linkUrl, emojiMap, { ...ctx, underline: true }),
+        ...parseFormatting(inner, linkUrl, emojiMap, knownEquations, { ...ctx, underline: true }),
       );
     } else if (match.groups?.colorSpan) {
       const rawColor = (
@@ -283,8 +371,24 @@ function parseFormatting(
         : (ctx.color ?? "default");
       const inner = match.groups.colorSpanInner ?? "";
       result.push(
-        ...parseFormatting(inner, linkUrl, emojiMap, { ...ctx, color: mappedColor }),
+        ...parseFormatting(inner, linkUrl, emojiMap, knownEquations, { ...ctx, color: mappedColor }),
       );
+    } else if (match.groups?.equationDisplay || match.groups?.equationInline) {
+      const rawExpr = match.groups.equationDisplayInner || match.groups.equationInlineInner || "";
+      const expr = rawExpr.trim();
+      if (expr) {
+        result.push({
+          content: expr,
+          bold: !!ctx.bold,
+          italic: !!ctx.italic,
+          code: !!ctx.code,
+          strikethrough: !!ctx.strikethrough,
+          underline: !!ctx.underline,
+          color: ctx.color ?? "default",
+          url: linkUrl,
+          equation: { expression: expr },
+        });
+      }
     } else if (match.groups?.html) {
       if (matchedStr.startsWith("<img")) {
         const isEmoji = /className=["']emoji["']/.test(matchedStr);
@@ -345,7 +449,7 @@ function parseFormatting(
       });
     } else if (match.groups?.boldItalic) {
       result.push(
-        ...parseFormatting(matchedStr.slice(3, -3), linkUrl, emojiMap, {
+        ...parseFormatting(matchedStr.slice(3, -3), linkUrl, emojiMap, knownEquations, {
           ...ctx,
           bold: true,
           italic: true,
@@ -353,21 +457,21 @@ function parseFormatting(
       );
     } else if (match.groups?.bold) {
       result.push(
-        ...parseFormatting(matchedStr.slice(2, -2), linkUrl, emojiMap, {
+        ...parseFormatting(matchedStr.slice(2, -2), linkUrl, emojiMap, knownEquations, {
           ...ctx,
           bold: true,
         }),
       );
     } else if (match.groups?.italic) {
       result.push(
-        ...parseFormatting(matchedStr.slice(1, -1), linkUrl, emojiMap, {
+        ...parseFormatting(matchedStr.slice(1, -1), linkUrl, emojiMap, knownEquations, {
           ...ctx,
           italic: true,
         }),
       );
     } else if (match.groups?.strike) {
       result.push(
-        ...parseFormatting(matchedStr.slice(2, -2), linkUrl, emojiMap, {
+        ...parseFormatting(matchedStr.slice(2, -2), linkUrl, emojiMap, knownEquations, {
           ...ctx,
           strikethrough: true,
         }),
@@ -378,16 +482,7 @@ function parseFormatting(
   }
 
   if (lastIndex < text.length) {
-    result.push({
-      content: text.slice(lastIndex),
-      bold: !!ctx.bold,
-      italic: !!ctx.italic,
-      code: !!ctx.code,
-      strikethrough: !!ctx.strikethrough,
-      underline: !!ctx.underline,
-      color: ctx.color ?? "default",
-      url: linkUrl,
-    });
+    pushPlainText(text.slice(lastIndex));
   }
 
   return result;

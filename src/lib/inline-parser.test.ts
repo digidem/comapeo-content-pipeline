@@ -175,5 +175,56 @@ describe("inlineMarkdownToRichText", () => {
     expect(res[3].text?.content).toBe("parenthesized");
     expect(res[3].annotations.italic).toBe(true);
   });
+
+  it("parses inline $expression$ as a native Notion equation rich text item", () => {
+    const input = "Energy is $E=mc^2$ in physics.";
+    const res = inlineMarkdownToRichText(input);
+    expect(res).toHaveLength(3);
+    expect(res[0].type).toBe("text");
+    expect(res[0].text?.content).toBe("Energy is ");
+    expect(res[1].type).toBe("equation");
+    expect(res[1].equation).toEqual({ expression: "E=mc^2" });
+    expect(res[1].plain_text).toBe("E=mc^2");
+    expect(res[2].type).toBe("text");
+    expect(res[2].text?.content).toBe(" in physics.");
+  });
+
+  it("parses display $$expression$$ as an equation rich text item", () => {
+    const input = "Formula: $$\\sum_{i=1}^n i = \\frac{n(n+1)}{2}$$ holds.";
+    const res = inlineMarkdownToRichText(input);
+    expect(res).toHaveLength(3);
+    expect(res[1].type).toBe("equation");
+    expect(res[1].equation).toEqual({ expression: "\\sum_{i=1}^n i = \\frac{n(n+1)}{2}" });
+  });
+
+  it("does not mistake currency expressions like $50 and $100 for equations", () => {
+    const input = "The price ranges from $50 to $100 total.";
+    const res = inlineMarkdownToRichText(input);
+    expect(res).toHaveLength(1);
+    expect(res[0].type).toBe("text");
+    expect(res[0].text?.content).toBe("The price ranges from $50 to $100 total.");
+  });
+
+  it("restores known equations from knownEquations even if dollar signs were omitted by translation", () => {
+    const input = "La fórmula E=mc^2 representa la energía.";
+    const knownEquations = new Set(["E=mc^2"]);
+    const res = inlineMarkdownToRichText(input, undefined, knownEquations);
+    expect(res).toHaveLength(3);
+    expect(res[0].type).toBe("text");
+    expect(res[0].text?.content).toBe("La fórmula ");
+    expect(res[1].type).toBe("equation");
+    expect(res[1].equation).toEqual({ expression: "E=mc^2" });
+    expect(res[2].type).toBe("text");
+    expect(res[2].text?.content).toBe(" representa la energía.");
+  });
+
+  it("preserves annotations around inline equations like bold **$E=mc^2$**", () => {
+    const input = "Important: **$E=mc^2$** is key.";
+    const res = inlineMarkdownToRichText(input);
+    expect(res).toHaveLength(3);
+    expect(res[1].type).toBe("equation");
+    expect(res[1].equation).toEqual({ expression: "E=mc^2" });
+    expect(res[1].annotations.bold).toBe(true);
+  });
 });
 
