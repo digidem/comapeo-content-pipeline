@@ -46,6 +46,7 @@ interface ToDoContent {
 
 interface CodeContent {
   rich_text: NotionRichText[];
+  caption?: NotionRichText[];
   language?: string;
 }
 
@@ -527,7 +528,12 @@ function convertCode(block: NotionBlock): string {
   const richText = getRichText(block);
   const text = richText.map((rt) => rt.plain_text).join("");
   const language = (block.code as CodeContent)?.language ?? "";
-  return "```" + language + "\n" + text + "\n```";
+  const codeFence = "```" + language + "\n" + text + "\n```";
+  const caption = richTextToMarkdown(getCaption(block)).trim();
+  if (caption) {
+    return codeFence + "\n\n" + caption;
+  }
+  return codeFence;
 }
 
 function convertImage(block: NotionBlock): string {

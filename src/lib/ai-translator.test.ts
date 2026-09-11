@@ -280,4 +280,31 @@ describe("AITranslator", () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(result).toEqual({ b1: "Valid translation" });
   });
+
+  it("validates timeoutMs and batchSize values in constructor", () => {
+    expect(() => new AITranslator({ apiKey: "test-key", timeoutMs: NaN })).toThrow(
+      "timeoutMs must be a positive number",
+    );
+    expect(() => new AITranslator({ apiKey: "test-key", timeoutMs: 0 })).toThrow(
+      "timeoutMs must be a positive number",
+    );
+    expect(() => new AITranslator({ apiKey: "test-key", timeoutMs: -100 })).toThrow(
+      "timeoutMs must be a positive number",
+    );
+    expect(() => new AITranslator({ apiKey: "test-key", batchSize: 0 })).toThrow(
+      "batchSize must be a positive integer",
+    );
+    expect(() => new AITranslator({ apiKey: "test-key", batchSize: -5 })).toThrow(
+      "batchSize must be a positive integer",
+    );
+
+    const validTranslator = new AITranslator({
+      apiKey: "test-key",
+      timeoutMs: 5000,
+      batchSize: 10,
+    });
+
+    expect((validTranslator as unknown as { timeoutMs: number }).timeoutMs).toBe(5000);
+    expect((validTranslator as unknown as { batchSize: number }).batchSize).toBe(10);
+  });
 });

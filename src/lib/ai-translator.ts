@@ -50,6 +50,9 @@ export class AITranslator {
     if (config.batchSize !== undefined && (!Number.isInteger(config.batchSize) || config.batchSize <= 0)) {
       throw new Error(`batchSize must be a positive integer, got ${config.batchSize}`);
     }
+    if (config.timeoutMs !== undefined && (!Number.isFinite(config.timeoutMs) || config.timeoutMs <= 0)) {
+      throw new Error(`timeoutMs must be a positive number, got ${config.timeoutMs}`);
+    }
 
     const env = config.env ?? {};
 
@@ -83,8 +86,18 @@ export class AITranslator {
       env.OPENAI_MODEL ??
       defaultModel;
     this.maxRetries = config.maxRetries ?? 3;
-    this.timeoutMs = config.timeoutMs ?? 180000;
-    this.batchSize = config.batchSize ?? 25;
+    this.timeoutMs =
+      typeof config.timeoutMs === "number" &&
+      Number.isFinite(config.timeoutMs) &&
+      config.timeoutMs > 0
+        ? config.timeoutMs
+        : 180000;
+    this.batchSize =
+      typeof config.batchSize === "number" &&
+      Number.isFinite(config.batchSize) &&
+      config.batchSize > 0
+        ? config.batchSize
+        : 25;
     this.fetchFn = config.fetchFn ?? fetch;
   }
 

@@ -178,12 +178,32 @@ async function main() {
     }
   }
 
+  let timeoutMs: number | undefined;
+  if (args.timeout !== undefined) {
+    const parsed = parseInt(String(args.timeout), 10);
+    if (Number.isNaN(parsed) || !Number.isFinite(parsed) || parsed <= 0) {
+      console.error(`Error: --timeout must be a positive finite duration in milliseconds, got "${args.timeout}".`);
+      process.exit(1);
+    }
+    timeoutMs = parsed;
+  }
+
+  let batchSize: number | undefined;
+  if (args["batch-size"] !== undefined) {
+    const parsed = parseInt(String(args["batch-size"]), 10);
+    if (Number.isNaN(parsed) || !Number.isFinite(parsed) || parsed <= 0) {
+      console.error(`Error: --batch-size must be a positive finite integer, got "${args["batch-size"]}".`);
+      process.exit(1);
+    }
+    batchSize = parsed;
+  }
+
   const translator = new AITranslator({
     apiKey: apiKey || "dummy-key-for-dry-run",
     baseUrl: args["base-url"] || process.env.TRANSLATION_BASE_URL,
     model: args.model || process.env.TRANSLATION_MODEL,
-    batchSize: args["batch-size"] ? parseInt(args["batch-size"], 10) : undefined,
-    timeoutMs: args.timeout ? parseInt(args.timeout, 10) : undefined,
+    batchSize,
+    timeoutMs,
     env: process.env,
   });
 

@@ -1156,6 +1156,71 @@ describe("convertBlocks — recovered blocks", () => {
       "[📄 Foo(https://evil.example)Bar](https://www.notion.so/cp789)",
     );
   });
+
+  it("converts code blocks without caption", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "code-1",
+          type: "code",
+          has_children: false,
+          code: {
+            language: "typescript",
+            rich_text: [
+              {
+                type: "text",
+                text: { content: "const x = 42;" },
+                plain_text: "const x = 42;",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+            caption: [],
+          },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    expect(output).toBe("```typescript\nconst x = 42;\n```\n");
+  });
+
+  it("converts code blocks with caption, serializing the caption below the code fence", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "code-2",
+          type: "code",
+          has_children: false,
+          code: {
+            language: "bash",
+            rich_text: [
+              {
+                type: "text",
+                text: { content: "npm run test" },
+                plain_text: "npm run test",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+            caption: [
+              {
+                type: "text",
+                text: { content: "Run unit tests" },
+                plain_text: "Run unit tests",
+                annotations: { bold: true, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+          },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    expect(output).toBe("```bash\nnpm run test\n```\n\n**Run unit tests**\n");
+  });
 });
 
 // ── Golden fixture tests ──
