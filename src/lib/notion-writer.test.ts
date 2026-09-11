@@ -104,7 +104,7 @@ describe("prepareBlocksForNotion", () => {
     expect(p.paragraph.rich_text[0].href).toBeUndefined();
   });
 
-  it("omits Notion S3 file image blocks without rehosted asset metadata to prevent expired links", () => {
+  it("replaces Notion S3 file image blocks without rehosted asset metadata with visible placeholder to prevent content loss", () => {
     const rawBlocks: NotionBlockList = {
       object: "list",
       results: [
@@ -126,7 +126,10 @@ describe("prepareBlocksForNotion", () => {
     };
 
     const prepared = prepareBlocksForNotion(rawBlocks);
-    expect(prepared).toHaveLength(0);
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0].type).toBe("paragraph");
+    const p = prepared[0].paragraph as { rich_text: Array<{ text: { content: string } }> };
+    expect(p.rich_text[0].text.content).toBe("[Image unavailable: Legenda]");
   });
 
   it("preserves external image blocks with permanent public URLs", () => {
@@ -540,7 +543,7 @@ describe("prepareBlocksForNotion", () => {
     });
   });
 
-  it("omits image block with inline data URI when no matching rehosted asset is found", () => {
+  it("preserves visible placeholder paragraph for image with inline data URI when no matching rehosted asset is found", () => {
     const rawBlocks: NotionBlockList = {
       object: "list",
       results: [
@@ -553,6 +556,7 @@ describe("prepareBlocksForNotion", () => {
             file: {
               url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
             },
+            caption: [{ plain_text: "Unmatched chart" }],
           },
         } as unknown as NotionBlock,
         {
@@ -569,9 +573,12 @@ describe("prepareBlocksForNotion", () => {
       section: "60-Exchanging Observations",
     });
 
-    // The data URI image should be omitted so Notion does not reject the payload
-    expect(prepared).toHaveLength(1);
+    // The data URI image should be replaced with a visible placeholder rather than deleted or rejected
+    expect(prepared).toHaveLength(2);
     expect(prepared[0].type).toBe("paragraph");
+    const p0 = prepared[0].paragraph as { rich_text: Array<{ text: { content: string } }> };
+    expect(p0.rich_text[0].text.content).toBe("[Image unavailable: Unmatched chart]");
+    expect(prepared[1].type).toBe("paragraph");
   });
 
   it("embeds table_row children inside table blocks", () => {

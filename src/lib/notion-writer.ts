@@ -54,6 +54,40 @@ const SKIP_BLOCK_TYPES = new Set([
   "link_preview",
 ]);
 
+function createUnavailableImagePlaceholder(caption?: unknown[]): Record<string, unknown> {
+  const altText =
+    Array.isArray(caption) && caption.length > 0
+      ? (caption as Array<{ plain_text?: string; text?: { content?: string } }>)
+          .map((c) => c.plain_text || c.text?.content || "")
+          .join("")
+          .trim()
+      : "";
+
+  const content = altText ? `[Image unavailable: ${altText}]` : "[Image unavailable]";
+
+  return {
+    object: "block",
+    type: "paragraph",
+    paragraph: {
+      rich_text: [
+        {
+          type: "text",
+          text: { content },
+          annotations: {
+            bold: true,
+            italic: false,
+            strikethrough: false,
+            underline: false,
+            code: false,
+            color: "default",
+          },
+          plain_text: content,
+        },
+      ],
+    },
+  };
+}
+
 /**
  * Prepares a NotionBlockList for insertion via Notion API (appendBlockChildren / createPage).
  *
@@ -164,14 +198,14 @@ export function prepareBlocksForNotion(
             : `${baseUrl}/docs/assets/${filename}`;
         } else if (isTemporaryS3) {
           console.warn(
-            `[notion-writer] Image at ${rawUrl} was not found in rehosted assets; omitting external block to avoid expired link.`,
+            `[notion-writer] Image at ${rawUrl} was not found in rehosted assets; preserving visible placeholder block matching canonical markdown.`,
           );
-          return null;
+          return createUnavailableImagePlaceholder(img.caption);
         } else if (rawUrl.startsWith("data:")) {
           console.warn(
-            `[notion-writer] Image with inline data URI was not found in rehosted assets; omitting external block because Notion rejects data: URLs.`,
+            `[notion-writer] Image with inline data URI was not found in rehosted assets; preserving visible placeholder block matching canonical markdown.`,
           );
-          return null;
+          return createUnavailableImagePlaceholder(img.caption);
         } else {
           externalUrl = rawUrl;
         }
@@ -259,11 +293,12 @@ export function prepareBlocksForNotion(
       }
 
       // If the image block could not be converted to a valid external URL (e.g. data URI without rehosted asset,
-      // expired S3 link, or empty URL), omit it so page creation/append does not fail Notion API validation.
+      // expired S3 link, or empty URL), emit a visible placeholder matching canonical markdown so page
+      // creation/append does not fail Notion API validation and does not silently delete source content.
       console.warn(
-        `[notion-writer] Omitting image block [${block.id}] because it could not be resolved to a valid external URL: ${rawUrl || "(none)"}`,
+        `[notion-writer] Replacing image block [${block.id}] with visible placeholder because it could not be resolved to a valid external URL: ${rawUrl || "(none)"}`,
       );
-      return null;
+      return createUnavailableImagePlaceholder(img.caption);
     }
 
     // Handle Table Blocks: embed table_row children from childrenMap
