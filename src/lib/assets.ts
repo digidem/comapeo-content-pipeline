@@ -80,6 +80,9 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * errors. HTTP 4xx responses are NOT retried. Returns `null` if all retries
  * are exhausted.
  */
+export const MAX_DATA_URI_BYTES = 10 * 1024 * 1024; // 10 MB limit for embedded data URIs
+const MAX_DATA_URI_ENCODED_CHARS = Math.ceil((MAX_DATA_URI_BYTES * 4) / 3) + 64;
+
 export async function rehostAsset(
 	url: string,
 ): Promise<{ data: Uint8Array; contentType: string; ext: string } | null> {
@@ -95,14 +98,34 @@ export async function rehostAsset(
 
 		let data: Uint8Array;
 		if (base64) {
+			if (payload.length > MAX_DATA_URI_ENCODED_CHARS) {
+				throw new Error(
+					`Data URI payload (${payload.length} chars) exceeds maximum allowed size of ${MAX_DATA_URI_BYTES} bytes`,
+				);
+			}
 			// Decode base64 in a runtime-agnostic way
 			const binaryStr = atob(payload);
+			if (binaryStr.length > MAX_DATA_URI_BYTES) {
+				throw new Error(
+					`Decoded data URI (${binaryStr.length} bytes) exceeds maximum allowed size of ${MAX_DATA_URI_BYTES} bytes`,
+				);
+			}
 			data = new Uint8Array(binaryStr.length);
 			for (let i = 0; i < binaryStr.length; i++) {
 				data[i] = binaryStr.charCodeAt(i);
 			}
 		} else {
+			if (payload.length > MAX_DATA_URI_BYTES * 3) {
+				throw new Error(
+					`Data URI payload exceeds maximum allowed size of ${MAX_DATA_URI_BYTES} bytes`,
+				);
+			}
 			data = new TextEncoder().encode(decodeURIComponent(payload));
+			if (data.byteLength > MAX_DATA_URI_BYTES) {
+				throw new Error(
+					`Decoded data URI (${data.byteLength} bytes) exceeds maximum allowed size of ${MAX_DATA_URI_BYTES} bytes`,
+				);
+			}
 		}
 
 		const ext = MIME_TO_EXT[contentType] ?? ".png";

@@ -6,7 +6,7 @@ import {
   isDeadPage,
   rankTranslationCandidates,
 } from "./notion-writer.js";
-import type { NotionBlockList } from "./notion-converter.js";
+import { convertBlocks, type NotionBlockList } from "./notion-converter.js";
 import type { NotionBlock, NotionClient, NotionPage } from "./notion-client.js";
 import { ClassifiedError, ErrorCategory } from "./errors.js";
 import { NOTION_PROPERTIES } from "./notion-properties.js";
@@ -249,12 +249,23 @@ describe("prepareBlocksForNotion", () => {
             type: "text",
             text: {
               content: "Photo by Jane",
+              link: { url: "https://unsplash.com/@jane" },
+            },
+          },
+          {
+            type: "text",
+            text: {
+              content: " [link]",
               link: { url: "https://example.com/image-target" },
             },
+            plain_text: " [link]",
           },
         ],
       },
     });
+
+    const roundTripMd = convertBlocks({ object: "list", results: [prepared[0] as NotionBlock] });
+    expect(roundTripMd).toBe("[![Photo by Jane](https://example.com/images/diagram.png)](https://example.com/image-target)\n");
   });
 
   it("preserves clickable links on image blocks from block.image.external.link", () => {

@@ -6,7 +6,7 @@
  */
 
 import type { NotionBlock, NotionClient, NotionPage } from "./notion-client.js";
-import { extractCaptionLink, type NotionBlockList, type NotionRichText } from "./notion-converter.js";
+import type { NotionBlockList } from "./notion-converter.js";
 import { NOTION_PROPERTIES, DEAD_STATUSES, normalizeLocale } from "./notion-properties.js";
 import { mapStatus } from "./status.js";
 import { isStubBody } from "./stub-body.js";
@@ -189,12 +189,38 @@ export function prepareBlocksForNotion(
         // It rejects unknown properties such as `image.link` or `image.external.link`.
         // To preserve clickable image destinations across write-back without failing Notion schema validation,
         // attach the link destination to caption rich text.
-        // If the caption already contains a different hyperlink or no link, ensure the image destination
-        // (sanitizedLink) is preserved on the caption so it is not lost or replaced by other URLs.
+        // If the caption already contains independent hyperlinks (e.g. photographer attribution),
+        // preserve them and append a dedicated round-trip representation for the image destination instead of overwriting them.
         if (sanitizedLink) {
-          const existingCaptionLink = extractCaptionLink(captionRichText as unknown as NotionRichText[]);
-          if (existingCaptionLink !== sanitizedLink) {
-            if (captionRichText.length > 0) {
+          const alreadyHasImageLink = captionRichText.some(
+            (rt) =>
+              ((rt.text as Record<string, unknown> | undefined)?.link as { url?: string } | undefined)?.url === sanitizedLink ||
+              rt.href === sanitizedLink,
+          );
+
+          if (!alreadyHasImageLink) {
+            const hasIndependentLink = captionRichText.some((rt) => {
+              const url =
+                ((rt.text as Record<string, unknown> | undefined)?.link as { url?: string } | undefined)?.url ??
+                (rt.href as string | undefined);
+              return Boolean(url && url !== sanitizedLink);
+            });
+
+            if (hasIndependentLink) {
+              // Preserve independent caption links (e.g. attributions); append dedicated round-trip representation
+              captionRichText = [
+                ...captionRichText,
+                {
+                  type: "text",
+                  text: {
+                    content: " [link]",
+                    link: { url: sanitizedLink },
+                  },
+                  plain_text: " [link]",
+                },
+              ];
+            } else if (captionRichText.length > 0) {
+              // No independent links; attach destination link to existing caption text
               captionRichText = captionRichText.map((rt) => {
                 const cloned = { ...rt };
                 const textObj = { ...((cloned.text as Record<string, unknown>) || { content: "" }) };
@@ -204,6 +230,7 @@ export function prepareBlocksForNotion(
                 return cloned;
               });
             } else {
+              // Empty caption; create default image link rich text item
               captionRichText = [
                 {
                   type: "text",

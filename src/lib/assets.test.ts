@@ -199,6 +199,19 @@ describe("rehostAsset", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("decodes valid base64 data URI directly without HTTP fetch", async () => {
+		const dataUri = "data:image/png;base64,iVBORw0KGgo=";
+		const result = await rehostAsset(dataUri);
+		expect(result!.contentType).toBe("image/png");
+		expect(result!.ext).toBe(".png");
+		expect(result!.data.byteLength).toBeGreaterThan(0);
+	});
+
+	it("rejects oversized data URIs before decoding to prevent memory exhaustion", async () => {
+		const oversizedBase64 = "data:image/png;base64," + "A".repeat(15 * 1024 * 1024);
+		await expect(rehostAsset(oversizedBase64)).rejects.toThrow(/exceeds maximum allowed size/);
+	});
+
 	it("downloads asset and maps content type to extension", async () => {
 		const pngData = new Uint8Array([137, 80, 78, 71]);
 		mockFetch.mockResolvedValueOnce({

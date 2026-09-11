@@ -576,31 +576,60 @@ function convertImage(block: NotionBlock): string {
     linkUrl = extractCaptionLink(captionRichText);
   }
 
+  const filteredCaption = captionRichText.filter((rt) => !isDedicatedImageLink(rt));
+
   if (linkUrl) {
     // Use plain text for alt (no link formatting) when image itself is linked
-    const plainAlt = captionRichText.map((rt) => rt.plain_text || "").join("") || "image";
+    const plainAlt =
+      filteredCaption
+        .map((rt) => rt.plain_text || rt.text?.content || "")
+        .join("")
+        .trim() || "image";
     return `[![${plainAlt}](${imgUrl})](${linkUrl})`;
   }
 
   // Normal image — use plain text for alt (formatting doesn't render in HTML alt attributes)
-  const alt = captionRichText.map((rt) => rt.plain_text || "").join("") || "image";
+  const alt =
+    filteredCaption
+      .map((rt) => rt.plain_text || rt.text?.content || "")
+      .join("")
+      .trim() || "image";
   return `![${alt}](${imgUrl})`;
 }
 
-/** Extract the first hyperlink URL from caption rich text, if any. */
+/**
+ * Checks if a rich text item is a dedicated round-trip representation of an image click destination.
+ */
+export function isDedicatedImageLink(rt: NotionRichText): boolean {
+  return (
+    Boolean(rt.text?.link?.url || rt.href) &&
+    (rt.text?.content === " [link]" ||
+      rt.plain_text === " [link]" ||
+      rt.text?.content === " [image link]" ||
+      rt.plain_text === " [image link]")
+  );
+}
+
+/** Extract the image hyperlink URL from caption rich text, prioritizing dedicated round-trip items. */
 export function extractCaptionLink(caption: NotionRichText[]): string | null {
   if (!caption || caption.length === 0) return null;
 
+  // 1. Check if there is a dedicated round-trip image link item
+  const dedicated = caption.find(isDedicatedImageLink);
+  if (dedicated) {
+    return dedicated.text?.link?.url ?? dedicated.href ?? null;
+  }
+
   for (const rt of caption) {
-    // 1. Check dedicated link property on text items
+    // 2. Check dedicated link property on text items
     if (rt.text?.link?.url) {
       return rt.text.link.url;
     }
-    // 2. Check href property
+    // 3. Check href property
     if (rt.href) {
       return rt.href;
     }
-    // 3. Check plain-text for URLs (old pipeline regex fallback)
+    // 4. Check plain-text for URLs (old pipeline regex fallback)
     const plainText = rt.plain_text || "";
     const urlMatch = plainText.match(/https?:\/\/[^\s<>"]+/);
     if (urlMatch) {
