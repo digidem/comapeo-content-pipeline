@@ -191,9 +191,7 @@ export function applyTranslatedBlocks(
           const key = `${block.id}:cell:${index}`;
           const trans = translations[key];
           if (trans !== undefined) {
-            // Escape literal unescaped pipes to prevent corrupting Markdown table columns
-            const safeTrans = trans.replace(/(?<!\\)\|/g, "\\|");
-            row.cells![index] = inlineMarkdownToRichText(safeTrans, emojiMap);
+            row.cells![index] = inlineMarkdownToRichText(trans, emojiMap);
           }
         });
       }

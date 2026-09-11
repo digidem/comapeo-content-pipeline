@@ -456,8 +456,20 @@ export function rankTranslationCandidates(
 async function verifyPageStateBeforeRollback(
   client: NotionClient,
   pageId: string,
-  committedLastEditedTime?: string,
+  options?: {
+    committedLastEditedTime?: string;
+    skipLastEditedTimeCheck?: boolean;
+    expectedTitle?: string;
+    expectedLocale?: string;
+  },
 ): Promise<boolean> {
+  const {
+    committedLastEditedTime,
+    skipLastEditedTimeCheck = false,
+    expectedTitle,
+    expectedLocale,
+  } = options ?? {};
+
   try {
     const currentPage = await client.getPage(pageId);
     if (!currentPage) {
@@ -467,7 +479,13 @@ async function verifyPageStateBeforeRollback(
       return false;
     }
 
+    // If block operations (archive/restore) were performed during error recovery,
+    // Notion advances the page's last_edited_time for our own mutations. In that case,
+    // skip comparing last_edited_time against the pre-deletion timestamp to avoid mistaking
+    // our own mutations for concurrent human edits. Otherwise, verify that last_edited_time
+    // has not changed.
     if (
+      !skipLastEditedTimeCheck &&
       committedLastEditedTime &&
       currentPage.last_edited_time &&
       currentPage.last_edited_time !== committedLastEditedTime
@@ -491,6 +509,30 @@ async function verifyPageStateBeforeRollback(
         `[notion-writer] Rollback aborted on ${pageId}: publish status changed to "${currentPublishStatus}" after translation write. Preserving concurrent edits.`,
       );
       return false;
+    }
+
+    if (expectedTitle !== undefined) {
+      const currentTitle = getPageTitle(currentPage);
+      if (currentTitle && currentTitle !== expectedTitle) {
+        console.warn(
+          `[notion-writer] Rollback aborted on ${pageId}: page title was modified concurrently (expected "${expectedTitle}", current "${currentTitle}"). Preserving concurrent edits.`,
+        );
+        return false;
+      }
+    }
+
+    if (expectedLocale !== undefined) {
+      const langProp = (
+        currentPage.properties?.[NOTION_PROPERTIES.LANGUAGE] as {
+          select?: { name?: string };
+        }
+      )?.select?.name;
+      if (langProp && langProp !== expectedLocale) {
+        console.warn(
+          `[notion-writer] Rollback aborted on ${pageId}: page language was modified concurrently (expected "${expectedLocale}", current "${langProp}"). Preserving concurrent edits.`,
+        );
+        return false;
+      }
     }
 
     return true;
@@ -710,10 +752,16 @@ export async function writeTranslationToNotion(
         // Only delete newly appended replacement blocks if ALL deleted old blocks were restored,
         // avoiding total content loss if restore fails, AND if the page was not concurrently modified.
         if (failedRestoreIds.length === 0) {
+          const hadBlockMutations = deletedOldBlockIds.length > 0;
           const isSafeToRollback = await verifyPageStateBeforeRollback(
             client,
             targetPageId,
-            committedLastEditedTime,
+            {
+              committedLastEditedTime,
+              skipLastEditedTimeCheck: hadBlockMutations,
+              expectedTitle: targetTitle,
+              expectedLocale: localeSelectName,
+            },
           );
           if (isSafeToRollback) {
             for (const b of newlyAppended) {
@@ -764,7 +812,11 @@ export async function writeTranslationToNotion(
         const isSafeToRollback = await verifyPageStateBeforeRollback(
           client,
           targetPageId,
-          committedLastEditedTime,
+          {
+            committedLastEditedTime,
+            expectedTitle: targetTitle,
+            expectedLocale: localeSelectName,
+          },
         );
         if (!isSafeToRollback) {
           return;
@@ -1066,7 +1118,11 @@ export async function writeTranslationToNotion(
       const isSafeToRollback = await verifyPageStateBeforeRollback(
         client,
         newPage.id,
-        committedLastEditedTime,
+        {
+          committedLastEditedTime,
+          expectedTitle: targetTitle,
+          expectedLocale: localeSelectName,
+        },
       );
       if (!isSafeToRollback) {
         return;

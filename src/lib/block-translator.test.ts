@@ -516,7 +516,7 @@ describe("applyTranslatedBlocks", () => {
     expect(cp.title).toBe("Novo Título");
   });
 
-  it("escapes unescaped pipes in table cells to protect markdown table structure", () => {
+  it("preserves literal pipes in Notion cell rich text while convertTable escapes them in markdown", () => {
     const blockList: NotionBlockList = {
       object: "list",
       results: [
@@ -525,7 +525,7 @@ describe("applyTranslatedBlocks", () => {
           id: "tbl",
           type: "table",
           has_children: true,
-          table: {},
+          table: { table_width: 1, has_column_header: false, has_row_header: false },
         },
       ],
       children: {
@@ -549,7 +549,12 @@ describe("applyTranslatedBlocks", () => {
       "row1:cell:0": "Option A | Option B",
     });
 
+    // Notion rich text preserves literal pipe without backslash leakage
     const row = updated.children!.tbl[0].table_row as { cells: Array<Array<{ plain_text: string }>> };
-    expect(row.cells[0][0].plain_text).toBe("Option A \\| Option B");
+    expect(row.cells[0][0].plain_text).toBe("Option A | Option B");
+
+    // Markdown conversion correctly escapes the pipe to prevent column misalignment
+    const md = convertBlocks(updated);
+    expect(md).toContain("| Option A \\| Option B |");
   });
 });
