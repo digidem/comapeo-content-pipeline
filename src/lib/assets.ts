@@ -100,9 +100,19 @@ export function estimateDecodedUriBytes(payload: string): number {
 		} else if (ch <= 0x7ff) {
 			bytes += 2;
 		} else if (ch >= 0xd800 && ch <= 0xdbff) {
-			bytes += 4;
-			i++; // skip low surrogate
+			if (i + 1 < len) {
+				const next = payload.charCodeAt(i + 1);
+				if (next >= 0xdc00 && next <= 0xdfff) {
+					bytes += 4;
+					i++; // consume valid low surrogate
+					if (bytes > MAX_DATA_URI_BYTES) return bytes;
+					continue;
+				}
+			}
+			// Unpaired high surrogate encodes to replacement char U+FFFD (3 bytes in UTF-8)
+			bytes += 3;
 		} else {
+			// BMP character or unpaired low surrogate (both encode to 3 bytes in UTF-8)
 			bytes += 3;
 		}
 		if (bytes > MAX_DATA_URI_BYTES) {

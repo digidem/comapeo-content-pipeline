@@ -211,29 +211,31 @@ describe("manifest docusaurus_path contract", () => {
     };
     writeFileSync(manifestPath, JSON.stringify(initialManifest, null, 2), "utf8");
 
-    // Attempt to update manifest with automated translation without supplying replacedPageId
-    updateManifestWithDoc(
-      manifestPath,
-      {
-        page_id: "es-auto-new",
-        title: "Guía de Configuración (Auto)",
-        locale: "es",
-        section: "setup",
-        slug: "setup-guide",
-        docusaurus_path: "/setup-guide",
-        docusaurus_id: "setup/setup-guide",
-        r2_doc_key: "docs/es/setup/setup-guide.md",
-        r2_metadata_key: "metadata/es-auto-new.json",
-        source_url: "https://notion.so/es-auto-new",
-        notion_last_edited_time: new Date().toISOString(),
-        content_hash: "hash-auto",
-        status: "draft",
-        language_source: "automated",
-      },
-      "en-1",
-      undefined, // No replacedPageId supplied
-      { inputDir: testDir },
-    );
+    // Attempt to update manifest with automated translation without supplying replacedPageId must throw
+    expect(() =>
+      updateManifestWithDoc(
+        manifestPath,
+        {
+          page_id: "es-auto-new",
+          title: "Guía de Configuración (Auto)",
+          locale: "es",
+          section: "setup",
+          slug: "setup-guide",
+          docusaurus_path: "/setup-guide",
+          docusaurus_id: "setup/setup-guide",
+          r2_doc_key: "docs/es/setup/setup-guide.md",
+          r2_metadata_key: "metadata/es-auto-new.json",
+          source_url: "https://notion.so/es-auto-new",
+          notion_last_edited_time: new Date().toISOString(),
+          content_hash: "hash-auto",
+          status: "draft",
+          language_source: "automated",
+        },
+        "en-1",
+        undefined, // No replacedPageId supplied
+        { inputDir: testDir },
+      ),
+    ).toThrow(/Cannot replace explicit human translation/);
 
     const updated = JSON.parse(readFileSync(manifestPath, "utf8"));
     // Explicit human translation must NOT be overwritten
@@ -311,6 +313,71 @@ describe("manifest docusaurus_path contract", () => {
 
     const oldHuman = updated.docs.find((d: { page_id: string }) => d.page_id === "es-human-1");
     expect(oldHuman).toBeUndefined();
+  });
+
+  it("permits replacing explicit human translation with synthetic ID when exact synthetic ID is supplied as replacedPageId", () => {
+    mkdirSync(testDir, { recursive: true });
+    const manifestPath = join(testDir, "manifest.json");
+
+    const initialManifest = {
+      schema_version: "1.0",
+      generated_at: new Date().toISOString(),
+      source: { type: "notion", database_id: "db", data_source_id: "ds" },
+      docs: [
+        {
+          page_id: "en-1",
+          title: "Setup Guide",
+          locale: "en",
+          section: "setup",
+          slug: "setup-guide",
+          docusaurus_path: "/setup-guide",
+          status: "published",
+        },
+        {
+          page_id: "en-1-es", // Synthetic page ID
+          title: "Guía de Configuración (Sintética)",
+          locale: "es",
+          section: "setup",
+          slug: "setup-guide",
+          docusaurus_path: "/setup-guide",
+          status: "published",
+          language_source: "explicit",
+        },
+      ],
+      sidebars: {},
+    };
+    writeFileSync(manifestPath, JSON.stringify(initialManifest, null, 2), "utf8");
+
+    updateManifestWithDoc(
+      manifestPath,
+      {
+        page_id: "es-new-page",
+        title: "Guía de Configuración (Nueva)",
+        locale: "es",
+        section: "setup",
+        slug: "setup-guide",
+        docusaurus_path: "/setup-guide",
+        docusaurus_id: "setup/setup-guide",
+        r2_doc_key: "docs/es/setup/setup-guide.md",
+        r2_metadata_key: "metadata/es-new-page.json",
+        source_url: "https://notion.so/es-new-page",
+        notion_last_edited_time: new Date().toISOString(),
+        content_hash: "hash-new",
+        status: "draft",
+        language_source: "automated",
+      },
+      "en-1",
+      "en-1-es", // Exact synthetic page ID passed via target.replaceablePageId
+      { inputDir: testDir },
+    );
+
+    const updated = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const replaced = updated.docs.find((d: { page_id: string }) => d.page_id === "es-new-page");
+    expect(replaced).toBeDefined();
+    expect(replaced.title).toBe("Guía de Configuración (Nueva)");
+
+    const oldSynth = updated.docs.find((d: { page_id: string }) => d.page_id === "en-1-es");
+    expect(oldSynth).toBeUndefined();
   });
 });
 

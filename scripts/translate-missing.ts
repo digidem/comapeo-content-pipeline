@@ -37,6 +37,7 @@ interface TranslationTarget {
   locale: "pt" | "es";
   enPageId: string;
   targetPageId?: string;
+  replaceablePageId?: string;
   needsTranslation: boolean;
 }
 
@@ -173,6 +174,7 @@ async function main() {
           locale: loc,
           enPageId: enMember.page_id,
           targetPageId: stubPageId,
+          replaceablePageId: rawStubId,
           needsTranslation: true,
         });
       }
@@ -458,7 +460,7 @@ async function main() {
         input,
         buildManifestDoc(targetPageId, result.translatedMetadata, locale),
         enPageId,
-        target.targetPageId,
+        target.replaceablePageId ?? target.targetPageId,
         {
           inputDir,
           includeDrafts,
@@ -759,10 +761,9 @@ export function updateManifestWithDoc(
             d.docusaurus_path === doc.docusaurus_path)),
     );
     if (explicitConflict) {
-      console.warn(
-        `[manifest] Cannot replace explicit human translation [${explicitConflict.page_id}] for "${doc.slug}" (${doc.locale}) with automated translation without exact page ID. Skipping manifest update.`,
+      throw new Error(
+        `[manifest] Cannot replace explicit human translation [${explicitConflict.page_id}] for "${doc.slug}" (${doc.locale}) with automated translation without exact page ID or --force.`,
       );
-      return;
     }
   }
 

@@ -6,6 +6,7 @@ import {
 	assetR2Key,
 	stripUrlSignature,
 	rehostMarkdownAssets,
+	estimateDecodedUriBytes,
 } from "./assets.js";
 
 // ── extractAssetUrls ──
@@ -452,5 +453,43 @@ describe("rehostMarkdownAssets", () => {
 	it("returns original text when assets list is empty", () => {
 		const md = "![img](https://example.com/img.png)";
 		expect(rehostMarkdownAssets(md, [])).toBe(md);
+	});
+});
+
+// ── estimateDecodedUriBytes ──
+
+describe("estimateDecodedUriBytes", () => {
+	it("accurately estimates ASCII and multi-byte UTF-8 characters", () => {
+		expect(estimateDecodedUriBytes("hello")).toBe(5);
+		expect(estimateDecodedUriBytes("éà")).toBe(4);
+		expect(estimateDecodedUriBytes("中")).toBe(3);
+	});
+
+	it("accurately estimates valid surrogate pairs as 4 bytes", () => {
+		const emoji = "😀"; // U+1F600: \uD83D\uDE00
+		expect(estimateDecodedUriBytes(emoji)).toBe(4);
+		expect(new TextEncoder().encode(emoji).byteLength).toBe(4);
+	});
+
+	it("does not undercount unpaired high surrogates followed by another high surrogate", () => {
+		// Two high surrogates in a row: neither is followed by a valid low surrogate.
+		// TextEncoder encodes each as U+FFFD (3 bytes each = 6 bytes).
+		const malformed = "\uD800\uD800";
+		expect(estimateDecodedUriBytes(malformed)).toBe(6);
+		expect(new TextEncoder().encode(malformed).byteLength).toBe(6);
+	});
+
+	it("accurately accounts for single unpaired high surrogate and low surrogate", () => {
+		expect(estimateDecodedUriBytes("\uD800")).toBe(3);
+		expect(new TextEncoder().encode("\uD800").byteLength).toBe(3);
+
+		expect(estimateDecodedUriBytes("\uDC00")).toBe(3);
+		expect(new TextEncoder().encode("\uDC00").byteLength).toBe(3);
+	});
+
+	it("accurately accounts for high surrogate followed by ASCII character", () => {
+		const str = "\uD800a";
+		expect(estimateDecodedUriBytes(str)).toBe(4); // 3 (U+FFFD) + 1 ('a')
+		expect(new TextEncoder().encode(str).byteLength).toBe(4);
 	});
 });
