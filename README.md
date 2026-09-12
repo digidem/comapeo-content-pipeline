@@ -89,23 +89,24 @@ everything:
 | DeepSeek (production) | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` | `deepseek-chat` |
 | Poolside (testing) | `POOLSIDE_API_KEY` | `https://inference.poolside.ai/v1` | `poolside/laguna-s-2.1` |
 
-Within each group the first set variable wins:
+Within each group, provider settings resolve atomically so that keys from one provider are never transmitted to another provider's endpoint:
 
-- API key: `TRANSLATION_API_KEY` > `OPENAI_API_KEY` > `DEEPSEEK_API_KEY` > `POOLSIDE_API_KEY`
-- Base URL: `TRANSLATION_BASE_URL` > `OPENAI_BASE_URL` > `DEEPSEEK_BASE_URL` > provider default
-- Model: `TRANSLATION_MODEL` > `OPENAI_MODEL` > `DEEPSEEK_MODEL` > provider default
+- **API key precedence**: `TRANSLATION_API_KEY` > `OPENAI_API_KEY` > `DEEPSEEK_API_KEY` > `POOLSIDE_API_KEY`
+- **Atomic provider scoping**:
+  - When `OPENAI_API_KEY` is selected: `OPENAI_BASE_URL` (default: `https://api.openai.com/v1`) and `OPENAI_MODEL` (default: `gpt-4o`) apply; `DEEPSEEK_*` settings are ignored.
+  - When `DEEPSEEK_API_KEY` is selected: `DEEPSEEK_BASE_URL` (default: `https://api.deepseek.com/v1`) and `DEEPSEEK_MODEL` (default: `deepseek-chat`) apply; `OPENAI_*` settings are ignored.
+  - When `POOLSIDE_API_KEY` is selected: `https://inference.poolside.ai/v1` and `poolside/laguna-s-2.1` apply.
+- **Generic overrides**: CLI flags (`--base-url`, `--model`, `--api-key`) and generic `TRANSLATION_*` variables (`TRANSLATION_BASE_URL`, `TRANSLATION_MODEL`) override provider defaults across all providers.
 
 Detection rules:
 
-- A key with the `sky_` prefix, or a key equal to `POOLSIDE_API_KEY` (when no
-  `OPENAI_*`/`DEEPSEEK_*`/`TRANSLATION_*` base URL is set), selects Poolside.
-- A key equal to `DEEPSEEK_API_KEY`, a `DEEPSEEK_BASE_URL`, or any configured
-  base URL containing `deepseek` selects DeepSeek.
+- A key with the `sky_` prefix, or matching `POOLSIDE_API_KEY`, selects Poolside.
+- A key matching `DEEPSEEK_API_KEY`, or an explicit base URL containing `deepseek`, selects DeepSeek.
 - Anything else defaults to OpenAI.
 
 `TRANSLATION_*` variables are generic overrides that work with any provider;
 `src/lib/` never reads `process.env` directly — callers pass an `env` record to
-`AITranslator`, so the same code runs on Node/Bun and Cloudflare Workers.
+`AITranslator`, preserving runtime agnosticism.
 
 ### Flags
 

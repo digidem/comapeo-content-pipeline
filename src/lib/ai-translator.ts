@@ -51,6 +51,10 @@ export class AITranslator {
   private batchSize: number;
   private fetchFn: typeof fetch;
 
+  get hasApiKey(): boolean {
+    return Boolean(this.apiKey);
+  }
+
   constructor(config: AITranslatorConfig = {}) {
     if (config.batchSize !== undefined && (!Number.isInteger(config.batchSize) || config.batchSize <= 0)) {
       throw new Error(`batchSize must be a positive integer, got ${config.batchSize}`);
@@ -116,14 +120,14 @@ export class AITranslator {
           ? (deepseekBaseUrl ?? "https://api.deepseek.com/v1")
           : isOpenai
             ? (openaiBaseUrl ?? "https://api.openai.com/v1")
-            : (openaiBaseUrl ?? deepseekBaseUrl ?? "https://api.openai.com/v1");
+            : "https://api.openai.com/v1";
       const defaultModel = isPoolside
         ? "poolside/laguna-s-2.1"
         : isDeepseek
           ? (deepseekModel ?? "deepseek-chat")
           : isOpenai
             ? (openaiModel ?? "gpt-4o")
-            : (openaiModel ?? deepseekModel ?? "gpt-4o");
+            : "gpt-4o";
 
       selectedBaseUrl = selectedBaseUrl ?? defaultBaseUrl;
       selectedModel = selectedModel ?? defaultModel;

@@ -864,4 +864,32 @@ describe("AITranslator provider resolution", () => {
     expect(t.baseUrl).toBe("https://custom-openai-proxy.example.com/v1");
     expect(t.model).toBe("gpt-4o-mini");
   });
+
+  it("does not leak provider-specific base URL to unknown or opaque explicit keys", () => {
+    const t = new AITranslator({
+      apiKey: "sk-unknown-opaque-key",
+      env: {
+        DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1",
+        DEEPSEEK_MODEL: "deepseek-chat",
+      },
+    });
+    expect(t.apiKey).toBe("sk-unknown-opaque-key");
+    // Unknown key must NOT inherit DEEPSEEK_BASE_URL
+    expect(t.baseUrl).toBe("https://api.openai.com/v1");
+    expect(t.model).toBe("gpt-4o");
+    expect(t.hasApiKey).toBe(true);
+  });
+
+  it("resolves endpoint and model in no-key branch with provider env vars", () => {
+    const t = new AITranslator({
+      env: {
+        DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1",
+        DEEPSEEK_MODEL: "deepseek-chat",
+      },
+    });
+    expect(t.apiKey).toBe("");
+    expect(t.hasApiKey).toBe(false);
+    expect(t.baseUrl).toBe("https://api.deepseek.com/v1");
+    expect(t.model).toBe("deepseek-chat");
+  });
 });

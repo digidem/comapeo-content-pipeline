@@ -129,10 +129,13 @@ function printHelp(): void {
       "  --output-dir <dir>    Also write rendered docs to this directory",
       "  --glossary <path>     Glossary JSON path (default: ./config/glossary.json)",
       "",
-      "Translation provider environment variables (first set wins):",
-      "  API key:   TRANSLATION_API_KEY > OPENAI_API_KEY > DEEPSEEK_API_KEY > POOLSIDE_API_KEY",
-      "  Base URL:  TRANSLATION_BASE_URL > OPENAI_BASE_URL > DEEPSEEK_BASE_URL > provider default",
-      "  Model:     TRANSLATION_MODEL > OPENAI_MODEL > DEEPSEEK_MODEL > provider default",
+      "Translation provider environment variables (provider group scoping):",
+      "  API key precedence: TRANSLATION_API_KEY > OPENAI_API_KEY > DEEPSEEK_API_KEY > POOLSIDE_API_KEY",
+      "  Provider-specific base URL and model apply only to their respective provider group:",
+      "    OpenAI:    OPENAI_API_KEY, OPENAI_BASE_URL (default: https://api.openai.com/v1), OPENAI_MODEL (gpt-4o)",
+      "    DeepSeek:  DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL (default: https://api.deepseek.com/v1), DEEPSEEK_MODEL (deepseek-chat)",
+      "    Poolside:  POOLSIDE_API_KEY (default: https://inference.poolside.ai/v1, poolside/laguna-s-2.1)",
+      "  Overrides:   --base-url / --model flags and TRANSLATION_BASE_URL / TRANSLATION_MODEL override all providers",
       "",
       "Provider defaults:",
       "  OpenAI    https://api.openai.com/v1         gpt-4o",
@@ -305,7 +308,9 @@ async function main() {
     env: process.env,
   });
 
-  if (!dryRun && !translator.apiKey) {
+  console.log(`[AI Translator] Endpoint: ${translator.baseUrl} (model: ${translator.model})`);
+
+  if (!dryRun && !translator.hasApiKey) {
     console.error("Error: A translation API key is required to generate translations with --apply.");
     console.error(
       "Set TRANSLATION_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, or POOLSIDE_API_KEY in the environment, or pass --api-key <key>.",
