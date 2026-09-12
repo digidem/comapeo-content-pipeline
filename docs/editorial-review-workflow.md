@@ -20,8 +20,7 @@ back to Notion. Every page it creates or fills in carries:
 | --- | --- |
 | `Publish Status` | `Automated translations generated` |
 | `Language` | `PT - automated` / `ES - automated` |
-| `Parent item` | Same container parent as the English source page |
-| `Sub-item` | Relation to the English source page |
+| `Parent item` | Same container parent as the English source page (sibling under container) |
 
 Machine output is a **first draft, not a publication**. A reviewer must inspect
 it, fix what the model got wrong, and advance its status before it reaches the
@@ -58,9 +57,8 @@ Tips:
   `PT - automated` / `ES - automated`. Plain `Portuguese` / `Spanish` mark
   **explicit human translations** — the pipeline never overwrites those without
   an explicit `--force` override (see [§5](#5-regenerating-a-translation)).
-- Each translated page is parented alongside its English source and linked to
-  it via the `Sub-item` relation. Open both side by side: the English page is
-  the review reference.
+- Each translated page shares the same `Parent item` container as its English source.
+  Open the sibling with `Language = English` side by side under that parent as the review reference.
 - For a repo-side overview of coverage (what is missing, automated, or
   explicit), run `npm run translations:report` and open
   `translation-report.html`.
@@ -220,7 +218,7 @@ Related tooling:
 | Task | Where / how |
 | --- | --- |
 | Find pages to review | Notion view filtered on `Publish Status` = `Automated translations generated` |
-| Review reference | The linked English page (`Sub-item` relation) |
+| Review reference | Sibling English page under the same `Parent item` container |
 | Terminology | `config/glossary.json` (table in §3.1) |
 | Approve for staging | Set `Publish Status` = `Draft published` |
 | Sign off for production | Set `Publish Status` = `Published` |
