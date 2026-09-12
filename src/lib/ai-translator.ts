@@ -43,13 +43,17 @@ interface ChatCompletionResponse {
 }
 
 export class AITranslator {
-  private apiKey: string;
-  private baseUrl: string;
-  private model: string;
+  readonly apiKey: string;
+  readonly baseUrl: string;
+  readonly model: string;
   private maxRetries: number;
   private timeoutMs: number;
   private batchSize: number;
   private fetchFn: typeof fetch;
+
+  get hasApiKey(): boolean {
+    return Boolean(this.apiKey);
+  }
 
   constructor(config: AITranslatorConfig = {}) {
     if (config.batchSize !== undefined && (!Number.isInteger(config.batchSize) || config.batchSize <= 0)) {
@@ -61,35 +65,106 @@ export class AITranslator {
 
     const env = config.env ?? {};
 
-    const poolsideKey = env.POOLSIDE_API_KEY;
-    this.apiKey =
-      config.apiKey ??
-      env.TRANSLATION_API_KEY ??
-      env.OPENAI_API_KEY ??
-      poolsideKey ??
-      "";
+    const clean = (val: string | undefined): string | undefined => {
+      if (typeof val !== "string") return undefined;
+      const trimmed = val.trim();
+      return trimmed.length > 0 ? trimmed : undefined;
+    };
 
-    const isPoolside =
-      this.apiKey.startsWith("sky_") ||
-      (!env.TRANSLATION_BASE_URL && !env.OPENAI_BASE_URL && Boolean(poolsideKey) && this.apiKey === poolsideKey);
-    const defaultBaseUrl = isPoolside
-      ? "https://inference.poolside.ai/v1"
-      : "https://api.openai.com/v1";
-    const defaultModel = isPoolside
-      ? "poolside/laguna-s-2.1"
-      : "deepseek-chat";
+    const configKey = clean(config.apiKey);
+    const configBaseUrl = clean(config.baseUrl);
+    const configModel = clean(config.model);
 
-    const rawBaseUrl =
-      config.baseUrl ??
-      env.TRANSLATION_BASE_URL ??
-      env.OPENAI_BASE_URL ??
-      defaultBaseUrl;
-    this.baseUrl = rawBaseUrl.replace(/\/+$/, "");
-    this.model =
-      config.model ??
-      env.TRANSLATION_MODEL ??
-      env.OPENAI_MODEL ??
-      defaultModel;
+    const translationKey = clean(env.TRANSLATION_API_KEY);
+    const translationBaseUrl = clean(env.TRANSLATION_BASE_URL);
+    const translationModel = clean(env.TRANSLATION_MODEL);
+
+    const openaiKey = clean(env.OPENAI_API_KEY);
+    const openaiBaseUrl = clean(env.OPENAI_BASE_URL);
+    const openaiModel = clean(env.OPENAI_MODEL);
+
+    const deepseekKey = clean(env.DEEPSEEK_API_KEY);
+    const deepseekBaseUrl = clean(env.DEEPSEEK_BASE_URL);
+    const deepseekModel = clean(env.DEEPSEEK_MODEL);
+
+    const poolsideKey = clean(env.POOLSIDE_API_KEY);
+
+    let selectedKey = configKey ?? translationKey;
+    let selectedBaseUrl = configBaseUrl ?? translationBaseUrl;
+    let selectedModel = configModel ?? translationModel;
+
+    // Resolve as an atomic provider-specific group to prevent credentials from
+    // being transmitted across provider boundaries (e.g. OPENAI_API_KEY being sent to DEEPSEEK_BASE_URL).
+    if (selectedKey) {
+      // Explicit or generic key supplied: infer default endpoint/model if not set
+      const isPoolside =
+        selectedKey.startsWith("sky_") ||
+        Boolean(poolsideKey && selectedKey === poolsideKey);
+      const isDeepseek =
+        !isPoolside &&
+        Boolean(
+          (deepseekKey && selectedKey === deepseekKey) ||
+            (selectedBaseUrl && selectedBaseUrl.includes("deepseek")),
+        );
+      const isOpenai =
+        !isPoolside &&
+        !isDeepseek &&
+        Boolean(
+          (openaiKey && selectedKey === openaiKey) ||
+            (selectedBaseUrl && selectedBaseUrl.includes("openai")),
+        );
+
+      const defaultBaseUrl = isPoolside
+        ? "https://inference.poolside.ai/v1"
+        : isDeepseek
+          ? (deepseekBaseUrl ?? "https://api.deepseek.com/v1")
+          : isOpenai
+            ? (openaiBaseUrl ?? "https://api.openai.com/v1")
+            : "https://api.openai.com/v1";
+      const defaultModel = isPoolside
+        ? "poolside/laguna-s-2.1"
+        : isDeepseek
+          ? (deepseekModel ?? "deepseek-chat")
+          : isOpenai
+            ? (openaiModel ?? "gpt-4o")
+            : "gpt-4o";
+
+      selectedBaseUrl = selectedBaseUrl ?? defaultBaseUrl;
+      selectedModel = selectedModel ?? defaultModel;
+    } else if (openaiKey) {
+      // OpenAI provider group: only OPENAI_* or explicit overrides apply
+      selectedKey = openaiKey;
+      selectedBaseUrl = selectedBaseUrl ?? openaiBaseUrl ?? "https://api.openai.com/v1";
+      const defaultOpenaiModel = selectedBaseUrl.includes("deepseek") ? "deepseek-chat" : "gpt-4o";
+      selectedModel = selectedModel ?? openaiModel ?? defaultOpenaiModel;
+    } else if (deepseekKey) {
+      // DeepSeek provider group: only DEEPSEEK_* or explicit overrides apply
+      selectedKey = deepseekKey;
+      selectedBaseUrl = selectedBaseUrl ?? deepseekBaseUrl ?? "https://api.deepseek.com/v1";
+      selectedModel = selectedModel ?? deepseekModel ?? "deepseek-chat";
+    } else if (poolsideKey) {
+      // Poolside provider group
+      selectedKey = poolsideKey;
+      selectedBaseUrl = selectedBaseUrl ?? "https://inference.poolside.ai/v1";
+      selectedModel = selectedModel ?? "poolside/laguna-s-2.1";
+    } else {
+      // No key provided; determine default endpoint and model from provider env vars
+      if (openaiBaseUrl || openaiModel) {
+        selectedBaseUrl = selectedBaseUrl ?? openaiBaseUrl ?? "https://api.openai.com/v1";
+        selectedModel = selectedModel ?? openaiModel ?? "gpt-4o";
+      } else if (deepseekBaseUrl || deepseekModel) {
+        selectedBaseUrl = selectedBaseUrl ?? deepseekBaseUrl ?? "https://api.deepseek.com/v1";
+        selectedModel = selectedModel ?? deepseekModel ?? "deepseek-chat";
+      } else {
+        selectedBaseUrl = selectedBaseUrl ?? "https://api.openai.com/v1";
+        selectedModel = selectedModel ?? "gpt-4o";
+      }
+      selectedKey = "";
+    }
+
+    this.apiKey = selectedKey;
+    this.baseUrl = (selectedBaseUrl ?? "https://api.openai.com/v1").replace(/\/+$/, "");
+    this.model = selectedModel ?? "gpt-4o";
     this.maxRetries = config.maxRetries ?? 3;
     this.timeoutMs =
       typeof config.timeoutMs === "number" &&

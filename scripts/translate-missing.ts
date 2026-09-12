@@ -6,7 +6,12 @@
  * blocks, translates via OpenAI-compatible LLM with CoMapeo domain glossary,
  * and serializes to clean Docusaurus markdown.
  *
+ * Credentials resolve from --api-key/--base-url/--model flags first, then from
+ * the TRANSLATION_*, OPENAI_*, DEEPSEEK_*, and POOLSIDE_* environment variables
+ * (see --help for the full resolution order).
+ *
  * Usage:
+ *   bun scripts/translate-missing.ts [--help]
  *   bun scripts/translate-missing.ts [--dry-run]
  *   bun scripts/translate-missing.ts --apply [--locale es|pt] [--limit 5]
  *   bun scripts/translate-missing.ts --apply --page <slug-or-id>
@@ -89,8 +94,68 @@ function isSyntheticPageId(id?: string | null): boolean {
   return /-[a-z]{2}(-[a-z]{2})?$/i.test(id) || !/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(id);
 }
 
+function printHelp(): void {
+  console.log(
+    [
+      "CoMapeo AI Translation Generator",
+      "",
+      "Generates AI-assisted translations for missing documentation pages in",
+      "Portuguese (pt) and Spanish (es) using an OpenAI-compatible",
+      "chat-completions API.",
+      "",
+      "Usage:",
+      "  bun scripts/translate-missing.ts [options]",
+      "",
+      "Modes:",
+      "  (default)             Dry run: preview what would be translated",
+      "  --apply               Generate translations and write files/manifest",
+      "  --help                Show this help and exit",
+      "",
+      "Options:",
+      "  --locale <pt|es>      Only process this target locale (default: es, then pt)",
+      "  --page <slug-or-id>   Only process the matching page",
+      "  --limit <n>           Maximum number of targets to process",
+      "  --all                 Include draft pages",
+      "  --force               Override the human-edit safety lock",
+      "  --write-notion        Write translations back to Notion",
+      "  --database-id <id>    Notion database ID (required with --write-notion)",
+      "  --api-key <key>       Translation API key (overrides environment)",
+      "  --base-url <url>      OpenAI-compatible base URL (overrides environment)",
+      "  --model <model>       Translation model name (overrides environment)",
+      "  --batch-size <n>      Blocks per translation request",
+      "  --timeout <ms>        Per-request timeout in milliseconds",
+      "  --input <path>        Manifest path (default: ./output/manifest.json)",
+      "  --input-dir <dir>     Directory with cached page artifacts (default: ./output)",
+      "  --output-dir <dir>    Also write rendered docs to this directory",
+      "  --glossary <path>     Glossary JSON path (default: ./config/glossary.json)",
+      "",
+      "Translation provider environment variables (provider group scoping):",
+      "  API key precedence: TRANSLATION_API_KEY > OPENAI_API_KEY > DEEPSEEK_API_KEY > POOLSIDE_API_KEY",
+      "  Provider-specific base URL and model apply only to their respective provider group:",
+      "    OpenAI:    OPENAI_API_KEY, OPENAI_BASE_URL (default: https://api.openai.com/v1), OPENAI_MODEL (gpt-4o)",
+      "    DeepSeek:  DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL (default: https://api.deepseek.com/v1), DEEPSEEK_MODEL (deepseek-chat)",
+      "    Poolside:  POOLSIDE_API_KEY (default: https://inference.poolside.ai/v1, poolside/laguna-s-2.1)",
+      "  Overrides:   --base-url / --model flags and TRANSLATION_BASE_URL / TRANSLATION_MODEL override all providers",
+      "",
+      "Provider defaults:",
+      "  OpenAI    https://api.openai.com/v1         gpt-4o",
+      "  DeepSeek  https://api.deepseek.com/v1       deepseek-chat",
+      "  Poolside  https://inference.poolside.ai/v1  poolside/laguna-s-2.1",
+      "",
+      "Other environment variables:",
+      "  NOTION_TOKEN, NOTION_DATABASE_ID  Required for fetching pages / --write-notion",
+      "  DOCS_BASE_URL                     Canonical docs URL used in Notion write-back",
+    ].join("\n"),
+  );
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+
+  if (args.help === "true") {
+    printHelp();
+    return;
+  }
 
   const apply = args.apply === "true";
   const dryRun = args["dry-run"] === "true" || !apply;
@@ -208,32 +273,6 @@ async function main() {
     return;
   }
 
-  // 4. Initialize Clients
-  const notionToken = process.env.NOTION_TOKEN || process.env.NOTION_API_KEY;
-  const client = notionToken ? new NotionClient({ token: notionToken }) : null;
-
-  const apiKey =
-    args["api-key"] ||
-    process.env.TRANSLATION_API_KEY ||
-    process.env.POOLSIDE_API_KEY ||
-    process.env.OPENAI_API_KEY;
-  if (!dryRun && !apiKey) {
-    console.error("Error: TRANSLATION_API_KEY or POOLSIDE_API_KEY is required to generate translations with --apply.");
-    console.error("Set TRANSLATION_API_KEY in environment or pass --api-key <key>.");
-    process.exit(1);
-  }
-
-  if (writeNotion && !dryRun) {
-    if (!notionToken) {
-      console.error("Error: NOTION_TOKEN or NOTION_API_KEY is required to write back to Notion with --write-notion.");
-      process.exit(1);
-    }
-    if (!databaseId) {
-      console.error("Error: NOTION_DATABASE_ID is required to write back to Notion with --write-notion.");
-      process.exit(1);
-    }
-  }
-
   let timeoutMs: number | undefined;
   if (args.timeout !== undefined) {
     const raw = String(args.timeout).trim();
@@ -256,14 +295,39 @@ async function main() {
     batchSize = parsed;
   }
 
+  // 4. Initialize Clients
+  const notionToken = process.env.NOTION_TOKEN || process.env.NOTION_API_KEY;
+  const client = notionToken ? new NotionClient({ token: notionToken }) : null;
+
   const translator = new AITranslator({
-    apiKey: apiKey || "dummy-key-for-dry-run",
-    baseUrl: args["base-url"] || process.env.TRANSLATION_BASE_URL,
-    model: args.model || process.env.TRANSLATION_MODEL,
+    apiKey: args["api-key"],
+    baseUrl: args["base-url"],
+    model: args.model,
     batchSize,
     timeoutMs,
     env: process.env,
   });
+
+  console.log(`[AI Translator] Endpoint: ${translator.baseUrl} (model: ${translator.model})`);
+
+  if (!dryRun && !translator.hasApiKey) {
+    console.error("Error: A translation API key is required to generate translations with --apply.");
+    console.error(
+      "Set TRANSLATION_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, or POOLSIDE_API_KEY in the environment, or pass --api-key <key>.",
+    );
+    process.exit(1);
+  }
+
+  if (writeNotion && !dryRun) {
+    if (!notionToken) {
+      console.error("Error: NOTION_TOKEN or NOTION_API_KEY is required to write back to Notion with --write-notion.");
+      process.exit(1);
+    }
+    if (!databaseId) {
+      console.error("Error: NOTION_DATABASE_ID is required to write back to Notion with --write-notion.");
+      process.exit(1);
+    }
+  }
 
   // 5. Execute translations
   const queue = targets.slice(0, limit);
