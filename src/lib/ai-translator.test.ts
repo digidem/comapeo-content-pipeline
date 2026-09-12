@@ -804,4 +804,34 @@ describe("AITranslator provider resolution", () => {
     expect(t.baseUrl).toBe("https://inference.poolside.ai/v1");
     expect(t.model).toBe("poolside/laguna-s-2.1");
   });
+
+  it("normalizes empty string overrides and does not suppress provider defaults", () => {
+    const t = new AITranslator({
+      env: {
+        OPENAI_API_KEY: "sk-openai-key",
+        TRANSLATION_BASE_URL: "",
+        TRANSLATION_MODEL: "   ",
+        OPENAI_BASE_URL: "",
+        OPENAI_MODEL: "",
+      },
+    });
+    expect(t.apiKey).toBe("sk-openai-key");
+    expect(t.baseUrl).toBe("https://api.openai.com/v1");
+    expect(t.model).toBe("gpt-4o");
+  });
+
+  it("normalizes empty string overrides for DeepSeek provider group", () => {
+    const t = new AITranslator({
+      env: {
+        DEEPSEEK_API_KEY: "sk-deepseek-key",
+        TRANSLATION_BASE_URL: "",
+        TRANSLATION_MODEL: "",
+        DEEPSEEK_BASE_URL: "  ",
+        DEEPSEEK_MODEL: "",
+      },
+    });
+    expect(t.apiKey).toBe("sk-deepseek-key");
+    expect(t.baseUrl).toBe("https://api.deepseek.com/v1");
+    expect(t.model).toBe("deepseek-chat");
+  });
 });

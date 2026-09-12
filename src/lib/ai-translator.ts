@@ -61,14 +61,33 @@ export class AITranslator {
 
     const env = config.env ?? {};
 
-    const translationKey = env.TRANSLATION_API_KEY;
-    const openaiKey = env.OPENAI_API_KEY;
-    const deepseekKey = env.DEEPSEEK_API_KEY;
-    const poolsideKey = env.POOLSIDE_API_KEY;
+    const clean = (val: string | undefined): string | undefined => {
+      if (typeof val !== "string") return undefined;
+      const trimmed = val.trim();
+      return trimmed.length > 0 ? trimmed : undefined;
+    };
 
-    let selectedKey = config.apiKey ?? translationKey;
-    let selectedBaseUrl = config.baseUrl ?? env.TRANSLATION_BASE_URL;
-    let selectedModel = config.model ?? env.TRANSLATION_MODEL;
+    const configKey = clean(config.apiKey);
+    const configBaseUrl = clean(config.baseUrl);
+    const configModel = clean(config.model);
+
+    const translationKey = clean(env.TRANSLATION_API_KEY);
+    const translationBaseUrl = clean(env.TRANSLATION_BASE_URL);
+    const translationModel = clean(env.TRANSLATION_MODEL);
+
+    const openaiKey = clean(env.OPENAI_API_KEY);
+    const openaiBaseUrl = clean(env.OPENAI_BASE_URL);
+    const openaiModel = clean(env.OPENAI_MODEL);
+
+    const deepseekKey = clean(env.DEEPSEEK_API_KEY);
+    const deepseekBaseUrl = clean(env.DEEPSEEK_BASE_URL);
+    const deepseekModel = clean(env.DEEPSEEK_MODEL);
+
+    const poolsideKey = clean(env.POOLSIDE_API_KEY);
+
+    let selectedKey = configKey ?? translationKey;
+    let selectedBaseUrl = configBaseUrl ?? translationBaseUrl;
+    let selectedModel = configModel ?? translationModel;
 
     // Resolve as an atomic provider-specific group to prevent credentials from
     // being transmitted across provider boundaries (e.g. OPENAI_API_KEY being sent to DEEPSEEK_BASE_URL).
@@ -99,14 +118,14 @@ export class AITranslator {
     } else if (openaiKey) {
       // OpenAI provider group: only OPENAI_* or explicit overrides apply
       selectedKey = openaiKey;
-      selectedBaseUrl = selectedBaseUrl ?? env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
+      selectedBaseUrl = selectedBaseUrl ?? openaiBaseUrl ?? "https://api.openai.com/v1";
       const defaultOpenaiModel = selectedBaseUrl.includes("deepseek") ? "deepseek-chat" : "gpt-4o";
-      selectedModel = selectedModel ?? env.OPENAI_MODEL ?? defaultOpenaiModel;
+      selectedModel = selectedModel ?? openaiModel ?? defaultOpenaiModel;
     } else if (deepseekKey) {
       // DeepSeek provider group: only DEEPSEEK_* or explicit overrides apply
       selectedKey = deepseekKey;
-      selectedBaseUrl = selectedBaseUrl ?? env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com/v1";
-      selectedModel = selectedModel ?? env.DEEPSEEK_MODEL ?? "deepseek-chat";
+      selectedBaseUrl = selectedBaseUrl ?? deepseekBaseUrl ?? "https://api.deepseek.com/v1";
+      selectedModel = selectedModel ?? deepseekModel ?? "deepseek-chat";
     } else if (poolsideKey) {
       // Poolside provider group
       selectedKey = poolsideKey;
@@ -114,12 +133,12 @@ export class AITranslator {
       selectedModel = selectedModel ?? "poolside/laguna-s-2.1";
     } else {
       // No key provided; determine default endpoint and model from provider env vars
-      if (env.OPENAI_BASE_URL || env.OPENAI_MODEL) {
-        selectedBaseUrl = selectedBaseUrl ?? env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
-        selectedModel = selectedModel ?? env.OPENAI_MODEL ?? "gpt-4o";
-      } else if (env.DEEPSEEK_BASE_URL || env.DEEPSEEK_MODEL) {
-        selectedBaseUrl = selectedBaseUrl ?? env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com/v1";
-        selectedModel = selectedModel ?? env.DEEPSEEK_MODEL ?? "deepseek-chat";
+      if (openaiBaseUrl || openaiModel) {
+        selectedBaseUrl = selectedBaseUrl ?? openaiBaseUrl ?? "https://api.openai.com/v1";
+        selectedModel = selectedModel ?? openaiModel ?? "gpt-4o";
+      } else if (deepseekBaseUrl || deepseekModel) {
+        selectedBaseUrl = selectedBaseUrl ?? deepseekBaseUrl ?? "https://api.deepseek.com/v1";
+        selectedModel = selectedModel ?? deepseekModel ?? "deepseek-chat";
       } else {
         selectedBaseUrl = selectedBaseUrl ?? "https://api.openai.com/v1";
         selectedModel = selectedModel ?? "gpt-4o";
@@ -128,8 +147,8 @@ export class AITranslator {
     }
 
     this.apiKey = selectedKey;
-    this.baseUrl = selectedBaseUrl.replace(/\/+$/, "");
-    this.model = selectedModel;
+    this.baseUrl = (selectedBaseUrl ?? "https://api.openai.com/v1").replace(/\/+$/, "");
+    this.model = selectedModel ?? "gpt-4o";
     this.maxRetries = config.maxRetries ?? 3;
     this.timeoutMs =
       typeof config.timeoutMs === "number" &&
