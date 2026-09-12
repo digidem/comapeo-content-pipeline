@@ -300,7 +300,7 @@ async function main() {
   const client = notionToken ? new NotionClient({ token: notionToken }) : null;
 
   const translator = new AITranslator({
-    apiKey: args["api-key"] || (dryRun ? "dummy-key-for-dry-run" : undefined),
+    apiKey: args["api-key"],
     baseUrl: args["base-url"],
     model: args.model,
     batchSize,
