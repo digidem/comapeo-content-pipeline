@@ -31,9 +31,24 @@ export const SidebarItemSchema: z.ZodType<SidebarItem> = z.union([
   }),
 ]);
 
+/** Safe page ID regex: alphanumeric characters, hyphens, and underscores only */
+export const PAGE_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
+
+/**
+ * Safe page ID schema: must be a non-empty string containing only alphanumeric characters,
+ * hyphens, and underscores. Prevents path traversal and unsafe characters when page IDs
+ * are used to form filesystem paths.
+ */
+export const PageIdSchema = z
+  .string()
+  .min(1)
+  .regex(PAGE_ID_REGEX, {
+    message: "Invalid page_id: must contain only alphanumeric characters, dashes, and underscores",
+  });
+
 /** A single document entry in the content manifest */
 export const ManifestDocSchema = z.object({
-  page_id: z.string(),
+  page_id: PageIdSchema,
   title: z.string(),
   locale: z.string(),
   section: z.string().nullable(),
@@ -50,7 +65,7 @@ export const ManifestDocSchema = z.object({
   content_hash: z.string(),
   status: z.enum(["active", "draft", "deprecated", "archived"]),
   /** Page IDs of sub-items (translations) linked via Sub-item relation */
-  sub_items: z.array(z.string()).optional(),
+  sub_items: z.array(PageIdSchema).optional(),
   /** Language provenance: how the locale was determined */
   language_source: z.enum(["explicit", "automated", "fallback"]).optional(),
 });

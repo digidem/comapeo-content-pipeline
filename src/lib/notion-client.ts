@@ -66,6 +66,7 @@ export class NotionClient {
   private version: string;
   private maxRps: number;
   private lastRequestTime: number = 0;
+  private throttleQueue: Promise<void> = Promise.resolve();
   private baseUrl = NOTION_API.BASE_URL;
   private inFlightRequests: Map<string, Promise<unknown>> = new Map();
   /** Lazily instantiated SDK client for dataSources.query (DATABASE_VERSION). */
@@ -101,13 +102,19 @@ export class NotionClient {
   // ── Rate limiting ──
 
   private async throttle(): Promise<void> {
-    const now = Date.now();
     const minInterval = 1000 / this.maxRps;
-    const elapsed = now - this.lastRequestTime;
-    if (elapsed < minInterval) {
-      await sleep(minInterval - elapsed);
-    }
-    this.lastRequestTime = Date.now();
+    const queued = this.throttleQueue
+      .catch(() => {})
+      .then(async () => {
+        const now = Date.now();
+        const elapsed = now - this.lastRequestTime;
+        if (elapsed < minInterval) {
+          await sleep(minInterval - elapsed);
+        }
+        this.lastRequestTime = Date.now();
+      });
+    this.throttleQueue = queued;
+    await queued;
   }
 
   /**
@@ -141,12 +148,16 @@ export class NotionClient {
       method?: string;
       body?: unknown;
       apiVersion?: string;
+      retry?: boolean;
     } = {},
     retries = 4,
   ): Promise<T> {
-    // Deduplicate by path + method so concurrent callers share one request
-    const dedupeKey = `${options.method || "GET"} ${path}`;
-    return this.dedupeRequest(dedupeKey, () => this._requestInner<T>(path, options, retries));
+    const method = (options.method || "GET").toUpperCase();
+    if (method === "GET") {
+      const dedupeKey = `GET ${path}`;
+      return this.dedupeRequest(dedupeKey, () => this._requestInner<T>(path, options, retries));
+    }
+    return this._requestInner<T>(path, options, retries);
   }
 
   private async _requestInner<T>(
@@ -155,6 +166,7 @@ export class NotionClient {
       method?: string;
       body?: unknown;
       apiVersion?: string;
+      retry?: boolean;
     },
     retries: number,
   ): Promise<T> {
@@ -167,7 +179,10 @@ export class NotionClient {
       "Content-Type": "application/json",
     };
 
-    for (let attempt = 0; attempt <= retries; attempt++) {
+    const shouldRetry = options.retry !== false;
+    const effectiveRetries = shouldRetry ? retries : 0;
+
+    for (let attempt = 0; attempt <= effectiveRetries; attempt++) {
       try {
         const resp = await fetch(url, {
           method: options.method || "GET",
@@ -179,7 +194,7 @@ export class NotionClient {
           return (await resp.json()) as T;
         }
 
-        if (resp.status === 429) {
+        if (shouldRetry && resp.status === 429) {
           const retryAfter = resp.headers.get("Retry-After");
           const waitSeconds = retryAfter ? parseInt(retryAfter, 10) : 1;
           if (_retryAfterCallback) _retryAfterCallback(waitSeconds);
@@ -187,14 +202,14 @@ export class NotionClient {
           continue;
         }
 
-        if (resp.status === 529) {
+        if (shouldRetry && resp.status === 529) {
           // Exponential backoff
           const waitMs = Math.min(1000 * Math.pow(2, attempt), 30000);
           await sleep(waitMs);
           continue;
         }
 
-        // Non-retryable error
+        // Non-retryable error (or retries explicitly disabled for non-idempotent writes)
         const errorBody = await resp.text().catch(() => "");
         throw classifyError(
           new Error(`Notion API error ${resp.status}: ${resp.statusText} — ${errorBody}`),
@@ -202,12 +217,13 @@ export class NotionClient {
         );
       } catch (err) {
         const classified = classifyError(err, `Notion ${path}`);
-        if (attempt >= retries) throw classified;
+        if (attempt >= effectiveRetries) throw classified;
 
-        // Only retry network / timeout errors
+        // Only retry network / timeout errors if retries are not disabled for this request
         if (
-          classified.category === ErrorCategory.NETWORK ||
-          classified.category === ErrorCategory.TIMEOUT
+          shouldRetry &&
+          (classified.category === ErrorCategory.NETWORK ||
+            classified.category === ErrorCategory.TIMEOUT)
         ) {
           const waitMs = 1000 * Math.pow(2, attempt);
           await sleep(waitMs);
@@ -462,6 +478,96 @@ export class NotionClient {
     } while (cursor);
 
     return all;
+  }
+
+  /**
+   * Create a new page in a Notion database or as a child of another page.
+   */
+  async createPage(params: {
+    parent: { database_id: string } | { page_id: string };
+    properties: Record<string, unknown>;
+    children?: unknown[];
+  }): Promise<NotionPage> {
+    return this.request<NotionPage>("/pages", {
+      method: "POST",
+      body: params,
+      retry: false,
+    });
+  }
+
+  /**
+   * Update page properties or archive status.
+   */
+  async updatePage(
+    pageId: string,
+    params: {
+      properties?: Record<string, unknown>;
+      archived?: boolean;
+    },
+  ): Promise<NotionPage> {
+    return this.request<NotionPage>(`/pages/${pageId}`, {
+      method: "PATCH",
+      body: params,
+    });
+  }
+
+  /**
+   * Append block children to an existing block or page.
+   * Chunks requests automatically into batches of 100 blocks (Notion API max).
+   */
+  async appendBlockChildren(
+    blockId: string,
+    children: unknown[],
+    options?: { onChunk?: (blocks: NotionBlock[]) => void },
+  ): Promise<NotionBlockResponse> {
+    const allResults: NotionBlock[] = [];
+    const chunkSize = 100;
+
+    for (let i = 0; i < children.length; i += chunkSize) {
+      const chunk = children.slice(i, i + chunkSize);
+      try {
+        const resp = await this.request<NotionBlockResponse>(`/blocks/${blockId}/children`, {
+          method: "PATCH",
+          body: { children: chunk },
+          retry: false,
+        });
+        if (resp.results) {
+          allResults.push(...resp.results);
+          options?.onChunk?.(resp.results);
+        }
+      } catch (err) {
+        if (allResults.length > 0 && err && typeof err === "object") {
+          (err as { appendedBlocks?: NotionBlock[] }).appendedBlocks = allResults;
+        }
+        throw err;
+      }
+    }
+
+    return {
+      object: "list",
+      results: allResults,
+      next_cursor: null,
+      has_more: false,
+    };
+  }
+
+  /**
+   * Delete (archive) a block by ID.
+   */
+  async deleteBlock(blockId: string): Promise<{ object: "block"; id: string; archived: true }> {
+    return this.request<{ object: "block"; id: string; archived: true }>(`/blocks/${blockId}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Restore (unarchive) a block by ID.
+   */
+  async restoreBlock(blockId: string): Promise<NotionBlock> {
+    return this.request<NotionBlock>(`/blocks/${blockId}`, {
+      method: "PATCH",
+      body: { archived: false },
+    });
   }
 }
 

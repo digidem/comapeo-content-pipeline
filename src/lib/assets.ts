@@ -80,6 +80,48 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * errors. HTTP 4xx responses are NOT retried. Returns `null` if all retries
  * are exhausted.
  */
+export const MAX_DATA_URI_BYTES = 10 * 1024 * 1024; // 10 MB limit for embedded data URIs
+const MAX_DATA_URI_ENCODED_CHARS = Math.ceil((MAX_DATA_URI_BYTES * 4) / 3) + 64;
+
+/**
+ * Estimates the decoded byte length of a percent-encoded or plain URI payload
+ * without allocating decoded strings or intermediate memory.
+ */
+export function estimateDecodedUriBytes(payload: string): number {
+	let bytes = 0;
+	const len = payload.length;
+	for (let i = 0; i < len; i++) {
+		const ch = payload.charCodeAt(i);
+		if (ch === 0x25 /* '%' */ && i + 2 < len && /^[0-9a-fA-F]{2}$/.test(payload.slice(i + 1, i + 3))) {
+			bytes += 1;
+			i += 2;
+		} else if (ch <= 0x7f) {
+			bytes += 1;
+		} else if (ch <= 0x7ff) {
+			bytes += 2;
+		} else if (ch >= 0xd800 && ch <= 0xdbff) {
+			if (i + 1 < len) {
+				const next = payload.charCodeAt(i + 1);
+				if (next >= 0xdc00 && next <= 0xdfff) {
+					bytes += 4;
+					i++; // consume valid low surrogate
+					if (bytes > MAX_DATA_URI_BYTES) return bytes;
+					continue;
+				}
+			}
+			// Unpaired high surrogate encodes to replacement char U+FFFD (3 bytes in UTF-8)
+			bytes += 3;
+		} else {
+			// BMP character or unpaired low surrogate (both encode to 3 bytes in UTF-8)
+			bytes += 3;
+		}
+		if (bytes > MAX_DATA_URI_BYTES) {
+			return bytes;
+		}
+	}
+	return bytes;
+}
+
 export async function rehostAsset(
 	url: string,
 ): Promise<{ data: Uint8Array; contentType: string; ext: string } | null> {
@@ -95,14 +137,35 @@ export async function rehostAsset(
 
 		let data: Uint8Array;
 		if (base64) {
+			if (payload.length > MAX_DATA_URI_ENCODED_CHARS) {
+				throw new Error(
+					`Data URI payload (${payload.length} chars) exceeds maximum allowed size of ${MAX_DATA_URI_BYTES} bytes`,
+				);
+			}
 			// Decode base64 in a runtime-agnostic way
 			const binaryStr = atob(payload);
+			if (binaryStr.length > MAX_DATA_URI_BYTES) {
+				throw new Error(
+					`Decoded data URI (${binaryStr.length} bytes) exceeds maximum allowed size of ${MAX_DATA_URI_BYTES} bytes`,
+				);
+			}
 			data = new Uint8Array(binaryStr.length);
 			for (let i = 0; i < binaryStr.length; i++) {
 				data[i] = binaryStr.charCodeAt(i);
 			}
 		} else {
+			const estimatedBytes = estimateDecodedUriBytes(payload);
+			if (estimatedBytes > MAX_DATA_URI_BYTES) {
+				throw new Error(
+					`Data URI payload (${estimatedBytes} bytes) exceeds maximum allowed size of ${MAX_DATA_URI_BYTES} bytes`,
+				);
+			}
 			data = new TextEncoder().encode(decodeURIComponent(payload));
+			if (data.byteLength > MAX_DATA_URI_BYTES) {
+				throw new Error(
+					`Decoded data URI (${data.byteLength} bytes) exceeds maximum allowed size of ${MAX_DATA_URI_BYTES} bytes`,
+				);
+			}
 		}
 
 		const ext = MIME_TO_EXT[contentType] ?? ".png";
@@ -191,3 +254,61 @@ function isNotionUrl(url: string): boolean {
 		return false;
 	}
 }
+
+/**
+ * Strip query-string signature and hash from an expiring or signed asset URL.
+ * Produces a stable base URL (origin + pathname) for matching.
+ * For data: URIs, strips the payload (which can be multi-megabyte base64 data)
+ * to prevent inflating canonical markdown and content hashes in failure markers.
+ */
+export function stripUrlSignature(url: string): string {
+	if (url.startsWith("data:")) {
+		const commaIdx = url.indexOf(",");
+		const header = commaIdx >= 0 ? url.slice(0, commaIdx) : "data:";
+		return `${header},[omitted]`;
+	}
+	try {
+		const u = new URL(url);
+		return u.origin + u.pathname;
+	} catch {
+		const i = url.indexOf("?");
+		return i >= 0 ? url.slice(0, i) : url;
+	}
+}
+
+/**
+ * Rehosts asset URLs in markdown by replacing Notion/S3 URLs with their
+ * canonical local asset keys (e.g. assets/<sha256>.<ext>) stored in metadata.
+ */
+export function rehostMarkdownAssets(
+	markdown: string,
+	assets: Array<{ original_url: string; r2_key: string }>,
+): string {
+	if (!assets || assets.length === 0) return markdown;
+
+	let result = markdown;
+	const sorted = [...assets].sort((a, b) => b.original_url.length - a.original_url.length);
+
+	for (const asset of sorted) {
+		if (!asset.original_url || !asset.r2_key) continue;
+
+		const isDataUri = asset.original_url.startsWith("data:");
+		const base = isDataUri ? asset.original_url : stripUrlSignature(asset.original_url);
+		const escaped = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+		// 1. Replace markdown images: ![alt](base?query) or [![alt](base?query)](link)
+		result = result.replace(
+			new RegExp("(!\\[[^\\]]*\\]\\()" + escaped + "(?:\\?[^)]*)?(\\))", "g"),
+			`$1${asset.r2_key}$2`,
+		);
+
+		// 2. Replace HTML img tags: <img ... src="base?query" ...> or src='base'
+		result = result.replace(
+			new RegExp("(<img\\b[^>]*\\ssrc=[\"'])" + escaped + "(?:\\?[^\"']*)?([\"'])", "gi"),
+			`$1${asset.r2_key}$2`,
+		);
+	}
+
+	return result;
+}
+

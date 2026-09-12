@@ -4,6 +4,9 @@ import {
 	rehostAsset,
 	sha256Hex,
 	assetR2Key,
+	stripUrlSignature,
+	rehostMarkdownAssets,
+	estimateDecodedUriBytes,
 } from "./assets.js";
 
 // ── extractAssetUrls ──
@@ -197,6 +200,19 @@ describe("rehostAsset", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("decodes valid base64 data URI directly without HTTP fetch", async () => {
+		const dataUri = "data:image/png;base64,iVBORw0KGgo=";
+		const result = await rehostAsset(dataUri);
+		expect(result!.contentType).toBe("image/png");
+		expect(result!.ext).toBe(".png");
+		expect(result!.data.byteLength).toBeGreaterThan(0);
+	});
+
+	it("rejects oversized data URIs before decoding to prevent memory exhaustion", async () => {
+		const oversizedBase64 = "data:image/png;base64," + "A".repeat(15 * 1024 * 1024);
+		await expect(rehostAsset(oversizedBase64)).rejects.toThrow(/exceeds maximum allowed size/);
+	});
+
 	it("downloads asset and maps content type to extension", async () => {
 		const pngData = new Uint8Array([137, 80, 78, 71]);
 		mockFetch.mockResolvedValueOnce({
@@ -360,5 +376,120 @@ describe("assetR2Key", () => {
 		expect(key).toBe(
 			"assets/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.jpg",
 		);
+	});
+});
+
+// ── stripUrlSignature ──
+
+describe("stripUrlSignature", () => {
+	it("strips query string from URL", () => {
+		const url = "https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/uuid/photo.jpg?X-Amz-Algorithm=AWS4&X-Amz-Signature=123";
+		expect(stripUrlSignature(url)).toBe("https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/uuid/photo.jpg");
+	});
+
+	it("returns identical URL if no query string present", () => {
+		const url = "https://example.com/images/icon.png";
+		expect(stripUrlSignature(url)).toBe("https://example.com/images/icon.png");
+	});
+
+	it("handles malformed URLs with question marks gracefully", () => {
+		const malformed = "not-a-valid-url/path?query=val";
+		expect(stripUrlSignature(malformed)).toBe("not-a-valid-url/path");
+	});
+
+	it("omits payload from data URIs to avoid bloating failure markers", () => {
+		const dataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+		expect(stripUrlSignature(dataUri)).toBe("data:image/png;base64,[omitted]");
+	});
+
+	it("handles data URIs without comma gracefully", () => {
+		const dataUri = "data:image/png";
+		expect(stripUrlSignature(dataUri)).toBe("data:,[omitted]");
+	});
+});
+
+// ── rehostMarkdownAssets ──
+
+describe("rehostMarkdownAssets", () => {
+	const assets = [
+		{
+			original_url: "https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/uuid/switch_projects.jpg?X-Amz-Date=20260723T103534Z&X-Amz-Signature=abc",
+			r2_key: "assets/ab2b210fb2fbe7db8225bbd0cefd33bb92d003c9fb8b3ca73a17f3703d2a38d4.jpg",
+		},
+		{
+			original_url: "https://s3-us-west-2.amazonaws.com/public.notion-static.com/uuid/photo_2026-04-18_09-03-07.jpg",
+			r2_key: "assets/ce83f9d3ea687047295a17cb3e9e090b3f7b1e1196ac2c200404927cae1c1a25.jpg",
+		},
+		{
+			original_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==",
+			r2_key: "assets/datauri1234567890abcdef.png",
+		},
+	];
+
+	it("rehosts standard markdown images even with refreshed signature", () => {
+		const md = "![image](https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/uuid/switch_projects.jpg?X-Amz-Date=20260910T120000Z&X-Amz-Signature=xyz)";
+		const result = rehostMarkdownAssets(md, assets);
+		expect(result).toBe("![image](assets/ab2b210fb2fbe7db8225bbd0cefd33bb92d003c9fb8b3ca73a17f3703d2a38d4.jpg)");
+	});
+
+	it("rehosts data URI markdown images correctly", () => {
+		const md = "![inline](data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==)";
+		const result = rehostMarkdownAssets(md, assets);
+		expect(result).toBe("![inline](assets/datauri1234567890abcdef.png)");
+	});
+
+	it("rehosts inline HTML img tags", () => {
+		const md = 'Click on <img src="https://s3-us-west-2.amazonaws.com/public.notion-static.com/uuid/photo_2026-04-18_09-03-07.jpg" alt="switch" className="emoji" style={{display:"inline"}} /> to switch';
+		const result = rehostMarkdownAssets(md, assets);
+		expect(result).toBe('Click on <img src="assets/ce83f9d3ea687047295a17cb3e9e090b3f7b1e1196ac2c200404927cae1c1a25.jpg" alt="switch" className="emoji" style={{display:"inline"}} /> to switch');
+	});
+
+	it("leaves non-matching images untouched", () => {
+		const md = "![other](https://example.com/other.jpg)";
+		const result = rehostMarkdownAssets(md, assets);
+		expect(result).toBe(md);
+	});
+
+	it("returns original text when assets list is empty", () => {
+		const md = "![img](https://example.com/img.png)";
+		expect(rehostMarkdownAssets(md, [])).toBe(md);
+	});
+});
+
+// ── estimateDecodedUriBytes ──
+
+describe("estimateDecodedUriBytes", () => {
+	it("accurately estimates ASCII and multi-byte UTF-8 characters", () => {
+		expect(estimateDecodedUriBytes("hello")).toBe(5);
+		expect(estimateDecodedUriBytes("éà")).toBe(4);
+		expect(estimateDecodedUriBytes("中")).toBe(3);
+	});
+
+	it("accurately estimates valid surrogate pairs as 4 bytes", () => {
+		const emoji = "😀"; // U+1F600: \uD83D\uDE00
+		expect(estimateDecodedUriBytes(emoji)).toBe(4);
+		expect(new TextEncoder().encode(emoji).byteLength).toBe(4);
+	});
+
+	it("does not undercount unpaired high surrogates followed by another high surrogate", () => {
+		// Two high surrogates in a row: neither is followed by a valid low surrogate.
+		// TextEncoder encodes each as U+FFFD (3 bytes each = 6 bytes).
+		const malformed = "\uD800\uD800";
+		expect(estimateDecodedUriBytes(malformed)).toBe(6);
+		expect(new TextEncoder().encode(malformed).byteLength).toBe(6);
+	});
+
+	it("accurately accounts for single unpaired high surrogate and low surrogate", () => {
+		expect(estimateDecodedUriBytes("\uD800")).toBe(3);
+		expect(new TextEncoder().encode("\uD800").byteLength).toBe(3);
+
+		expect(estimateDecodedUriBytes("\uDC00")).toBe(3);
+		expect(new TextEncoder().encode("\uDC00").byteLength).toBe(3);
+	});
+
+	it("accurately accounts for high surrogate followed by ASCII character", () => {
+		const str = "\uD800a";
+		expect(estimateDecodedUriBytes(str)).toBe(4); // 3 (U+FFFD) + 1 ('a')
+		expect(new TextEncoder().encode(str).byteLength).toBe(4);
 	});
 });

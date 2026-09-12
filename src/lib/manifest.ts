@@ -102,8 +102,20 @@ function buildR2MetadataKey(pageId: string): string {
  * Content-only: no structural or container IDs. Uses localized Toggle labels
  * and canonical paths/slugs.
  */
-function buildSidebarsFromPlan(docs: ManifestDoc[], hasBodyById?: Record<string, boolean>): Record<string, SidebarItem[]> {
-  const plan = buildHierarchyPlan({ docs, includeDrafts: false, hasBodyById });
+export function buildSidebarsFromPlan(
+  docs: ManifestDoc[],
+  hasBodyById?: Record<string, boolean>,
+  options?: {
+    includeDrafts?: boolean;
+    languageSourceById?: Record<string, "explicit" | "automated" | "fallback">;
+  },
+): Record<string, SidebarItem[]> {
+  const plan = buildHierarchyPlan({
+    docs,
+    includeDrafts: options?.includeDrafts ?? false,
+    hasBodyById,
+    languageSourceById: options?.languageSourceById,
+  });
   return projectSidebars(plan);
 }
 

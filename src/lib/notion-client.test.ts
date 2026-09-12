@@ -426,3 +426,210 @@ describe("withSdkRetry (SDK 429/5xx retry policy)", () => {
     expect(fn).toHaveBeenCalledTimes(3);
   });
 });
+
+describe("NotionClient concurrent throttling", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fetchMock = vi.fn().mockImplementation(async () => okResponse({ id: "page" }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("serializes concurrent requests and spaces them according to maxRps", async () => {
+    // maxRps = 2 -> minInterval = 500ms
+    const client = new NotionClient({ token: "test-token", maxRps: 2 });
+
+    const p1 = client.getPage("page-1");
+    const p2 = client.getPage("page-2");
+    const p3 = client.getPage("page-3");
+
+    // First request should execute immediately
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // After 250ms, second request should still be waiting
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // After reaching 500ms total, second request runs
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // After another 250ms, third request still waiting
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // After another 250ms (1000ms total), third request runs
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    await Promise.all([p1, p2, p3]);
+  });
+});
+
+describe("NotionClient write operations", () => {
+  let client: NotionClient;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(
+      ((fn: () => void) => {
+        fn();
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      }) as unknown as typeof setTimeout,
+    );
+
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    client = new NotionClient({ token: "test-token", maxRps: 999 });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("createPage sends POST to /v1/pages with parent, properties, and optional children", async () => {
+    const mockPage = { id: "new-page-id", object: "page" };
+    fetchMock.mockResolvedValueOnce(okResponse(mockPage));
+
+    const result = await client.createPage({
+      parent: { database_id: "db-123" },
+      properties: {
+        Name: { title: [{ text: { content: "Test Title" } }] },
+      },
+      children: [{ object: "block", type: "paragraph", paragraph: { rich_text: [] } }],
+    });
+
+    expect(result).toEqual(mockPage);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.notion.com/v1/pages");
+    expect(init.method).toBe("POST");
+    const body = JSON.parse(init.body);
+    expect(body.parent).toEqual({ database_id: "db-123" });
+    expect(body.children).toHaveLength(1);
+  });
+
+  it("updatePage sends PATCH to /v1/pages/{pageId}", async () => {
+    const mockPage = { id: "page-123", object: "page" };
+    fetchMock.mockResolvedValueOnce(okResponse(mockPage));
+
+    const result = await client.updatePage("page-123", {
+      properties: {
+        "Publish Status": { select: { name: "Automated translations generated" } },
+      },
+    });
+
+    expect(result).toEqual(mockPage);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.notion.com/v1/pages/page-123");
+    expect(init.method).toBe("PATCH");
+    const body = JSON.parse(init.body);
+    expect(body.properties["Publish Status"].select.name).toBe("Automated translations generated");
+  });
+
+  it("appendBlockChildren sends PATCH to /v1/blocks/{blockId}/children in chunks of 100", async () => {
+    // 150 blocks should be chunked into 2 calls (100 + 50)
+    const blocks = Array.from({ length: 150 }, (_, i) => ({
+      object: "block" as const,
+      type: "paragraph",
+      paragraph: { rich_text: [{ text: { content: `Line ${i}` } }] },
+    }));
+
+    fetchMock
+      .mockResolvedValueOnce(okResponse({ object: "list", results: blocks.slice(0, 100) }))
+      .mockResolvedValueOnce(okResponse({ object: "list", results: blocks.slice(100) }));
+
+    const result = await client.appendBlockChildren("parent-block-id", blocks);
+
+    expect(result.results).toHaveLength(150);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const firstCallBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const secondCallBody = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(firstCallBody.children).toHaveLength(100);
+    expect(secondCallBody.children).toHaveLength(50);
+  });
+
+  it("deleteBlock sends DELETE to /v1/blocks/{blockId}", async () => {
+    const mockDeleted = { id: "block-to-delete", object: "block", archived: true };
+    fetchMock.mockResolvedValueOnce(okResponse(mockDeleted));
+
+    const result = await client.deleteBlock("block-to-delete");
+
+    expect(result).toEqual(mockDeleted);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.notion.com/v1/blocks/block-to-delete");
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("createPage does NOT retry on 429 rate limits (single-attempt non-idempotent write)", async () => {
+    fetchMock.mockResolvedValueOnce(rateLimitedResponse(1));
+
+    await expect(
+      client.createPage({
+        parent: { database_id: "db-123" },
+        properties: {},
+      }),
+    ).rejects.toThrow();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("appendBlockChildren does NOT retry on 529 or network errors (single-attempt non-idempotent write)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: "Notion is overloaded" }), {
+        status: 529,
+        statusText: "Site Overloaded",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(
+      client.appendBlockChildren("block-123", [{ object: "block", type: "paragraph" }]),
+    ).rejects.toThrow();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("appendBlockChildren invokes onChunk callback per batch and attaches appendedBlocks on failure", async () => {
+    const blocks = Array.from({ length: 150 }, (_, i) => ({
+      object: "block" as const,
+      type: "paragraph",
+      id: `block-${i}`,
+      paragraph: { rich_text: [{ text: { content: `Line ${i}` } }] },
+    }));
+
+    const chunk1Results = blocks.slice(0, 100);
+    fetchMock
+      .mockResolvedValueOnce(okResponse({ object: "list", results: chunk1Results }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: "Second chunk failed" }), {
+          status: 500,
+          statusText: "Internal Server Error",
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+    const onChunk = vi.fn();
+    let caughtErr: unknown = null;
+    try {
+      await client.appendBlockChildren("parent-block-id", blocks, { onChunk });
+    } catch (err) {
+      caughtErr = err;
+    }
+
+    expect(caughtErr).not.toBeNull();
+    expect(onChunk).toHaveBeenCalledTimes(1);
+    expect(onChunk).toHaveBeenCalledWith(chunk1Results);
+    expect((caughtErr as { appendedBlocks?: unknown[] }).appendedBlocks).toEqual(chunk1Results);
+  });
+});

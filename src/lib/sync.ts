@@ -13,7 +13,7 @@ import { mapStatus } from "./status.js";
 import { generateSlug, slugToDocusaurusId } from "./slug.js";
 import { buildFrontmatter, serializeDoc } from "./frontmatter.js";
 import type { PageMetadata, PageAsset } from "../schemas/metadata.js";
-import { extractAssetUrls, rehostAsset, sha256Hex, assetR2Key } from "./assets.js";
+import { extractAssetUrls, rehostAsset, sha256Hex, assetR2Key, stripUrlSignature } from "./assets.js";
 
 export interface SyncPageInput {
   pageId: string;
@@ -200,16 +200,37 @@ export async function convertPageData(input: {
     // URL because that's what's in the body; only the emitted marker is stripped.
     const markerUrl = stripUrlSignature(url);
 
-    // Markdown image: ![alt](url) → preserve alt text where present
+    // 1. Linked markdown image: [![alt](url)](dest) → neutralize entire linked construct
+    //    so the outer link does not wrap around the multiline unavailable marker and comment.
+    //    Supports balanced parentheses in the outer destination URL (e.g. Wikipedia links with closing parens like /wiki/Foo_(bar)),
+    //    pointy-bracketed destinations <...>, and optional link titles.
+    markdownBody = markdownBody.replace(
+      new RegExp(
+        `\\[\\s*!\\[([^\\]]*)\\]\\(${esc}\\)\\s*\\]\\(\\s*(?:<[^>]+>|(?:\\((?:[^()]*|\\([^()]*\\))*\\)|[^()\\s])+)(?:\\s+["'][^"']*["'])?\\s*\\)`,
+        "g",
+      ),
+      (_match, alt: string) =>
+        alt && alt.trim()
+          ? `**[Image unavailable: ${alt.trim()}]**\n<!-- failed-asset: ${markerUrl} -->`
+          : `**[Image unavailable]**\n<!-- failed-asset: ${markerUrl} -->`,
+    );
+
+    // 3. Standalone markdown image: ![alt](url) → preserve alt text where present
     markdownBody = markdownBody.replace(
       new RegExp(`!\\[([^\\]]*)\\]\\(${esc}\\)`, "g"),
       (_match, alt: string) =>
         alt && alt.trim()
-          ? `**[Image unavailable: ${alt}]**\n<!-- failed-asset: ${markerUrl} -->`
+          ? `**[Image unavailable: ${alt.trim()}]**\n<!-- failed-asset: ${markerUrl} -->`
           : `**[Image unavailable]**\n<!-- failed-asset: ${markerUrl} -->`,
     );
 
-    // HTML img: <img ... src="url" ...> (double or single quoted) → no alt recovery.
+    // 4. HTML img inside an anchor: <a ...><img ... src="url" ...></a>
+    markdownBody = markdownBody.replace(
+      new RegExp(`<a\\b[^>]*>\\s*<img\\b[^>]*\\ssrc=(["'])${esc}\\1[^>]*>\\s*<\\/a>`, "gi"),
+      () => `**[Image unavailable]**\n<!-- failed-asset: ${markerUrl} -->`,
+    );
+
+    // 5. Standalone HTML img: <img ... src="url" ...> (double or single quoted) → no alt recovery.
     // Callback (not a string replacer) so any `$` in `url` isn't re-interpreted.
     markdownBody = markdownBody.replace(
       new RegExp(`<img\\b[^>]*\\ssrc=(["'])${esc}\\1[^>]*>`, "gi"),
@@ -443,12 +464,4 @@ function escapeRegExp(s: string): string {
  * Origin + pathname stay useful for debugging which asset failed. Falls back to
  * a literal `?` split when the URL won't parse.
  */
-export function stripUrlSignature(url: string): string {
-  try {
-    const u = new URL(url);
-    return u.origin + u.pathname;
-  } catch {
-    const i = url.indexOf("?");
-    return i >= 0 ? url.slice(0, i) : url;
-  }
-}
+export { stripUrlSignature };

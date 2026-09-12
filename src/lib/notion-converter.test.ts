@@ -423,6 +423,66 @@ describe("richTextToMarkdown", () => {
     expect(text).toBe(" [link text](https://example.com)");
   });
 
+  it("preserves formatting (bold, italic, underline) on linked text", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: " bold link ",
+        text: { content: " bold link ", link: { url: "https://example.com" } },
+        annotations: {
+          bold: true, italic: true, strikethrough: false,
+          underline: true, code: false, color: "default",
+        },
+      },
+    ]);
+    expect(text).toBe(" [<u>***bold link***</u>](https://example.com) ");
+  });
+
+  it("MD039: hoists whitespace around colored punctuation link without leaving spaces inside span or brackets", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: " : ",
+        text: { content: " : ", link: { url: "https://example.com" } },
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: false, code: false, color: "red",
+        },
+      },
+    ]);
+    expect(text).toBe(' [<span style={{color:"red"}}>:</span>](https://example.com) ');
+  });
+
+  it("emits whitespace-only linked text without link brackets", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: "   ",
+        text: { content: "   ", link: { url: "https://example.com" } },
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: false, code: false, color: "red",
+        },
+      },
+    ]);
+    expect(text).toBe("   ");
+  });
+
+  it("hoists whitespace nested inside HTML boundary tags within links", () => {
+    const text = richTextToMarkdown([
+      {
+        type: "text",
+        plain_text: " colored link ",
+        text: { content: " colored link ", link: { url: "https://example.com" } },
+        annotations: {
+          bold: false, italic: false, strikethrough: false,
+          underline: false, code: false, color: "blue",
+        },
+      },
+    ]);
+    expect(text).toBe(' [<span style={{color:"blue"}}>colored link</span>](https://example.com) ');
+  });
+
   // ── Defect C: MD056 — newlines inside table cells ──
 
   it("MD056: newlines inside table cells are replaced with <br />", () => {
@@ -517,6 +577,51 @@ describe("richTextToMarkdown", () => {
     };
     const output = convertBlocks(blockList);
     expect(output).toContain("| Line1<br />Line2 |");
+  });
+
+  it("escapes unescaped pipe characters in table cells", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "tbl-pipes",
+          type: "table",
+          has_children: true,
+          table: { table_width: 2, has_column_header: true, has_row_header: false },
+        },
+      ],
+      children: {
+        "tbl-pipes": [
+          {
+            object: "block",
+            id: "row-h",
+            type: "table_row",
+            has_children: false,
+            table_row: {
+              cells: [
+                [{ type: "text", plain_text: "Header", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+                [{ type: "text", plain_text: "Value", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+              ],
+            },
+          },
+          {
+            object: "block",
+            id: "row-1",
+            type: "table_row",
+            has_children: false,
+            table_row: {
+              cells: [
+                [{ type: "text", plain_text: "Bitwise", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+                [{ type: "text", plain_text: "a | b (already escaped: c \\| d)", annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } }],
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const output = convertBlocks(blockList);
+    expect(output).toContain("| Bitwise | a \\| b (already escaped: c \\| d) |");
   });
 
   // ── Defect D: MD003 — divider after text becomes setext heading ──
@@ -1095,6 +1200,71 @@ describe("convertBlocks — recovered blocks", () => {
     expect(output.trim()).toBe(
       "[📄 Foo(https://evil.example)Bar](https://www.notion.so/cp789)",
     );
+  });
+
+  it("converts code blocks without caption", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "code-1",
+          type: "code",
+          has_children: false,
+          code: {
+            language: "typescript",
+            rich_text: [
+              {
+                type: "text",
+                text: { content: "const x = 42;" },
+                plain_text: "const x = 42;",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+            caption: [],
+          },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    expect(output).toBe("```typescript\nconst x = 42;\n```\n");
+  });
+
+  it("converts code blocks with caption, serializing the caption below the code fence", () => {
+    const blockList: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "code-2",
+          type: "code",
+          has_children: false,
+          code: {
+            language: "bash",
+            rich_text: [
+              {
+                type: "text",
+                text: { content: "npm run test" },
+                plain_text: "npm run test",
+                annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+            caption: [
+              {
+                type: "text",
+                text: { content: "Run unit tests" },
+                plain_text: "Run unit tests",
+                annotations: { bold: true, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+              },
+            ],
+          },
+        },
+      ],
+      children: {},
+    };
+    const output = convertBlocks(blockList);
+    expect(output).toBe("```bash\nnpm run test\n```\n\n**Run unit tests**\n");
   });
 });
 

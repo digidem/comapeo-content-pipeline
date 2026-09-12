@@ -227,4 +227,122 @@ describe("failed-asset marker signature stripping", () => {
     // No `?` at all → returned unchanged by the fallback path.
     expect(stripUrlSignature("not-a-url")).toBe("not-a-url");
   });
+
+  it("omits payload from failed data URI images in failed-asset marker", async () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-data",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "external",
+            external: { url: "data:image/png;base64,invalid-non-base64-!!!" },
+            caption: [],
+          },
+        },
+      ],
+    };
+
+    const result = await convertPageData({
+      pageId: "page-data-fail",
+      rawPage: makeRawPage(),
+      rawBlocks,
+      usedSlugs: new Set<string>(),
+    });
+    const { body } = parseDoc(result.canoncialMd);
+    expect(body).toContain("<!-- failed-asset: data:image/png;base64,[omitted] -->");
+    expect(body).not.toContain("invalid-non-base64-!!!");
+  });
+
+  it("neutralizes linked images cleanly without leaving outer link wrapped around failure marker", async () => {
+    failingFetch();
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-linked",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "file",
+            file: { url: signedImageUrl("sig-linked") },
+            link: { url: "https://example.com/destination" },
+            caption: [
+              {
+                type: "text",
+                plain_text: "Linked diagram",
+                text: { content: "Linked diagram" },
+                annotations: { ...DEFAULT_ANNOTATIONS },
+              },
+            ],
+          },
+        },
+      ],
+      children: {},
+    };
+
+    const result = await convertPageData({
+      pageId: "page-fail-linked",
+      rawPage: makeRawPage(),
+      rawBlocks,
+      usedSlugs: new Set<string>(),
+    });
+
+    const { body } = parseDoc(result.canoncialMd);
+    // Outer link markdown construct must not wrap the multiline failure marker
+    expect(body).not.toContain("](https://example.com/destination)");
+    expect(body).toContain("**[Image unavailable: Linked diagram]**");
+    expect(body).toContain(
+      "<!-- failed-asset: https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/img.png -->",
+    );
+  });
+
+  it("neutralizes linked images cleanly when destination contains closing parentheses", async () => {
+    failingFetch();
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "img-paren-dest",
+          type: "image",
+          has_children: false,
+          image: {
+            type: "file",
+            file: { url: signedImageUrl("sig-paren-dest") },
+            link: { url: "https://en.wikipedia.org/wiki/Flowchart_(computer_programming)" },
+            caption: [
+              {
+                type: "text",
+                plain_text: "Flowchart link with parens",
+                text: { content: "Flowchart link with parens" },
+                annotations: { ...DEFAULT_ANNOTATIONS },
+              },
+            ],
+          },
+        },
+      ],
+      children: {},
+    };
+
+    const result = await convertPageData({
+      pageId: "page-fail-paren-dest",
+      rawPage: makeRawPage(),
+      rawBlocks,
+      usedSlugs: new Set<string>(),
+    });
+
+    const { body } = parseDoc(result.canoncialMd);
+    // Verified the entire outer link with parens is neutralized
+    expect(body).not.toContain("https://en.wikipedia.org/wiki/Flowchart");
+    expect(body).not.toContain("(computer_programming)");
+    expect(body).toContain("**[Image unavailable: Flowchart link with parens]**");
+    expect(body).toContain(
+      "<!-- failed-asset: https://prod-files-secure.s3.us-west-2.amazonaws.com/bucket/img.png -->",
+    );
+  });
 });

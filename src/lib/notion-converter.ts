@@ -21,7 +21,7 @@ export interface NotionRichText {
   };
   href?: string;
   mention?: unknown;
-  equation?: unknown;
+  equation?: { expression: string };
 }
 
 export interface NotionBlock {
@@ -46,6 +46,7 @@ interface ToDoContent {
 
 interface CodeContent {
   rich_text: NotionRichText[];
+  caption?: NotionRichText[];
   language?: string;
 }
 
@@ -114,15 +115,39 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
       // (asset pipeline rehosts <img src> URLs to local assets/ paths)
       if (rt.type === "mention") {
         const mention = rt.mention as
-          | { type?: string; custom_emoji?: { url?: string; name?: string } }
+          | { type?: string; custom_emoji?: { url?: string; name?: string; id?: string } }
           | undefined;
         if (mention?.type === "custom_emoji" && mention.custom_emoji?.url) {
           const emojiName = (mention.custom_emoji.name || "emoji").replace(/"/g, "&quot;");
-          return `<img src="${mention.custom_emoji.url}" alt="${emojiName}" className="emoji" style={{display:"inline",height:"1.2em",width:"auto",verticalAlign:"text-bottom",margin:"0 0.1em"}} />`;
+          const emojiIdAttr = mention.custom_emoji.id ? ` data-emoji-id="${mention.custom_emoji.id}"` : "";
+          return `<img src="${mention.custom_emoji.url}" alt="${emojiName}"${emojiIdAttr} className="emoji" style={{display:"inline",height:"1.2em",width:"auto",verticalAlign:"text-bottom",margin:"0 0.1em"}} />`;
         }
       }
 
+      if (rt.type === "equation") {
+        const expression =
+          (rt.equation as { expression?: string } | undefined)?.expression ??
+          rt.plain_text ??
+          "";
+        if (!expression) return "";
+        let eqText = `$${expression}$`;
+        if (rt.annotations?.bold) eqText = `**${eqText}**`;
+        if (rt.annotations?.italic) eqText = `*${eqText}*`;
+        if (rt.annotations?.strikethrough) eqText = `~~${eqText}~~`;
+        if (rt.annotations?.underline) eqText = `<u>${eqText}</u>`;
+        return eqText;
+      }
+
       let text = rt.plain_text || "";
+
+      const ann = rt.annotations || {
+        bold: false,
+        italic: false,
+        strikethrough: false,
+        underline: false,
+        code: false,
+        color: "default",
+      };
 
       // Apply inline annotations to a single line segment. Markdown inline
       // markers (**bold**, *italic*, ~~strike~~, `code`) must open and close on
@@ -131,55 +156,49 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
       const applyInline = (segment: string): string => {
         // Don't wrap empty segments (blank lines) — keeps them blank.
         if (segment === "") return "";
-        // Whitespace-only segments must not receive inline markers.
-        // Markers that open or close adjacent to whitespace are not valid
-        // emphasis delimiters in CommonMark — they render as literal asterisks.
-        if (segment.trim() === "") return segment;
-
-        // Punctuation/symbol-only segments (no letters or digits) must not be
-        // emphasized either: authors sometimes bold/italicize just a ":" after
-        // a word ("Step 1*:*"), and per CommonMark flanking rules an emphasis
-        // delimiter between an alphanumeric and punctuation is not left-flanking
-        // — the markers render literally. Styling bare punctuation is visually
-        // meaningless, so drop the markers (keep color spans, which still work).
-        if (!/[\p{L}\p{N}]/u.test(segment) && !rt.annotations.code) {
-          const color = rt.annotations.color;
-          if (color && color !== "default" && !color.endsWith("_background")) {
-            return `<span style={{color:"${color}"}}>${segment}</span>`;
-          }
+        // If segment is whitespace-only, do not apply any inline formatting or tags
+        if (/^\s*$/.test(segment)) {
           return segment;
         }
 
-        // Hoist leading/trailing whitespace outside inline markers (MD037).
+        // Hoist leading/trailing whitespace outside inline markers and HTML tags (MD037 / MD039).
         // e.g. bold(" Step 2: ") → " **Step 2:** " not "** Step 2: **"
+        // e.g. color(" : ") → " <span ...>:</span> " not "<span ...> : </span>"
         const leadMatch = segment.match(/^(\s+)/);
         const leadingWs = leadMatch ? leadMatch[1] : "";
         const trailMatch = segment.match(/(\s+)$/);
         const trailingWs = trailMatch ? trailMatch[1] : "";
         let s = segment.slice(leadingWs.length, segment.length - trailingWs.length);
 
-        if (rt.annotations.bold) {
+        if (!/[\p{L}\p{N}]/u.test(s) && !ann.code) {
+          const color = ann.color;
+          if (color && color !== "default" && !color.endsWith("_background")) {
+            return leadingWs + `<span style={{color:"${color}"}}>${s}</span>` + trailingWs;
+          }
+          return leadingWs + s + trailingWs;
+        }
+
+        if (ann.bold) {
           s = `**${s}**`;
         }
-        if (rt.annotations.italic) {
+        if (ann.italic) {
           s = `*${s}*`;
         }
-        if (rt.annotations.strikethrough) {
+        if (ann.strikethrough) {
           s = `~~${s}~~`;
         }
-        if (rt.annotations.underline) {
+        if (ann.underline) {
           s = `<u>${s}</u>`;
         }
-        if (rt.annotations.code) {
+        if (ann.code) {
           // For code spans, hoist surrounding whitespace but preserve interior.
           s = "`" + s + "`";
         }
 
         // Color (foreground only — skip "default" and background colors).
         // Docusaurus parses .md as MDX, so the style prop must be a JSX object
-        // (style={{color:"red"}}), not an HTML string — a string style throws
-        // at static-site-generation time.
-        const color = rt.annotations.color;
+        // expression (style={{color:"..."}}) rather than an HTML string (style="...").
+        const color = ann.color;
         if (color && color !== "default" && !color.endsWith("_background")) {
           s = `<span style={{color:"${color}"}}>${s}</span>`;
         }
@@ -193,18 +212,36 @@ export function richTextToMarkdown(richText: NotionRichText[]): string {
       // Links: prefer href from mention, then text.link, then annotations
       const linkUrl = rt.href || rt.text?.link?.url;
       if (linkUrl && !rt.annotations.code) {
+        // Whitespace-only link text: emit the whitespace without brackets.
+        if (!rt.plain_text || !rt.plain_text.trim()) {
+          return rt.plain_text || "";
+        }
+
         // Hoist leading/trailing whitespace outside the bracket syntax (MD039).
-        // e.g. plain_text=" text " → " [text](url) " not "[ text ](url)"
-        const rawLinkText = rt.plain_text || text;
+        // e.g. text=" **text** " → " [**text**](url) " not "[ **text** ](url)"
+        const rawLinkText = text;
         const linkLeadMatch = rawLinkText.match(/^(\s+)/);
-        const linkLeadWs = linkLeadMatch ? linkLeadMatch[1] : "";
+        let linkLeadWs = linkLeadMatch ? linkLeadMatch[1] : "";
         const linkTrailMatch = rawLinkText.match(/(\s+)$/);
-        const linkTrailWs = linkTrailMatch ? linkTrailMatch[1] : "";
-        const innerText = rawLinkText.slice(linkLeadWs.length, rawLinkText.length - linkTrailWs.length);
-        if (innerText) {
+        let linkTrailWs = linkTrailMatch ? linkTrailMatch[1] : "";
+        let innerText = rawLinkText.slice(linkLeadWs.length, rawLinkText.length - linkTrailWs.length);
+
+        // Also hoist whitespace that may be nested immediately inside boundary HTML elements
+        // e.g. "<span ...> : </span>" or "<u>  link  </u>"
+        const tagLeadWs = innerText.match(/^(<[^>]+>)(\s+)/);
+        if (tagLeadWs) {
+          linkLeadWs += tagLeadWs[2];
+          innerText = tagLeadWs[1] + innerText.slice(tagLeadWs[0].length);
+        }
+        const tagTrailWs = innerText.match(/(\s+)(<\/[^>]+>)$/);
+        if (tagTrailWs) {
+          linkTrailWs = tagTrailWs[1] + linkTrailWs;
+          innerText = innerText.slice(0, innerText.length - tagTrailWs[0].length) + tagTrailWs[2];
+        }
+
+        if (innerText.replace(/<[^>]*>/g, "").trim()) {
           text = linkLeadWs + `[${innerText}](${linkUrl})` + linkTrailWs;
         } else {
-          // Whitespace-only link text: emit the whitespace without brackets.
           text = rawLinkText;
         }
       }
@@ -505,7 +542,12 @@ function convertCode(block: NotionBlock): string {
   const richText = getRichText(block);
   const text = richText.map((rt) => rt.plain_text).join("");
   const language = (block.code as CodeContent)?.language ?? "";
-  return "```" + language + "\n" + text + "\n```";
+  const codeFence = "```" + language + "\n" + text + "\n```";
+  const caption = richTextToMarkdown(getCaption(block)).trim();
+  if (caption) {
+    return codeFence + "\n\n" + caption;
+  }
+  return codeFence;
 }
 
 function convertImage(block: NotionBlock): string {
@@ -534,31 +576,64 @@ function convertImage(block: NotionBlock): string {
     linkUrl = extractCaptionLink(captionRichText);
   }
 
+  const filteredCaption = captionRichText.filter((rt) => !isDedicatedImageLink(rt));
+
   if (linkUrl) {
     // Use plain text for alt (no link formatting) when image itself is linked
-    const plainAlt = captionRichText.map((rt) => rt.plain_text || "").join("") || "image";
+    const plainAlt =
+      filteredCaption
+        .map((rt) => rt.plain_text || rt.text?.content || "")
+        .join("")
+        .trim() || "image";
     return `[![${plainAlt}](${imgUrl})](${linkUrl})`;
   }
 
   // Normal image — use plain text for alt (formatting doesn't render in HTML alt attributes)
-  const alt = captionRichText.map((rt) => rt.plain_text || "").join("") || "image";
+  const alt =
+    filteredCaption
+      .map((rt) => rt.plain_text || rt.text?.content || "")
+      .join("")
+      .trim() || "image";
   return `![${alt}](${imgUrl})`;
 }
 
-/** Extract the first hyperlink URL from caption rich text, if any. */
-function extractCaptionLink(caption: NotionRichText[]): string | null {
+/** Dedicated zero-width marker that cannot collide with visible author caption text. */
+export const DEDICATED_IMAGE_LINK_MARKER = "\u200B";
+
+/**
+ * Checks if a rich text item is a dedicated round-trip representation of an image click destination.
+ * Uses a zero-width space marker to prevent collisions with visible author caption text.
+ */
+export function isDedicatedImageLink(rt: NotionRichText): boolean {
+  return (
+    Boolean(rt.text?.link?.url || rt.href) &&
+    (rt.text?.content === DEDICATED_IMAGE_LINK_MARKER ||
+      rt.plain_text === DEDICATED_IMAGE_LINK_MARKER ||
+      rt.text?.content === " [link]" ||
+      rt.plain_text === " [link]")
+  );
+}
+
+/** Extract the image hyperlink URL from caption rich text, prioritizing dedicated round-trip items. */
+export function extractCaptionLink(caption: NotionRichText[]): string | null {
   if (!caption || caption.length === 0) return null;
 
+  // 1. Check if there is a dedicated round-trip image link item
+  const dedicated = caption.find(isDedicatedImageLink);
+  if (dedicated) {
+    return dedicated.text?.link?.url ?? dedicated.href ?? null;
+  }
+
   for (const rt of caption) {
-    // 1. Check dedicated link property on text items
+    // 2. Check dedicated link property on text items
     if (rt.text?.link?.url) {
       return rt.text.link.url;
     }
-    // 2. Check href property
+    // 3. Check href property
     if (rt.href) {
       return rt.href;
     }
-    // 3. Check plain-text for URLs (old pipeline regex fallback)
+    // 4. Check plain-text for URLs (old pipeline regex fallback)
     const plainText = rt.plain_text || "";
     const urlMatch = plainText.match(/https?:\/\/[^\s<>"]+/);
     if (urlMatch) {
@@ -602,7 +677,8 @@ function convertTable(
         // Newlines inside table cells break Markdown table syntax (MD056).
         // Trim edge whitespace first (which handles trailing-newline artifacts),
         // then replace any remaining interior newlines with <br />.
-        return raw.trim().replace(/\n/g, "<br />");
+        // Also escape literal pipes so they do not create extra Markdown table columns.
+        return raw.trim().replace(/(?<!\\)\|/g, "\\|").replace(/\n/g, "<br />");
       }).join(" | ") +
       " |"
     );

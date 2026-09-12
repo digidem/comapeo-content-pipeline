@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PageIdSchema } from "./manifest.js";
 
 /** Per-page metadata stored alongside canonical content in R2 */
 export const PageAssetSchema = z.object({
@@ -9,7 +10,7 @@ export const PageAssetSchema = z.object({
 });
 
 export const PageMetadataSchema = z.object({
-  page_id: z.string(),
+  page_id: PageIdSchema,
   title: z.string(),
   source_url: z.string(),
   notion_last_edited_time: z.string(),
@@ -36,7 +37,7 @@ export const PageMetadataSchema = z.object({
   /** Drafting status from Notion */
   drafting_status: z.string().nullable().optional(),
   /** Page IDs of sub-items linked via Notion Sub-item relation (translations) */
-  sub_items: z.array(z.string()).optional(),
+  sub_items: z.array(PageIdSchema).optional(),
   /** Language provenance: how the locale was determined */
   language_source: z.enum(["explicit", "automated", "fallback"]).optional(),
 });
