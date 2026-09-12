@@ -400,6 +400,185 @@ describe("manifest docusaurus_path contract", () => {
   });
 });
 
+describe("updateManifestWithDoc container-mode sub_items", () => {
+  const testDir = join(tmpdir(), "test-manifest-container-" + Date.now());
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  const writeManifest = (manifestPath: string, docs: unknown[]) => {
+    mkdirSync(testDir, { recursive: true });
+    writeFileSync(
+      manifestPath,
+      JSON.stringify(
+        {
+          schema_version: "1.0",
+          generated_at: new Date().toISOString(),
+          source: { type: "notion", database_id: "db", data_source_id: "ds" },
+          docs,
+          sidebars: {},
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  };
+
+  const makeTranslationDoc = (pageId: string, overrides: Record<string, unknown> = {}) => ({
+    page_id: pageId,
+    title: "Traducción",
+    locale: "es",
+    section: "section-a",
+    slug: "traduccion",
+    docusaurus_path: "/traduccion",
+    docusaurus_id: "section-a/traduccion",
+    r2_doc_key: "docs/es/section-a/traduccion.md",
+    r2_metadata_key: `metadata/${pageId}.json`,
+    source_url: `https://notion.so/${pageId}`,
+    notion_last_edited_time: new Date().toISOString(),
+    content_hash: "hash",
+    status: "draft",
+    language_source: "automated",
+    ...overrides,
+  });
+
+  it("adds translation to container sub_items (not enDoc.sub_items) when enDoc is a container child", () => {
+    const manifestPath = join(testDir, "manifest.json");
+    writeManifest(manifestPath, [
+      {
+        page_id: "container-1",
+        title: "Container Row",
+        locale: "en",
+        section: "section-a",
+        slug: "container-row",
+        sub_items: ["en-1"],
+      },
+      { page_id: "en-1", title: "My Page", locale: "en", section: "section-a", slug: "my-page" },
+    ]);
+
+    updateManifestWithDoc(manifestPath, makeTranslationDoc("es-new-1"), "en-1", undefined, {
+      inputDir: testDir,
+    });
+
+    const updated = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const container = updated.docs.find((d: { page_id: string }) => d.page_id === "container-1");
+    const enDoc = updated.docs.find((d: { page_id: string }) => d.page_id === "en-1");
+    expect(container.sub_items).toEqual(["en-1", "es-new-1"]);
+    // The English doc must not claim the translation in its own sub_items
+    expect(enDoc.sub_items).toBeUndefined();
+  });
+
+  it("migrates stale translation out of enDoc.sub_items into the container sub_items when replacing", () => {
+    const manifestPath = join(testDir, "manifest.json");
+    writeManifest(manifestPath, [
+      {
+        page_id: "container-1",
+        title: "Container Row",
+        locale: "en",
+        section: "section-a",
+        slug: "container-row",
+        sub_items: ["en-1", "es-old"],
+      },
+      {
+        page_id: "en-1",
+        title: "My Page",
+        locale: "en",
+        section: "section-a",
+        slug: "my-page",
+        sub_items: ["es-old"],
+      },
+      {
+        page_id: "es-old",
+        title: "Traducción Vieja",
+        locale: "es",
+        section: "section-a",
+        slug: "traduccion-vieja",
+      },
+    ]);
+
+    updateManifestWithDoc(manifestPath, makeTranslationDoc("es-new-1"), "en-1", "es-old", {
+      inputDir: testDir,
+    });
+
+    const updated = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const container = updated.docs.find((d: { page_id: string }) => d.page_id === "container-1");
+    const enDoc = updated.docs.find((d: { page_id: string }) => d.page_id === "en-1");
+    expect(container.sub_items).toEqual(["en-1", "es-new-1"]);
+    expect(enDoc.sub_items).toEqual([]);
+  });
+
+  it("keeps standalone enDoc.sub_items linking when enDoc is not a container child", () => {
+    const manifestPath = join(testDir, "manifest.json");
+    writeManifest(manifestPath, [
+      {
+        page_id: "en-1",
+        title: "My Page",
+        locale: "en",
+        section: "section-a",
+        slug: "my-page",
+        sub_items: ["es-old"],
+      },
+      {
+        page_id: "es-old",
+        title: "Traducción Vieja",
+        locale: "es",
+        section: "section-a",
+        slug: "traduccion-vieja",
+      },
+    ]);
+
+    updateManifestWithDoc(manifestPath, makeTranslationDoc("es-new-1"), "en-1", "es-old", {
+      inputDir: testDir,
+    });
+
+    const updated = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const enDoc = updated.docs.find((d: { page_id: string }) => d.page_id === "en-1");
+    expect(enDoc.sub_items).toEqual(["es-new-1"]);
+  });
+
+  it("matches candidates among container sibling sub_items even when slug/section differ", () => {
+    const manifestPath = join(testDir, "manifest.json");
+    writeManifest(manifestPath, [
+      {
+        page_id: "container-1",
+        title: "Container Row",
+        locale: "en",
+        section: "section-a",
+        slug: "container-row",
+        sub_items: ["en-1", "es-sibling"],
+      },
+      { page_id: "en-1", title: "My Page", locale: "en", section: "section-a", slug: "my-page" },
+      {
+        page_id: "es-sibling",
+        title: "Traducción Vieja",
+        locale: "es",
+        section: "section-zzz",
+        slug: "old-unrelated-slug",
+      },
+    ]);
+
+    // No exact page ID, no replacedPageId, and slug/section do not match es-sibling:
+    // only the container family (container-1.sub_items) can identify the stale sibling.
+    updateManifestWithDoc(
+      manifestPath,
+      makeTranslationDoc("es-brand-new", { section: "section-a", slug: "my-page" }),
+      "en-1",
+      undefined,
+      { inputDir: testDir },
+    );
+
+    const updated = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const sibling = updated.docs.find((d: { page_id: string }) => d.page_id === "es-sibling");
+    expect(sibling).toBeUndefined();
+    const replacement = updated.docs.find((d: { page_id: string }) => d.page_id === "es-brand-new");
+    expect(replacement).toBeDefined();
+    const container = updated.docs.find((d: { page_id: string }) => d.page_id === "container-1");
+    expect(container.sub_items).toEqual(["en-1", "es-brand-new"]);
+  });
+});
+
 describe("buildManifestDoc", () => {
   it("builds a valid manifest doc with canonical R2 keys and public docusaurus path", () => {
     const meta = {
