@@ -77,6 +77,11 @@ bun scripts/translate-missing.ts
 bun scripts/translate-missing.ts --apply
 ```
 
+Machine-generated pages land in Notion with `Publish Status: "Automated
+translations generated"` and must pass human review before publication —
+editors, see the [editorial review workflow](./docs/editorial-review-workflow.md)
+for the review checklist, status transitions, and regeneration commands.
+
 ### Providers
 
 The provider is auto-detected from the environment; within each group the first
