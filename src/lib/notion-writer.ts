@@ -89,6 +89,127 @@ function createUnavailableImagePlaceholder(caption?: unknown[]): Record<string, 
 }
 
 /**
+ * Notion's REST API embeds at most 2 levels of block nesting in a single
+ * appendBlockChildren / createPage request (the appended roots plus their direct
+ * children). Taller trees are rejected with an HTTP 400 validation error, so deep
+ * children are deferred and appended in follow-up requests to the Notion block IDs
+ * assigned when the bare parent containers were created.
+ */
+export const NOTION_MAX_EMBED_DEPTH = 1;
+
+/**
+ * Container types that Notion requires to arrive with their children inline
+ * (they cannot be created as bare containers followed by deferred appends).
+ */
+export const NEVER_BARE_CONTAINER_TYPES = new Set(["table", "column_list", "column"]);
+
+export interface DeferredChildren {
+  /** Index into DepthPlan.roots of the bare container that receives the children. */
+  rootIndex: number;
+  children: Record<string, unknown>[];
+}
+
+export interface DepthPlan {
+  roots: Record<string, unknown>[];
+  deferred: DeferredChildren[];
+}
+
+/**
+ * Height of a block subtree measured in levels of `children` nesting below the
+ * block itself (a leaf is 0, a block whose children are leaves is 1, ...).
+ */
+export function subtreeHeight(block: Record<string, unknown>): number {
+  const payload = block[block.type as string] as Record<string, unknown> | undefined;
+  const children = payload?.children;
+  if (Array.isArray(children) && children.length > 0) {
+    return (
+      1 +
+      Math.max(
+        ...children.map((child) => subtreeHeight(child as Record<string, unknown>)),
+      )
+    );
+  }
+  return 0;
+}
+
+/**
+ * Splits blocks into roots that fit within Notion's embed depth and children
+ * deferred to follow-up appends against the created bare containers.
+ * Pure: input blocks are not mutated.
+ */
+export function splitForNotionDepth(
+  blocks: Record<string, unknown>[],
+  maxEmbedDepth: number = NOTION_MAX_EMBED_DEPTH,
+): DepthPlan {
+  const roots: Record<string, unknown>[] = [];
+  const deferred: DeferredChildren[] = [];
+
+  for (const block of blocks) {
+    if (subtreeHeight(block) <= maxEmbedDepth) {
+      roots.push(block);
+      continue;
+    }
+
+    const blockType = block.type as string;
+    const payload = (block[blockType] as Record<string, unknown> | undefined) ?? {};
+    const children = payload.children;
+    if (
+      NEVER_BARE_CONTAINER_TYPES.has(blockType) ||
+      !Array.isArray(children) ||
+      children.length === 0
+    ) {
+      throw new Error(
+        `Cannot defer children of a "${blockType}" block exceeding Notion's max embed depth of ${maxEmbedDepth}: ${
+          NEVER_BARE_CONTAINER_TYPES.has(blockType)
+            ? "Notion requires this container type to embed its children inline"
+            : "no deferrable children were found"
+        }.`,
+      );
+    }
+
+    // Clone the block and strip its children so it fits within the embed depth as a
+    // bare container; the deferred children are appended to the created block later.
+    const barePayload: Record<string, unknown> = { ...payload };
+    delete barePayload.children;
+    roots.push({ ...block, [blockType]: barePayload });
+    deferred.push({ rootIndex: roots.length - 1, children });
+  }
+
+  return { roots, deferred };
+}
+
+/**
+ * Appends blocks to a parent page/block, working around Notion's max embed depth:
+ * bare containers are appended first, then deferred children are recursively
+ * appended to the Notion block IDs assigned to the created containers.
+ */
+export async function appendBlockTree(
+  client: Pick<NotionClient, "appendBlockChildren">,
+  parentId: string,
+  blocks: Record<string, unknown>[],
+  options?: { onRootChunk?: (blocks: NotionBlock[]) => void },
+): Promise<NotionBlock[]> {
+  const plan = splitForNotionDepth(blocks);
+  const res = await client.appendBlockChildren(
+    parentId,
+    plan.roots,
+    options?.onRootChunk ? { onChunk: options.onRootChunk } : undefined,
+  );
+
+  if (!res?.results || res.results.length !== plan.roots.length) {
+    throw new Error(
+      `appendBlockChildren returned ${res?.results?.length ?? 0} results for ${plan.roots.length} roots`,
+    );
+  }
+
+  for (const d of plan.deferred) {
+    await appendBlockTree(client, res.results[d.rootIndex].id, d.children);
+  }
+
+  return res.results;
+}
+
+/**
  * Prepares a NotionBlockList for insertion via Notion API (appendBlockChildren / createPage).
  *
  * Strips read-only metadata fields, converts Notion S3 images to external URLs,
@@ -779,16 +900,14 @@ export async function writeTranslationToNotion(
       let committedLastEditedTime: string | undefined;
       try {
         if (preparedBlocks.length > 0) {
-          const appendRes = await client.appendBlockChildren(targetPageId, preparedBlocks, {
-            onChunk: (blocks) => {
+          const appendedRoots = await appendBlockTree(client, targetPageId, preparedBlocks, {
+            onRootChunk: (blocks) => {
               newlyAppended.push(...blocks);
             },
           });
-          if (appendRes?.results) {
-            for (const b of appendRes.results) {
-              if (!newlyAppended.some((existing) => existing.id === b.id)) {
-                newlyAppended.push(b);
-              }
+          for (const b of appendedRoots) {
+            if (!newlyAppended.some((existing) => existing.id === b.id)) {
+              newlyAppended.push(b);
             }
           }
         }
@@ -1256,6 +1375,11 @@ export async function writeTranslationToNotion(
   const firstChunk = preparedBlocks.slice(0, 100);
   const remainingChunks = preparedBlocks.slice(100);
 
+  // Notion rejects createPage payloads embedding more than NOTION_MAX_EMBED_DEPTH levels
+  // of block nesting; when deep children are present, create a bare page and append the
+  // tree incrementally against the assigned block IDs instead.
+  const hasDeepNesting = splitForNotionDepth(preparedBlocks).deferred.length > 0;
+
   let newPage: NotionPage | null = null;
   try {
     newPage = await client.createPage({
@@ -1281,10 +1405,12 @@ export async function writeTranslationToNotion(
           select: { name: "Page" },
         },
       },
-      children: firstChunk,
+      ...(hasDeepNesting ? {} : { children: firstChunk }),
     });
 
-    if (remainingChunks.length > 0) {
+    if (hasDeepNesting) {
+      await appendBlockTree(client, newPage.id, preparedBlocks);
+    } else if (remainingChunks.length > 0) {
       await client.appendBlockChildren(newPage.id, remainingChunks);
     }
   } catch (err) {

@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
-  prepareBlocksForNotion,
-  writeTranslationToNotion,
-  isStubPage,
+  appendBlockTree,
   isDeadPage,
+  isStubPage,
+  NEVER_BARE_CONTAINER_TYPES,
+  NOTION_MAX_EMBED_DEPTH,
+  prepareBlocksForNotion,
   rankTranslationCandidates,
+  splitForNotionDepth,
+  subtreeHeight,
+  writeTranslationToNotion,
 } from "./notion-writer.js";
 import { convertBlocks, DEDICATED_IMAGE_LINK_MARKER, type NotionBlockList } from "./notion-converter.js";
 import type { NotionBlock, NotionClient, NotionPage } from "./notion-client.js";
@@ -793,6 +798,15 @@ describe("writeTranslationToNotion", () => {
       object: "page",
     } as unknown as NotionPage);
 
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "appended-root-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    })
+
     const result = await writeTranslationToNotion({
       client: mockClient,
       databaseId: "db-123",
@@ -851,6 +865,15 @@ describe("writeTranslationToNotion", () => {
       id: "renamed-translation-id",
       object: "page",
     } as unknown as NotionPage);
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "appended-root-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    })
 
     const result = await writeTranslationToNotion({
       client: mockClient,
@@ -925,6 +948,15 @@ describe("writeTranslationToNotion", () => {
       object: "page",
     } as unknown as NotionPage);
 
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "appended-root-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    })
+
     const result = await writeTranslationToNotion({
       client: mockClient,
       databaseId: "db-123",
@@ -974,6 +1006,15 @@ describe("writeTranslationToNotion", () => {
       id: "sub-item-es-id",
       object: "page",
     } as unknown as NotionPage);
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "appended-root-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    })
 
     const result = await writeTranslationToNotion({
       client: mockClient,
@@ -1292,6 +1333,15 @@ describe("writeTranslationToNotion", () => {
       object: "page",
     } as unknown as NotionPage);
 
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "appended-root-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    })
+
     await writeTranslationToNotion({
       client: mockClient,
       databaseId: "db-123",
@@ -1329,7 +1379,9 @@ describe("writeTranslationToNotion", () => {
 
     vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
       object: "list",
-      results: [],
+      results: [
+        { id: "appended-root-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
       next_cursor: null,
       has_more: false,
     });
@@ -1383,7 +1435,9 @@ describe("writeTranslationToNotion", () => {
 
     vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
       object: "list",
-      results: [],
+      results: [
+        { id: "appended-root-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
       next_cursor: null,
       has_more: false,
     });
@@ -1477,7 +1531,9 @@ describe("writeTranslationToNotion", () => {
 
     vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
       object: "list",
-      results: [],
+      results: [
+        { id: "appended-root-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
       next_cursor: null,
       has_more: false,
     });
@@ -1571,7 +1627,9 @@ describe("writeTranslationToNotion", () => {
 
     vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
       object: "list",
-      results: [],
+      results: [
+        { id: "appended-root-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
       next_cursor: null,
       has_more: false,
     });
@@ -1624,7 +1682,9 @@ describe("writeTranslationToNotion", () => {
 
     vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
       object: "list",
-      results: [],
+      results: [
+        { id: "appended-root-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
       next_cursor: null,
       has_more: false,
     });
@@ -1710,7 +1770,14 @@ describe("writeTranslationToNotion", () => {
     const callOrder: string[] = [];
     vi.mocked(mockClient.appendBlockChildren).mockImplementationOnce(async () => {
       callOrder.push("append");
-      return { object: "list", results: [], next_cursor: null, has_more: false };
+      return {
+        object: "list",
+        results: [
+          { id: "appended-root-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+        ],
+        next_cursor: null,
+        has_more: false,
+      };
     });
     vi.mocked(mockClient.updatePage).mockImplementationOnce(async () => {
       callOrder.push("update");
@@ -3177,5 +3244,608 @@ describe("writeTranslationToNotion", () => {
       const ranked = rankTranslationCandidates([order2, order1], "Title");
       expect(ranked.map((p) => p.id)).toEqual(["o1", "o2"]);
     });
+  });
+});
+
+
+function makeParagraphBlock(id: string, text: string): Record<string, unknown> {
+  return {
+    object: "block",
+    id,
+    type: "paragraph",
+    has_children: false,
+    paragraph: { rich_text: [{ type: "text", text: { content: text } }] },
+  };
+}
+
+function makeContainerBlock(
+  id: string,
+  type: string,
+  text: string,
+  children?: Record<string, unknown>[],
+): Record<string, unknown> {
+  return {
+    object: "block",
+    id,
+    type,
+    has_children: (children?.length ?? 0) > 0,
+    [type]: {
+      rich_text: [{ type: "text", text: { content: text } }],
+      ...(children ? { children } : {}),
+    },
+  };
+}
+
+function createdBlock(id: string, type: string): NotionBlock {
+  return { object: "block", id, type, has_children: false };
+}
+
+describe("subtreeHeight", () => {
+  it("returns 0 for a leaf block with no children", () => {
+    expect(subtreeHeight(makeParagraphBlock("p1", "Leaf"))).toBe(0);
+  });
+
+  it("returns 0 for a block whose payload has no children array", () => {
+    const block = { object: "block", type: "paragraph", paragraph: {} };
+    expect(subtreeHeight(block)).toBe(0);
+  });
+
+  it("returns 0 for a block of unknown type with no payload", () => {
+    expect(subtreeHeight({ object: "block" })).toBe(0);
+  });
+
+  it("returns 1 for a block whose children are all leaves", () => {
+    const toggle = makeContainerBlock("t1", "toggle", "Parent", [
+      makeParagraphBlock("p1", "Child 1"),
+      makeParagraphBlock("p2", "Child 2"),
+    ]);
+    expect(subtreeHeight(toggle)).toBe(1);
+  });
+
+  it("returns 2 for a toggle containing a list item containing a paragraph", () => {
+    const leaf = makeParagraphBlock("leaf", "Leaf");
+    const listItem = makeContainerBlock("li", "numbered_list_item", "Item", [leaf]);
+    const toggle = makeContainerBlock("t1", "toggle", "Parent", [listItem]);
+    expect(subtreeHeight(toggle)).toBe(2);
+  });
+
+  it("measures height using the tallest child branch", () => {
+    const deepBranch = makeContainerBlock("deep", "toggle", "Deep", [
+      makeParagraphBlock("deep-leaf", "Deep leaf"),
+    ]);
+    const shallowBranch = makeParagraphBlock("shallow", "Shallow");
+    const toggle = makeContainerBlock("t1", "toggle", "Parent", [shallowBranch, deepBranch]);
+    expect(subtreeHeight(toggle)).toBe(2);
+  });
+
+  it("counts deeper chains accurately (height 3)", () => {
+    const leaf = makeParagraphBlock("leaf", "Leaf");
+    const l3 = makeContainerBlock("t3", "toggle", "Level 3", [leaf]);
+    const l2 = makeContainerBlock("t2", "toggle", "Level 2", [l3]);
+    const l1 = makeContainerBlock("t1", "toggle", "Level 1", [l2]);
+    expect(subtreeHeight(l1)).toBe(3);
+  });
+});
+
+describe("splitForNotionDepth", () => {
+  it("keeps blocks at or below the max embed depth untouched in roots", () => {
+    const shallow = makeParagraphBlock("p1", "Leaf");
+    const toggleWithLeaf = makeContainerBlock("t1", "toggle", "Parent", [shallow]);
+
+    const plan = splitForNotionDepth([shallow, toggleWithLeaf]);
+
+    expect(plan.roots).toEqual([shallow, toggleWithLeaf]);
+    expect(plan.roots[0]).toBe(shallow);
+    expect(plan.roots[1]).toBe(toggleWithLeaf);
+    expect(plan.deferred).toEqual([]);
+  });
+
+  it("strips children of deep blocks into deferred and does not mutate the input", () => {
+    const child = makeContainerBlock("child", "numbered_list_item", "Nested", [
+      makeParagraphBlock("grandchild", "Leaf"),
+    ]);
+    const toggle = makeContainerBlock("t1", "toggle", "Parent", [child]);
+    const originalPayload = { ...(toggle.toggle as Record<string, unknown>) };
+
+    const plan = splitForNotionDepth([toggle]);
+
+    expect(plan.roots).toHaveLength(1);
+    expect(plan.deferred).toEqual([{ rootIndex: 0, children: [child] }]);
+
+    // Root was cloned and stripped of children
+    const bareRoot = plan.roots[0];
+    expect(bareRoot).not.toBe(toggle);
+    expect((bareRoot.toggle as Record<string, unknown>).children).toBeUndefined();
+    expect((bareRoot.toggle as Record<string, unknown>).rich_text).toEqual(
+      originalPayload.rich_text,
+    );
+
+    // Input block still carries its children
+    expect((toggle.toggle as Record<string, unknown>).children).toEqual([child]);
+    expect(((toggle.toggle as Record<string, unknown>).children as unknown[])[0]).toBe(child);
+  });
+
+  it("assigns deferred rootIndex relative to preceding shallow roots", () => {
+    const shallow = makeParagraphBlock("p1", "Leaf");
+    const child = makeContainerBlock("child", "numbered_list_item", "Nested", [
+      makeParagraphBlock("grandchild", "Leaf"),
+    ]);
+    const deep = makeContainerBlock("t1", "toggle", "Parent", [child]);
+
+    const plan = splitForNotionDepth([shallow, deep]);
+
+    expect(plan.roots).toHaveLength(2);
+    expect(plan.deferred).toEqual([{ rootIndex: 1, children: [child] }]);
+    expect(plan.roots[1].type).toBe("toggle");
+  });
+
+  it("throws for a deep never-bare container (column_list)", () => {
+    const leaf = makeParagraphBlock("leaf", "Leaf");
+    const column = makeContainerBlock("col", "column", "Column", [leaf]);
+    const columnList = makeContainerBlock("cols", "column_list", "Columns", [column]);
+
+    expect(() => splitForNotionDepth([columnList])).toThrow(
+      'Cannot defer children of a "column_list" block',
+    );
+  });
+
+  it("keeps a table with leaf rows inline since its height fits the embed depth", () => {
+    const row = {
+      object: "block",
+      id: "row-1",
+      type: "table_row",
+      table_row: { cells: [] },
+    };
+    const table = makeContainerBlock("table-1", "table", "", [row]);
+
+    const plan = splitForNotionDepth([table]);
+    expect(plan.deferred).toEqual([]);
+    expect(plan.roots[0]).toBe(table);
+  });
+
+  it("honors a custom maxEmbedDepth", () => {
+    const child = makeParagraphBlock("child", "Nested");
+    const toggle = makeContainerBlock("t1", "toggle", "Parent", [child]);
+
+    // Tighter budget (0): even a height-1 toggle must be deferred
+    const tight = splitForNotionDepth([toggle], 0);
+    expect(tight.deferred).toHaveLength(1);
+    expect((tight.roots[0].toggle as Record<string, unknown>).children).toBeUndefined();
+
+    // Looser budget (2): a height-2 tree stays inline
+    const grandchild = makeParagraphBlock("grandchild", "Leaf");
+    const listItem = makeContainerBlock("li", "numbered_list_item", "Item", [grandchild]);
+    const deepToggle = makeContainerBlock("t2", "toggle", "Parent", [listItem]);
+    const loose = splitForNotionDepth([deepToggle], 2);
+    expect(loose.deferred).toEqual([]);
+    expect(loose.roots[0]).toBe(deepToggle);
+  });
+
+  it("exposes the Notion embed depth limit and never-bare container types", () => {
+    expect(NOTION_MAX_EMBED_DEPTH).toBe(1);
+    expect([...NEVER_BARE_CONTAINER_TYPES].sort()).toEqual(["column", "column_list", "table"]);
+  });
+});
+
+describe("appendBlockTree", () => {
+  function makeAppendClient() {
+    const client = {
+      appendBlockChildren: vi.fn(),
+    } as unknown as Pick<NotionClient, "appendBlockChildren">;
+    return vi.mocked(client.appendBlockChildren);
+  }
+
+  it("appends shallow blocks in a single call and returns the created blocks", async () => {
+    const append = makeAppendClient();
+    const created = [createdBlock("root-1", "paragraph"), createdBlock("root-2", "paragraph")];
+    append.mockResolvedValueOnce({
+      object: "list",
+      results: created,
+      next_cursor: null,
+      has_more: false,
+    });
+
+    const blocks = [makeParagraphBlock("p1", "One"), makeParagraphBlock("p2", "Two")];
+    const out = await appendBlockTree({ appendBlockChildren: append } as Pick<
+      NotionClient,
+      "appendBlockChildren"
+    >, "page-1", blocks);
+
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(append).toHaveBeenCalledWith("page-1", blocks, undefined);
+    expect(out).toEqual(created);
+  });
+
+  it("appends a bare deep container first, then its deferred children to the created block id", async () => {
+    const append = makeAppendClient();
+    append
+      .mockResolvedValueOnce({
+        object: "list",
+        results: [createdBlock("created-toggle-1", "toggle")],
+        next_cursor: null,
+        has_more: false,
+      })
+      .mockResolvedValueOnce({
+        object: "list",
+        results: [createdBlock("created-item-1", "numbered_list_item")],
+        next_cursor: null,
+        has_more: false,
+      });
+
+    const leaf = makeParagraphBlock("leaf", "Leaf");
+    const listItem = makeContainerBlock("li", "numbered_list_item", "Item", [leaf]);
+    const deepToggle = makeContainerBlock("t1", "toggle", "Parent", [listItem]);
+
+    const out = await appendBlockTree(
+      { appendBlockChildren: append } as Pick<NotionClient, "appendBlockChildren">,
+      "page-1",
+      [deepToggle],
+    );
+
+    // First call: bare toggle without children, appended to the page
+    expect(append).toHaveBeenCalledTimes(2);
+    const [firstParentId, firstChildren] = append.mock.calls[0];
+    expect(firstParentId).toBe("page-1");
+    expect(firstChildren).toHaveLength(1);
+    const bareToggle = firstChildren[0] as Record<string, unknown>;
+    expect(bareToggle.type).toBe("toggle");
+    expect((bareToggle.toggle as Record<string, unknown>).children).toBeUndefined();
+
+    // Second call: deferred children appended to the created toggle's Notion id,
+    // with the list item's own leaf children embedded inline (within the limit)
+    const [secondParentId, secondChildren, secondOptions] = append.mock.calls[1];
+    expect(secondParentId).toBe("created-toggle-1");
+    expect(secondChildren).toEqual([listItem]);
+    expect(((secondChildren[0] as Record<string, unknown>).numbered_list_item as Record<
+      string,
+      unknown
+    >).children).toEqual([leaf]);
+    // Sub-calls do not receive the root chunk callback
+    expect(secondOptions).toBeUndefined();
+
+    // Only root-level results are returned
+    expect(out).toEqual([createdBlock("created-toggle-1", "toggle")]);
+  });
+
+  it("recurses for trees that are deep at multiple levels", async () => {
+    const append = makeAppendClient();
+    append
+      .mockResolvedValueOnce({
+        object: "list",
+        results: [createdBlock("c1", "toggle")],
+        next_cursor: null,
+        has_more: false,
+      })
+      .mockResolvedValueOnce({
+        object: "list",
+        results: [createdBlock("c2", "toggle")],
+        next_cursor: null,
+        has_more: false,
+      })
+      .mockResolvedValueOnce({
+        object: "list",
+        results: [createdBlock("c3", "toggle")],
+        next_cursor: null,
+        has_more: false,
+      });
+
+    const leaf = makeParagraphBlock("leaf", "Leaf");
+    const l3 = makeContainerBlock("t3", "toggle", "Level 3", [leaf]);
+    const l2 = makeContainerBlock("t2", "toggle", "Level 2", [l3]);
+    const l1 = makeContainerBlock("t1", "toggle", "Level 1", [l2]);
+
+    await appendBlockTree(
+      { appendBlockChildren: append } as Pick<NotionClient, "appendBlockChildren">,
+      "root",
+      [l1],
+    );
+
+    expect(append).toHaveBeenCalledTimes(3);
+    expect(append.mock.calls[0]).toEqual(["root", [expect.objectContaining({ type: "toggle" })], undefined]);
+    expect(append.mock.calls[1][0]).toBe("c1");
+    expect((append.mock.calls[1][1] as Record<string, unknown>[])[0].type).toBe("toggle");
+    expect((append.mock.calls[1][1] as Record<string, unknown>[])[0]).not.toBe(l2);
+    // Deepest toggle's children fit the embed depth and are appended inline
+    expect(append.mock.calls[2][0]).toBe("c2");
+    const deepest = (append.mock.calls[2][1] as Record<string, unknown>[])[0];
+    expect((deepest.toggle as Record<string, unknown>).children).toEqual([leaf]);
+  });
+
+  it("invokes onRootChunk for root chunks only, not for deferred sub-appends", async () => {
+    const append = makeAppendClient();
+    append
+      .mockImplementationOnce(async (_parentId, _children, options) => {
+        options?.onChunk?.([createdBlock("created-toggle-1", "toggle")]);
+        return {
+          object: "list",
+          results: [createdBlock("created-toggle-1", "toggle")],
+          next_cursor: null,
+          has_more: false,
+        };
+      })
+      .mockResolvedValueOnce({
+        object: "list",
+        results: [createdBlock("created-leaf-1", "paragraph")],
+        next_cursor: null,
+        has_more: false,
+      });
+
+    const onRootChunk = vi.fn();
+    const deepToggle = makeContainerBlock("t1", "toggle", "Parent", [
+      makeContainerBlock("li", "numbered_list_item", "Item", [
+        makeParagraphBlock("leaf", "Leaf"),
+      ]),
+    ]);
+
+    await appendBlockTree(
+      { appendBlockChildren: append } as Pick<NotionClient, "appendBlockChildren">,
+      "page-1",
+      [deepToggle],
+      { onRootChunk },
+    );
+
+    expect(onRootChunk).toHaveBeenCalledTimes(1);
+    expect(onRootChunk).toHaveBeenCalledWith([createdBlock("created-toggle-1", "toggle")]);
+    expect(append).toHaveBeenLastCalledWith("created-toggle-1", [expect.anything()], undefined);
+  });
+
+  it("throws and skips deferred appends when Notion returns fewer results than roots", async () => {
+    const append = makeAppendClient();
+    append.mockResolvedValueOnce({
+      object: "list",
+      results: [],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    const deepToggle = makeContainerBlock("t1", "toggle", "Parent", [
+      makeContainerBlock("li", "numbered_list_item", "Item", [
+        makeParagraphBlock("leaf", "Leaf"),
+      ]),
+    ]);
+
+    await expect(
+      appendBlockTree(
+        { appendBlockChildren: append } as Pick<NotionClient, "appendBlockChildren">,
+        "page-1",
+        [deepToggle],
+      ),
+    ).rejects.toThrow("appendBlockChildren returned 0 results for 1 roots");
+
+    // The deferred children append must not be attempted without a created parent id
+    expect(append).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("writeTranslationToNotion deep nesting (Notion 2-level embed limit)", () => {
+  let mockClient: NotionClient;
+
+  const deepTranslatedBlocks: NotionBlockList = {
+    object: "list",
+    results: [
+      {
+        object: "block",
+        id: "deep-toggle",
+        type: "toggle",
+        has_children: true,
+        toggle: {
+          rich_text: [{ type: "text", text: { content: "Deep toggle" } }],
+          children: [
+            {
+              object: "block",
+              id: "deep-item",
+              type: "numbered_list_item",
+              has_children: true,
+              numbered_list_item: {
+                rich_text: [{ type: "text", text: { content: "Nested item" } }],
+                children: [
+                  {
+                    object: "block",
+                    id: "deep-leaf",
+                    type: "paragraph",
+                    has_children: false,
+                    paragraph: {
+                      rich_text: [{ type: "text", text: { content: "Leaf" } }],
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      } as unknown as NotionBlock,
+    ],
+  };
+
+  function mockAppendCreatingIds(): void {
+    let seq = 0;
+    vi.mocked(mockClient.appendBlockChildren).mockImplementation(async (blockId, children) => {
+      const appended = (children as Record<string, unknown>[]).map((child) => {
+        seq += 1;
+        return createdBlock(`${blockId}#${seq}`, child.type as string);
+      });
+      return { object: "list", results: appended, next_cursor: null, has_more: false };
+    });
+  }
+
+  beforeEach(() => {
+    mockClient = {
+      createPage: vi.fn(),
+      updatePage: vi.fn(),
+      deleteBlock: vi.fn(),
+      appendBlockChildren: vi.fn(),
+      getPage: vi.fn(),
+      getPageBlocks: vi.fn(),
+      queryDatabase: vi.fn().mockResolvedValue({ results: [], next_cursor: null, has_more: false }),
+      restoreBlock: vi.fn().mockResolvedValue({ id: "restored", object: "block" }),
+    } as unknown as NotionClient;
+  });
+
+  it("creates a bare page (no inline children) and appends the deep tree to the created page id", async () => {
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "deep-page-id",
+      object: "page",
+    } as unknown as NotionPage);
+    mockAppendCreatingIds();
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Página Profunda",
+      parentItemId: "container-parent-id",
+      translatedBlocks: deepTranslatedBlocks,
+    });
+
+    expect(result).toMatchObject({
+      written: true,
+      action: "created",
+      pageId: "deep-page-id",
+    });
+
+    // Page is created without inline children (Notion rejects deep createPage payloads)
+    expect(mockClient.createPage).toHaveBeenCalledTimes(1);
+    const createArgs = vi.mocked(mockClient.createPage).mock.calls[0][0];
+    expect(createArgs.children).toBeUndefined();
+
+    // Bare toggle container appended to the page first
+    expect(mockClient.appendBlockChildren).toHaveBeenCalledTimes(2);
+    const [firstParentId, firstChildren, firstOptions] = vi.mocked(
+      mockClient.appendBlockChildren,
+    ).mock.calls[0];
+    expect(firstParentId).toBe("deep-page-id");
+    expect(firstChildren).toHaveLength(1);
+    const bareToggle = firstChildren[0] as Record<string, unknown>;
+    expect(bareToggle.type).toBe("toggle");
+    expect((bareToggle.toggle as Record<string, unknown>).children).toBeUndefined();
+
+    // Deferred children appended to the toggle's assigned Notion block id
+    const [secondParentId, secondChildren] = vi.mocked(
+      mockClient.appendBlockChildren,
+    ).mock.calls[1];
+    expect(secondParentId).toBe("deep-page-id#1");
+    expect(secondChildren).toHaveLength(1);
+    const listItem = secondChildren[0] as Record<string, unknown>;
+    expect(listItem.type).toBe("numbered_list_item");
+    // The list item's own leaf children stay inline (within the 2-level limit)
+    expect((listItem.numbered_list_item as Record<string, unknown>).children).toHaveLength(1);
+    expect(firstOptions).toBeUndefined();
+  });
+
+  it("archives the created page when appending the deep tree fails", async () => {
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "deep-page-fail-id",
+      object: "page",
+    } as unknown as NotionPage);
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "deep-page-fail-id",
+      object: "page",
+    } as unknown as NotionPage);
+    vi.mocked(mockClient.appendBlockChildren).mockRejectedValueOnce(new Error("boom"));
+
+    await expect(
+      writeTranslationToNotion({
+        client: mockClient,
+        databaseId: "db-123",
+        targetLocale: "pt",
+        targetTitle: "Página Profunda com Falha",
+        translatedBlocks: deepTranslatedBlocks,
+      }),
+    ).rejects.toThrow("boom");
+
+    expect(mockClient.updatePage).toHaveBeenCalledWith("deep-page-fail-id", { archived: true });
+  });
+
+  it("updates an existing stub by appending a bare toggle then deferred children to its block id", async () => {
+    vi.mocked(mockClient.getPage).mockResolvedValue({
+      id: "stub-page-id",
+      properties: {
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: {
+          select: { name: "Automated translations generated" },
+        },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [],
+      children: {},
+    });
+
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "stub-page-id",
+      object: "page",
+    } as unknown as NotionPage);
+    mockAppendCreatingIds();
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Stub com Profundidade",
+      parentEnglishPageId: "en-parent-id",
+      targetPageId: "stub-page-id",
+      translatedBlocks: deepTranslatedBlocks,
+    });
+
+    expect(result).toMatchObject({
+      written: true,
+      action: "updated",
+      pageId: "stub-page-id",
+    });
+
+    expect(mockClient.appendBlockChildren).toHaveBeenCalledTimes(2);
+    const [firstParentId, firstChildren, firstOptions] = vi.mocked(
+      mockClient.appendBlockChildren,
+    ).mock.calls[0];
+    expect(firstParentId).toBe("stub-page-id");
+    expect((firstChildren[0] as Record<string, unknown>).type).toBe("toggle");
+    expect(
+      ((firstChildren[0] as Record<string, unknown>).toggle as Record<string, unknown>).children,
+    ).toBeUndefined();
+    // Stub updates still track root chunks for rollback safety
+    expect(firstOptions).toEqual({ onChunk: expect.any(Function) });
+
+    const [secondParentId, secondChildren] = vi.mocked(
+      mockClient.appendBlockChildren,
+    ).mock.calls[1];
+    expect(secondParentId).toBe("stub-page-id#1");
+    expect((secondChildren[0] as Record<string, unknown>).type).toBe("numbered_list_item");
+
+    // No old blocks to delete on an empty stub; properties still committed
+    expect(mockClient.deleteBlock).not.toHaveBeenCalled();
+    expect(mockClient.updatePage).toHaveBeenCalledTimes(1);
+  });
+
+  it("still embeds children inline during page creation when the tree fits the embed depth", async () => {
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "shallow-page-id",
+      object: "page",
+    } as unknown as NotionPage);
+
+    await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "pt",
+      targetTitle: "Página Rasa",
+      translatedBlocks: {
+        object: "list",
+        results: [
+          {
+            object: "block",
+            id: "shallow-toggle",
+            type: "toggle",
+            has_children: true,
+            toggle: {
+              rich_text: [{ type: "text", text: { content: "Shallow" } }],
+              children: [makeParagraphBlock("leaf", "Leaf")],
+            },
+          } as unknown as NotionBlock,
+        ],
+      },
+    });
+
+    const createArgs = vi.mocked(mockClient.createPage).mock.calls[0][0];
+    expect(createArgs.children).toHaveLength(1);
+    expect(mockClient.appendBlockChildren).not.toHaveBeenCalled();
   });
 });
