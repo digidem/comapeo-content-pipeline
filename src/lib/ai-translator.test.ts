@@ -834,4 +834,34 @@ describe("AITranslator provider resolution", () => {
     expect(t.baseUrl).toBe("https://api.deepseek.com/v1");
     expect(t.model).toBe("deepseek-chat");
   });
+
+  it("honors provider-specific base URL and model when explicit apiKey matches DeepSeek", () => {
+    const t = new AITranslator({
+      apiKey: "sk-deepseek-key",
+      env: {
+        DEEPSEEK_API_KEY: "sk-deepseek-key",
+        DEEPSEEK_BASE_URL: "https://custom-deepseek-proxy.example.com/v1",
+        DEEPSEEK_MODEL: "deepseek-coder",
+        OPENAI_BASE_URL: "https://api.openai.com/v1",
+      },
+    });
+    expect(t.apiKey).toBe("sk-deepseek-key");
+    expect(t.baseUrl).toBe("https://custom-deepseek-proxy.example.com/v1");
+    expect(t.model).toBe("deepseek-coder");
+  });
+
+  it("honors provider-specific base URL and model when explicit apiKey matches OpenAI", () => {
+    const t = new AITranslator({
+      apiKey: "sk-openai-key",
+      env: {
+        OPENAI_API_KEY: "sk-openai-key",
+        OPENAI_BASE_URL: "https://custom-openai-proxy.example.com/v1",
+        OPENAI_MODEL: "gpt-4o-mini",
+        DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1",
+      },
+    });
+    expect(t.apiKey).toBe("sk-openai-key");
+    expect(t.baseUrl).toBe("https://custom-openai-proxy.example.com/v1");
+    expect(t.model).toBe("gpt-4o-mini");
+  });
 });

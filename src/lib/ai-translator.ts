@@ -102,16 +102,28 @@ export class AITranslator {
           (deepseekKey && selectedKey === deepseekKey) ||
             (selectedBaseUrl && selectedBaseUrl.includes("deepseek")),
         );
+      const isOpenai =
+        !isPoolside &&
+        !isDeepseek &&
+        Boolean(
+          (openaiKey && selectedKey === openaiKey) ||
+            (selectedBaseUrl && selectedBaseUrl.includes("openai")),
+        );
+
       const defaultBaseUrl = isPoolside
         ? "https://inference.poolside.ai/v1"
         : isDeepseek
-          ? "https://api.deepseek.com/v1"
-          : "https://api.openai.com/v1";
+          ? (deepseekBaseUrl ?? "https://api.deepseek.com/v1")
+          : isOpenai
+            ? (openaiBaseUrl ?? "https://api.openai.com/v1")
+            : (openaiBaseUrl ?? deepseekBaseUrl ?? "https://api.openai.com/v1");
       const defaultModel = isPoolside
         ? "poolside/laguna-s-2.1"
         : isDeepseek
-          ? "deepseek-chat"
-          : "gpt-4o";
+          ? (deepseekModel ?? "deepseek-chat")
+          : isOpenai
+            ? (openaiModel ?? "gpt-4o")
+            : (openaiModel ?? deepseekModel ?? "gpt-4o");
 
       selectedBaseUrl = selectedBaseUrl ?? defaultBaseUrl;
       selectedModel = selectedModel ?? defaultModel;
