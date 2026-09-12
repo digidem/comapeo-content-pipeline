@@ -585,3 +585,182 @@ describe("AITranslator", () => {
     ).rejects.toThrow(/Translation validation failed: equation mismatch/);
   });
 });
+
+describe("AITranslator provider resolution", () => {
+  const resolved = (t: AITranslator) =>
+    t as unknown as { apiKey: string; baseUrl: string; model: string };
+
+  it("defaults to OpenAI when only OPENAI_API_KEY is set", () => {
+    const t = new AITranslator({ env: { OPENAI_API_KEY: "sk-openai-test" } });
+    const { apiKey, baseUrl, model } = resolved(t);
+    expect(apiKey).toBe("sk-openai-test");
+    expect(baseUrl).toBe("https://api.openai.com/v1");
+    expect(model).toBe("gpt-4o");
+  });
+
+  it("defaults to DeepSeek when only DEEPSEEK_API_KEY is set", () => {
+    const t = new AITranslator({ env: { DEEPSEEK_API_KEY: "sk-deepseek-test" } });
+    const { apiKey, baseUrl, model } = resolved(t);
+    expect(apiKey).toBe("sk-deepseek-test");
+    expect(baseUrl).toBe("https://api.deepseek.com/v1");
+    expect(model).toBe("deepseek-chat");
+  });
+
+  it("defaults to Poolside for a sky_ prefixed key", () => {
+    const t = new AITranslator({ env: { POOLSIDE_API_KEY: "sky_poolside-test" } });
+    const { apiKey, baseUrl, model } = resolved(t);
+    expect(apiKey).toBe("sky_poolside-test");
+    expect(baseUrl).toBe("https://inference.poolside.ai/v1");
+    expect(model).toBe("poolside/laguna-s-2.1");
+  });
+
+  it("defaults to Poolside when the key matches POOLSIDE_API_KEY and no base URLs are set", () => {
+    const t = new AITranslator({ env: { POOLSIDE_API_KEY: "poolside-laguna-key" } });
+    const { apiKey, baseUrl, model } = resolved(t);
+    expect(apiKey).toBe("poolside-laguna-key");
+    expect(baseUrl).toBe("https://inference.poolside.ai/v1");
+    expect(model).toBe("poolside/laguna-s-2.1");
+  });
+
+  it("does not treat POOLSIDE_API_KEY as Poolside when OPENAI_BASE_URL is set", () => {
+    const t = new AITranslator({
+      env: {
+        POOLSIDE_API_KEY: "poolside-laguna-key",
+        OPENAI_BASE_URL: "https://api.openai.com/v1",
+      },
+    });
+    const { apiKey, baseUrl, model } = resolved(t);
+    expect(apiKey).toBe("poolside-laguna-key");
+    expect(baseUrl).toBe("https://api.openai.com/v1");
+    expect(model).toBe("gpt-4o");
+  });
+
+  it("defaults to DeepSeek when DEEPSEEK_BASE_URL is set even with a Poolside key", () => {
+    const t = new AITranslator({
+      env: {
+        POOLSIDE_API_KEY: "poolside-laguna-key",
+        DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1",
+      },
+    });
+    const { baseUrl, model } = resolved(t);
+    expect(baseUrl).toBe("https://api.deepseek.com/v1");
+    expect(model).toBe("deepseek-chat");
+  });
+
+  it("defaults to DeepSeek when the configured baseUrl contains 'deepseek'", () => {
+    const t = new AITranslator({
+      apiKey: "some-key",
+      baseUrl: "https://gateway.example.com/deepseek/v1",
+    });
+    const { baseUrl, model } = resolved(t);
+    expect(baseUrl).toBe("https://gateway.example.com/deepseek/v1");
+    expect(model).toBe("deepseek-chat");
+  });
+
+  it("defaults to DeepSeek when OPENAI_BASE_URL contains 'deepseek'", () => {
+    const t = new AITranslator({
+      env: {
+        OPENAI_API_KEY: "sk-openai-test",
+        OPENAI_BASE_URL: "https://open.deepseek.com/v1",
+      },
+    });
+    const { baseUrl, model } = resolved(t);
+    expect(baseUrl).toBe("https://open.deepseek.com/v1");
+    expect(model).toBe("deepseek-chat");
+  });
+
+  it("applies provider-specific model overrides", () => {
+    const openai = new AITranslator({
+      env: { OPENAI_API_KEY: "sk-openai-test", OPENAI_MODEL: "gpt-4o-mini" },
+    });
+    expect(resolved(openai).model).toBe("gpt-4o-mini");
+
+    const deepseek = new AITranslator({
+      env: { DEEPSEEK_API_KEY: "sk-deepseek-test", DEEPSEEK_MODEL: "deepseek-reasoner" },
+    });
+    expect(resolved(deepseek).model).toBe("deepseek-reasoner");
+  });
+
+  it("prefers TRANSLATION_* overrides over provider-specific env vars", () => {
+    const t = new AITranslator({
+      env: {
+        TRANSLATION_API_KEY: "generic-key",
+        TRANSLATION_BASE_URL: "https://llm.example.com/v1/",
+        TRANSLATION_MODEL: "custom-model",
+        OPENAI_API_KEY: "sk-openai-test",
+        OPENAI_MODEL: "gpt-4o",
+      },
+    });
+    const { apiKey, baseUrl, model } = resolved(t);
+    expect(apiKey).toBe("generic-key");
+    expect(baseUrl).toBe("https://llm.example.com/v1");
+    expect(model).toBe("custom-model");
+  });
+
+  it("resolves keys in order TRANSLATION > OPENAI > DEEPSEEK > POOLSIDE", () => {
+    const all = {
+      TRANSLATION_API_KEY: "generic-key",
+      OPENAI_API_KEY: "sk-openai-test",
+      DEEPSEEK_API_KEY: "sk-deepseek-test",
+      POOLSIDE_API_KEY: "poolside-laguna-key",
+    };
+    const { TRANSLATION_API_KEY: _t, ...withoutTranslation } = all;
+    const { OPENAI_API_KEY: _o, ...withoutOpenai } = withoutTranslation;
+    const { DEEPSEEK_API_KEY: _d, ...withoutDeepseek } = withoutOpenai;
+
+    expect(resolved(new AITranslator({ env: all })).apiKey).toBe("generic-key");
+    expect(resolved(new AITranslator({ env: withoutTranslation })).apiKey).toBe("sk-openai-test");
+    expect(resolved(new AITranslator({ env: withoutOpenai })).apiKey).toBe("sk-deepseek-test");
+    expect(resolved(new AITranslator({ env: withoutDeepseek })).apiKey).toBe("poolside-laguna-key");
+  });
+
+  it("prefers explicit config values over environment variables", () => {
+    const t = new AITranslator({
+      apiKey: "explicit-key",
+      baseUrl: "https://proxy.example.com/v1",
+      model: "explicit-model",
+      env: {
+        TRANSLATION_API_KEY: "generic-key",
+        OPENAI_API_KEY: "sk-openai-test",
+        OPENAI_BASE_URL: "https://api.openai.com/v1",
+        OPENAI_MODEL: "gpt-4o",
+      },
+    });
+    const { apiKey, baseUrl, model } = resolved(t);
+    expect(apiKey).toBe("explicit-key");
+    expect(baseUrl).toBe("https://proxy.example.com/v1");
+    expect(model).toBe("explicit-model");
+  });
+
+  it("strips trailing slashes from the resolved base URL", () => {
+    const t = new AITranslator({
+      env: { OPENAI_API_KEY: "sk-openai-test", OPENAI_BASE_URL: "https://api.openai.com/v1///" },
+    });
+    expect(resolved(t).baseUrl).toBe("https://api.openai.com/v1");
+  });
+
+  it("sends requests to the DeepSeek endpoint when DEEPSEEK_API_KEY is set (no real network)", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: JSON.stringify({ b1: "Hola mundo" }) } }],
+      }),
+    });
+
+    const translator = new AITranslator({
+      env: { DEEPSEEK_API_KEY: "sk-deepseek-test" },
+      fetchFn: mockFetch as unknown as typeof fetch,
+    });
+
+    await translator.translate({
+      targetLocale: "es",
+      blocks: [{ id: "b1", text: "Hello world" }],
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [url, req] = mockFetch.mock.calls[0];
+    expect(url).toBe("https://api.deepseek.com/v1/chat/completions");
+    expect(req.headers.Authorization).toBe("Bearer sk-deepseek-test");
+    expect(JSON.parse(req.body).model).toBe("deepseek-chat");
+  });
+});

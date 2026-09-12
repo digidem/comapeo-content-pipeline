@@ -62,33 +62,55 @@ export class AITranslator {
     const env = config.env ?? {};
 
     const poolsideKey = env.POOLSIDE_API_KEY;
+    const deepseekKey = env.DEEPSEEK_API_KEY;
+    const openaiKey = env.OPENAI_API_KEY;
+    const translationKey = env.TRANSLATION_API_KEY;
     this.apiKey =
-      config.apiKey ??
-      env.TRANSLATION_API_KEY ??
-      env.OPENAI_API_KEY ??
-      poolsideKey ??
-      "";
+      config.apiKey ?? translationKey ?? openaiKey ?? deepseekKey ?? poolsideKey ?? "";
 
+    // Provider detection: pick defaults from whichever provider the resolved
+    // credentials point at. Explicit base URLs below always win over defaults.
     const isPoolside =
       this.apiKey.startsWith("sky_") ||
-      (!env.TRANSLATION_BASE_URL && !env.OPENAI_BASE_URL && Boolean(poolsideKey) && this.apiKey === poolsideKey);
+      Boolean(
+        poolsideKey &&
+          this.apiKey === poolsideKey &&
+          !env.OPENAI_BASE_URL &&
+          !env.DEEPSEEK_BASE_URL &&
+          !env.TRANSLATION_BASE_URL,
+      );
+    const isDeepseek =
+      !isPoolside &&
+      Boolean(
+        (deepseekKey && this.apiKey === deepseekKey) ||
+          env.DEEPSEEK_BASE_URL ||
+          (config.baseUrl && config.baseUrl.includes("deepseek")) ||
+          (env.OPENAI_BASE_URL && env.OPENAI_BASE_URL.includes("deepseek")) ||
+          (env.TRANSLATION_BASE_URL && env.TRANSLATION_BASE_URL.includes("deepseek")),
+      );
     const defaultBaseUrl = isPoolside
       ? "https://inference.poolside.ai/v1"
-      : "https://api.openai.com/v1";
+      : isDeepseek
+        ? "https://api.deepseek.com/v1"
+        : "https://api.openai.com/v1";
     const defaultModel = isPoolside
       ? "poolside/laguna-s-2.1"
-      : "deepseek-chat";
+      : isDeepseek
+        ? "deepseek-chat"
+        : "gpt-4o";
 
     const rawBaseUrl =
       config.baseUrl ??
       env.TRANSLATION_BASE_URL ??
       env.OPENAI_BASE_URL ??
+      env.DEEPSEEK_BASE_URL ??
       defaultBaseUrl;
     this.baseUrl = rawBaseUrl.replace(/\/+$/, "");
     this.model =
       config.model ??
       env.TRANSLATION_MODEL ??
       env.OPENAI_MODEL ??
+      env.DEEPSEEK_MODEL ??
       defaultModel;
     this.maxRetries = config.maxRetries ?? 3;
     this.timeoutMs =

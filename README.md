@@ -48,12 +48,77 @@ pnpm test
 Copy `.env.example` to `.env` and fill in:
 
 ```bash
+# Notion
 NOTION_TOKEN=           # Notion API token
 NOTION_DATABASE_ID=     # Source database ID
 NOTION_DATA_SOURCE_ID=  # Data source ID (v5 API)
 NOTION_VERSION=2025-09-03
+
+# Admin
 ADMIN_TOKEN=            # Bearer token for admin routes
+
+# Translation LLM (see "AI translations" below)
+OPENAI_API_KEY=         # or DEEPSEEK_API_KEY / POOLSIDE_API_KEY / TRANSLATION_API_KEY
 ```
+
+See `.env.example` for the full list, including Cloudflare (R2/D1/Queue) and
+optional per-provider base URL / model overrides.
+
+## AI translations
+
+`scripts/translate-missing.ts` generates AI translations for missing `pt`/`es`
+pages through any OpenAI-compatible chat-completions API:
+
+```bash
+# Preview what would be translated
+bun scripts/translate-missing.ts
+
+# Generate translations and write files + manifest
+bun scripts/translate-missing.ts --apply
+```
+
+### Providers
+
+The provider is auto-detected from the environment; within each group the first
+set variable wins, and the `--api-key` / `--base-url` / `--model` flags override
+everything:
+
+| Provider | API key | Default base URL | Default model |
+|---|---|---|---|
+| OpenAI (production) | `OPENAI_API_KEY` | `https://api.openai.com/v1` | `gpt-4o` |
+| DeepSeek (production) | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| Poolside (testing) | `POOLSIDE_API_KEY` | `https://inference.poolside.ai/v1` | `poolside/laguna-s-2.1` |
+
+Within each group the first set variable wins:
+
+- API key: `TRANSLATION_API_KEY` > `OPENAI_API_KEY` > `DEEPSEEK_API_KEY` > `POOLSIDE_API_KEY`
+- Base URL: `TRANSLATION_BASE_URL` > `OPENAI_BASE_URL` > `DEEPSEEK_BASE_URL` > provider default
+- Model: `TRANSLATION_MODEL` > `OPENAI_MODEL` > `DEEPSEEK_MODEL` > provider default
+
+Detection rules:
+
+- A key with the `sky_` prefix, or a key equal to `POOLSIDE_API_KEY` (when no
+  `OPENAI_*`/`DEEPSEEK_*`/`TRANSLATION_*` base URL is set), selects Poolside.
+- A key equal to `DEEPSEEK_API_KEY`, a `DEEPSEEK_BASE_URL`, or any configured
+  base URL containing `deepseek` selects DeepSeek.
+- Anything else defaults to OpenAI.
+
+`TRANSLATION_*` variables are generic overrides that work with any provider;
+`src/lib/` never reads `process.env` directly — callers pass an `env` record to
+`AITranslator`, so the same code runs on Node/Bun and Cloudflare Workers.
+
+### Flags
+
+```bash
+bun scripts/translate-missing.ts --apply \
+  --locale es \              # only this locale (default: es, then pt)
+  --limit 5 \                # cap number of pages
+  --base-url https://api.deepseek.com/v1 \   # override base URL
+  --model deepseek-chat \    # override model
+  --api-key "$DEEPSEEK_API_KEY"              # override credentials
+```
+
+Run `bun scripts/translate-missing.ts --help` for the full option list.
 
 ## Deploying to production
 
