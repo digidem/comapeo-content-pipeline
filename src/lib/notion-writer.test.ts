@@ -766,6 +766,14 @@ describe("writeTranslationToNotion", () => {
   });
 
   it("reconciles and updates existing page when queryDatabase finds a matching translation during page creation", async () => {
+    // Call 1 (queryDatabase): container sibling query (step 0) finds nothing
+    vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
+      results: [],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    // Call 2 (queryDatabase): language + title + parent match (step 3 fallback)
     vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
       results: [
         {
@@ -1032,23 +1040,15 @@ describe("writeTranslationToNotion", () => {
     expect(mockClient.createPage).not.toHaveBeenCalled();
   });
 
-  it("does not match unrelated page with same title under shared container when parentEnglishPageId is supplied", async () => {
-    // Call 1: parentEnglishPageId direct query (returns empty)
+  it("creates sibling under container parent in container mode and never links parentEnglishPageId Sub-item", async () => {
+    // Call 1 (queryDatabase): container sibling query scoped to parentItemId (returns empty)
     vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
       results: [],
       next_cursor: null,
       has_more: false,
     });
 
-    // Call 2: getPage for parentEnglishPageId sub-items inspection (returns no sub-items)
-    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
-      id: "en-page-id",
-      properties: {
-        [NOTION_PROPERTIES.SUB_ITEM]: { relation: [] },
-      },
-    } as unknown as NotionPage);
-
-    // Call 3: getPage for parentEnglishPageId when attaching newPage to Sub-item
+    // Call 1 (getPage): parentEnglishPageId sub-items inspection (returns no sub-items)
     vi.mocked(mockClient.getPage).mockResolvedValueOnce({
       id: "en-page-id",
       properties: {
@@ -1076,7 +1076,90 @@ describe("writeTranslationToNotion", () => {
     expect(result.pageId).toBe("new-es-translation-page");
     expect(mockClient.createPage).toHaveBeenCalled();
 
-    // Verified it attached to en-page-id Sub-item relation instead of hijacking existing container page
+    // Verified creation is parented under the container row as a sibling
+    const createArgs = vi.mocked(mockClient.createPage).mock.calls[0][0];
+    expect(createArgs.properties[NOTION_PROPERTIES.PARENT_ITEM]).toEqual({
+      relation: [{ id: "shared-container-id" }],
+    });
+
+    // Verified reconciliation queried container siblings (parentItemId), not the English page
+    expect(mockClient.queryDatabase).toHaveBeenCalledWith({
+      filter: {
+        and: [
+          { property: NOTION_PROPERTIES.LANGUAGE, select: { equals: "ES - automated" } },
+          { property: NOTION_PROPERTIES.PARENT_ITEM, relation: { contains: "shared-container-id" } },
+        ],
+      },
+      pageSize: 10,
+    });
+    expect(mockClient.queryDatabase).not.toHaveBeenCalledWith({
+      filter: {
+        and: [
+          { property: NOTION_PROPERTIES.LANGUAGE, select: { equals: "ES - automated" } },
+          { property: NOTION_PROPERTIES.PARENT_ITEM, relation: { contains: "en-page-id" } },
+        ],
+      },
+      pageSize: 10,
+    });
+
+    // Verified the English page's Sub-item relation was NOT touched in container mode
+    expect(mockClient.updatePage).not.toHaveBeenCalledWith("en-page-id", {
+      properties: {
+        [NOTION_PROPERTIES.SUB_ITEM]: {
+          relation: [{ id: "new-es-translation-page" }],
+        },
+      },
+    });
+    expect(mockClient.updatePage).not.toHaveBeenCalled();
+  });
+
+  it("does not match unrelated page with same title under shared container when parentEnglishPageId is supplied (standalone)", async () => {
+    // Standalone mode (no container parentItemId): the English page's family owns the translation.
+
+    // Call 1 (queryDatabase): parentEnglishPageId direct query (returns empty)
+    vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
+      results: [],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    // Call 1 (getPage): parentEnglishPageId sub-items inspection (returns no sub-items)
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "en-page-id",
+      properties: {
+        [NOTION_PROPERTIES.SUB_ITEM]: { relation: [] },
+      },
+    } as unknown as NotionPage);
+
+    // Call 2 (getPage): parentEnglishPageId when attaching newPage to Sub-item
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "en-page-id",
+      properties: {
+        [NOTION_PROPERTIES.SUB_ITEM]: { relation: [] },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "new-es-translation-page",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Título Traducido",
+      parentEnglishPageId: "en-page-id",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("created");
+    expect(result.pageId).toBe("new-es-translation-page");
+    expect(mockClient.createPage).toHaveBeenCalled();
+
+    // Standalone mode still attaches to en-page-id Sub-item relation
+    // instead of hijacking an unrelated same-title page
     expect(mockClient.updatePage).toHaveBeenCalledWith("en-page-id", {
       properties: {
         [NOTION_PROPERTIES.SUB_ITEM]: {
@@ -1084,6 +1167,147 @@ describe("writeTranslationToNotion", () => {
         },
       },
     });
+  });
+
+  it("reconciles existing sibling translation under container parentItemId in container mode", async () => {
+    // Call 1 (queryDatabase): container sibling query scoped to parentItemId finds the ES sibling
+    vi.mocked(mockClient.queryDatabase).mockResolvedValueOnce({
+      results: [
+        {
+          id: "container-es-sibling",
+          object: "page",
+          properties: {
+            [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Old Renamed Container Title" }] },
+            [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES - automated" } },
+            [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+          },
+        } as unknown as NotionPage,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    vi.mocked(mockClient.getPage).mockResolvedValueOnce({
+      id: "container-es-sibling",
+      properties: {
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [],
+      children: {},
+    });
+
+    vi.mocked(mockClient.updatePage).mockResolvedValueOnce({
+      id: "container-es-sibling",
+      object: "page",
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.appendBlockChildren).mockResolvedValueOnce({
+      object: "list",
+      results: [
+        { id: "appended-root-1", type: "paragraph", object: "block" } as unknown as NotionBlock,
+      ],
+      next_cursor: null,
+      has_more: false,
+    });
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Newly Generated Title",
+      parentItemId: "container-row-id",
+      parentEnglishPageId: "en-page-id",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("updated");
+    expect(result.pageId).toBe("container-es-sibling");
+    expect(mockClient.createPage).not.toHaveBeenCalled();
+
+    // Reconciliation queried container siblings (parentItemId), not the English page
+    expect(mockClient.queryDatabase).toHaveBeenCalledTimes(1);
+    expect(mockClient.queryDatabase).toHaveBeenCalledWith({
+      filter: {
+        and: [
+          { property: NOTION_PROPERTIES.LANGUAGE, select: { equals: "ES - automated" } },
+          { property: NOTION_PROPERTIES.PARENT_ITEM, relation: { contains: "container-row-id" } },
+        ],
+      },
+      pageSize: 10,
+    });
+
+    // The English page's Sub-item relation was never modified
+    expect(mockClient.updatePage).not.toHaveBeenCalledWith("en-page-id", expect.anything());
+  });
+
+  it("creates container-mode translation as sibling under parentItemId and rollback never restores parentEnglishPageId Sub-item", async () => {
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "container-sibling-new",
+      object: "page",
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPage)
+      // Call 1: parentEnglishPageId sub-items inspection during reconciliation (no sub-items)
+      .mockResolvedValueOnce({
+        id: "en-page-id",
+        properties: {
+          [NOTION_PROPERTIES.SUB_ITEM]: { relation: [] },
+        },
+      } as unknown as NotionPage)
+      // Call 2: post-commit page check for committedLastEditedTime
+      .mockResolvedValueOnce({
+        id: "container-sibling-new",
+        last_edited_time: "2026-09-11T12:00:00.000Z",
+        properties: {
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage)
+      // Call 3: rollback verification getPage
+      .mockResolvedValueOnce({
+        id: "container-sibling-new",
+        last_edited_time: "2026-09-11T12:00:00.000Z",
+        properties: {
+          [NOTION_PROPERTIES.TITLE]: { title: [{ plain_text: "Página Hermana" }] },
+          [NOTION_PROPERTIES.LANGUAGE]: { select: { name: "ES - automated" } },
+          [NOTION_PROPERTIES.PUBLISH_STATUS]: { select: { name: "Automated translations generated" } },
+        },
+      } as unknown as NotionPage);
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Página Hermana",
+      parentItemId: "container-row-id",
+      parentEnglishPageId: "en-page-id",
+      translatedBlocks: mockTranslatedBlocks,
+    });
+
+    expect(result.written).toBe(true);
+    expect(result.action).toBe("created");
+    expect(result.pageId).toBe("container-sibling-new");
+
+    // Created as a sibling under the container row
+    const createArgs = vi.mocked(mockClient.createPage).mock.calls[0][0];
+    expect(createArgs.properties[NOTION_PROPERTIES.PARENT_ITEM]).toEqual({
+      relation: [{ id: "container-row-id" }],
+    });
+
+    // Container mode must never call updatePage on the English page
+    // (no Sub-item relation linking, no rollback restore)
+    expect(mockClient.updatePage).not.toHaveBeenCalledWith("en-page-id", expect.anything());
+    expect(mockClient.updatePage).not.toHaveBeenCalled();
+
+    // Rollback only removes the created page
+    const rolledBack = await result.rollback!();
+    expect(rolledBack).toBe(true);
+    expect(mockClient.deleteBlock).toHaveBeenCalledWith("container-sibling-new");
+    expect(mockClient.updatePage).not.toHaveBeenCalledWith("en-page-id", expect.anything());
+    expect(mockClient.updatePage).not.toHaveBeenCalled();
   });
 
   it("queries by title and language when effectiveParentId is not provided", async () => {
@@ -2524,12 +2748,14 @@ describe("writeTranslationToNotion", () => {
         },
       } as unknown as NotionPage);
 
+    // Standalone mode (parentItemId === parentEnglishPageId): the created page
+    // must be linked into the English page's Sub-item relation.
     const result = await writeTranslationToNotion({
       client: mockClient,
       databaseId: "db-123",
       targetLocale: "es",
       targetTitle: "Nueva Página",
-      parentItemId: "shared-container-id",
+      parentItemId: "en-parent-id",
       parentEnglishPageId: "en-parent-id",
       translatedBlocks: mockTranslatedBlocks,
     });
@@ -2588,13 +2814,14 @@ describe("writeTranslationToNotion", () => {
       new Error("Notion API 500: internal server error while updating relation"),
     );
 
+    // Standalone mode (parentItemId === parentEnglishPageId): attach failure must archive + throw.
     await expect(
       writeTranslationToNotion({
         client: mockClient,
         databaseId: "db-123",
         targetLocale: "es",
         targetTitle: "Failed Linking Page",
-        parentItemId: "shared-container-id",
+        parentItemId: "en-parent-id",
         parentEnglishPageId: "en-parent-id",
         translatedBlocks: mockTranslatedBlocks,
       }),

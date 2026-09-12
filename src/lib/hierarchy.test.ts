@@ -205,6 +205,44 @@ describe("buildHierarchyPlan edge cases", () => {
     expect(plan.canonicalPages.some((cp) => cp.pageId === "en-placeholder")).toBe(false);
   });
 
+  it("container sibling translations (enDoc.sub_items empty) produce no nested-family-skipped warnings", () => {
+    // Container mode: section/toggle rows own the whole article family via their
+    // sub_items, and translations are created as siblings under the container —
+    // the English doc itself carries NO sub_items. This must not be reported as
+    // a nested family: both family members are selected exactly once.
+    const docs: ManifestDoc[] = [
+      makeDoc({
+        page_id: "container", title: "Container Row", locale: "en",
+        section: "10-Basics", section_order: 1, slug: "container-row",
+        sub_items: ["en-child", "es-child"], status: "active",
+      }),
+      makeDoc({
+        page_id: "en-child", title: "My Page", locale: "en",
+        section: "10-Basics", section_order: 1, slug: "my-page",
+      }),
+      makeDoc({
+        page_id: "es-child", title: "Mi Página", locale: "es",
+        section: "10-Basics", section_order: 1, slug: "mi-pagina",
+      }),
+    ];
+    const plan = buildHierarchyPlan({
+      docs, includeDrafts: true,
+      hasBodyById: { container: false, "en-child": true, "es-child": true },
+    });
+    const warnings = plan.diagnostics.filter((d) => d.category === "nested-family-skipped");
+    expect(warnings).toHaveLength(0);
+    // Both container siblings are selected as canonical pages of the container family
+    const enPage = plan.canonicalPages.find((cp) => cp.pageId === "en-child");
+    const esPage = plan.canonicalPages.find((cp) => cp.pageId === "es-child");
+    expect(enPage).toBeDefined();
+    expect(esPage).toBeDefined();
+    expect(enPage!.parentId).toBe("container");
+    expect(esPage!.parentId).toBe("container");
+    // Each is published exactly once
+    expect(plan.canonicalPages.filter((cp) => cp.pageId === "en-child")).toHaveLength(1);
+    expect(plan.canonicalPages.filter((cp) => cp.pageId === "es-child")).toHaveLength(1);
+  });
+
   it("child that itself carries sub_items does not form a duplicate nested family", () => {
     const docs: ManifestDoc[] = [
       makeDoc({ page_id: "a", title: "Parent A", locale: "en", section: "10-X", section_order: 1, slug: "parent-a", sub_items: ["b"], status: "active" }),

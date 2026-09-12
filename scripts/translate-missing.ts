@@ -697,6 +697,19 @@ export function updateManifestWithDoc(
   }
 
   const enDoc = enPageId ? data.docs.find((d) => d.page_id === enPageId) : undefined;
+  // Container mode: when the English doc is itself a Sub-item inside a container's
+  // sub_items (section/toggle row), the translation family root is the container —
+  // container-mode translations are siblings under the container, not children of
+  // the English page. Recording the translation in enDoc.sub_items as well would
+  // double-parent it and trip nested-family-skipped detection in buildHierarchyPlan.
+  const containerDoc = enDoc
+    ? data.docs.find(
+        (d) =>
+          d.page_id !== enDoc.page_id &&
+          Array.isArray(d.sub_items) &&
+          d.sub_items.includes(enDoc.page_id),
+      )
+    : undefined;
   const inputDir = options?.inputDir ?? dirname(manifestPath);
 
   // Build hasBodyById map so body-quality ranking accurately distinguishes stubs from real content
@@ -752,13 +765,21 @@ export function updateManifestWithDoc(
   const isExplicit = (d: ManifestDoc) =>
     (languageSourceById[d.page_id] ?? d.language_source) === "explicit";
 
-  // 3. Match within English doc's sub_items family using canonical hierarchy ranking
+  // 3. Match within the translation family (canonical hierarchy ranking).
+  //    In container mode the family root is the container's sub_items; otherwise
+  //    it is the English doc's own sub_items.
   // Reject explicit human translations: automated translation generation must never
   // silently overwrite an explicit human translation unless the caller explicitly supplied its page ID.
-  if (existingIdx < 0 && enDoc && Array.isArray(enDoc.sub_items) && enDoc.sub_items.length > 0) {
+  const familyIds: string[] =
+    containerDoc && Array.isArray(containerDoc.sub_items)
+      ? containerDoc.sub_items
+      : enDoc && Array.isArray(enDoc.sub_items)
+        ? enDoc.sub_items
+        : [];
+  if (existingIdx < 0 && familyIds.length > 0) {
     const siblingCandidates = data.docs.filter(
       (d) =>
-        enDoc.sub_items!.includes(d.page_id) &&
+        familyIds.includes(d.page_id) &&
         d.locale === doc.locale &&
         !isExplicit(d),
     );
@@ -852,7 +873,22 @@ export function updateManifestWithDoc(
     data.docs.push(doc);
   }
 
-  if (enDoc) {
+  if (containerDoc && Array.isArray(containerDoc.sub_items)) {
+    // Container mode: record the translation as a sibling under the container
+    // family root, and make sure the English doc does not claim it in its own
+    // sub_items (which would double-parent it).
+    if (previousPageId && previousPageId !== doc.page_id) {
+      containerDoc.sub_items = containerDoc.sub_items.filter((id) => id !== previousPageId);
+    }
+    if (!containerDoc.sub_items.includes(doc.page_id)) {
+      containerDoc.sub_items.push(doc.page_id);
+    }
+    if (enDoc && Array.isArray(enDoc.sub_items)) {
+      enDoc.sub_items = enDoc.sub_items.filter(
+        (id) => id !== doc.page_id && id !== previousPageId,
+      );
+    }
+  } else if (enDoc) {
     if (!Array.isArray(enDoc.sub_items)) enDoc.sub_items = [];
     if (previousPageId && previousPageId !== doc.page_id) {
       enDoc.sub_items = enDoc.sub_items.filter((id) => id !== previousPageId);

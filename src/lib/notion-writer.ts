@@ -825,6 +825,13 @@ export async function writeTranslationToNotion(
   } = options;
 
   const effectiveParentId = parentItemId || parentEnglishPageId;
+  // Container mode: the translation is parented under a dedicated container row
+  // (section or toggle) as a sibling of the English page. The English page's own
+  // Sub-item relation must stay untouched in this mode — linking the translation
+  // there as well would make the English page both a Sub-item of the container
+  // and the root of its own sub-item family, double-parenting the row in Notion
+  // and tripping nested-family-skipped detection in buildHierarchyPlan.
+  const isContainerMode = Boolean(parentItemId && parentItemId !== parentEnglishPageId);
   const preparedBlocks = prepareBlocksForNotion(translatedBlocks, {
     assets: options.assets,
     section: options.section,
@@ -1195,9 +1202,75 @@ export async function writeTranslationToNotion(
   // ── Case 2: Target Page does NOT exist (create new page in Notion DB) ──
   // Reconcile ambiguous responses and prevent duplicate page creation:
   if (typeof client.queryDatabase === "function") {
-    // 1. If parentEnglishPageId is provided and differs from parentItemId, check if a translation
-    //    page already exists directly under this English family root.
-    if (parentEnglishPageId && parentEnglishPageId !== parentItemId) {
+    // 0. Container mode: the translation lives as a sibling under the container
+    //    parent row (section/toggle), so reconcile against the container's own
+    //    translation children instead of the English page's family. The English
+    //    page's Sub-item relation is neither consulted for ownership nor linked
+    //    after creation in this mode.
+    if (isContainerMode && parentItemId) {
+      try {
+        const siblingMatch = await client.queryDatabase({
+          filter: {
+            and: [
+              {
+                property: NOTION_PROPERTIES.LANGUAGE,
+                select: { equals: localeSelectName },
+              },
+              {
+                property: NOTION_PROPERTIES.PARENT_ITEM,
+                relation: { contains: parentItemId },
+              },
+            ],
+          },
+          pageSize: 10,
+        });
+        const rawCandidates = siblingMatch?.results ?? [];
+        const candidates = rawCandidates.filter((p) => {
+          const lang = getPageLanguage(p);
+          return normalizeLocale(lang) === targetLocale;
+        });
+        if (candidates.length > 0) {
+          let hasBodyById: Record<string, boolean | undefined> | undefined;
+          if (candidates.length > 1 && typeof client.getPageBlocks === "function") {
+            const bodies: Record<string, boolean | undefined> = {};
+            await Promise.all(
+              candidates.map(async (cand) => {
+                try {
+                  const blocks = await client.getPageBlocks(cand.id);
+                  bodies[cand.id] = blocks ? !isStubPage(cand, blocks) : false;
+                } catch (fetchErr) {
+                  console.warn(
+                    `[notion-writer] Failed to fetch blocks for candidate [${cand.id}]: ${fetchErr}`,
+                  );
+                  bodies[cand.id] = undefined;
+                }
+              }),
+            );
+            hasBodyById = bodies;
+          }
+          const ranked = rankTranslationCandidates(candidates, targetTitle, hasBodyById);
+          if (ranked.length > 0) {
+            const winner = ranked[0];
+            console.warn(
+              `[notion-writer] Found existing container sibling translation page [${winner.id}] parented by container ${parentItemId}. Reusing canonical member instead of creating duplicate.`,
+            );
+            return writeTranslationToNotion({
+              ...options,
+              targetPageId: winner.id,
+            });
+          }
+        }
+      } catch (queryErr) {
+        throw new Error(
+          `[notion-writer] Failed to query existing container sibling translations for parentItemId [${parentItemId}]: ${queryErr instanceof Error ? queryErr.message : String(queryErr)}`,
+          { cause: queryErr },
+        );
+      }
+    }
+
+    // 1. Standalone mode: if parentEnglishPageId is provided and differs from parentItemId, check
+    //    if a translation page already exists directly under this English family root.
+    if (!isContainerMode && parentEnglishPageId && parentEnglishPageId !== parentItemId) {
       try {
         const directFamilyMatch = await client.queryDatabase({
           filter: {
@@ -1457,7 +1530,12 @@ export async function writeTranslationToNotion(
 
   let didUpdateParentSubItems = false;
   let originalParentSubItemIds: string[] = [];
+  // Standalone mode only: link the created translation to the English page's
+  // Sub-item relation. In container mode the translation is already a sibling
+  // of the English page under the container row, and adding it to the English
+  // page's Sub-item relation as well would double-parent it.
   if (
+    !isContainerMode &&
     parentEnglishPageId &&
     typeof client.getPage === "function" &&
     typeof client.updatePage === "function"
