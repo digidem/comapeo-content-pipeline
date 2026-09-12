@@ -3,6 +3,7 @@ import {
   appendBlockTree,
   isDeadPage,
   isStubPage,
+  isSupportedInlineColumnList,
   NEVER_BARE_CONTAINER_TYPES,
   NOTION_MAX_EMBED_DEPTH,
   prepareBlocksForNotion,
@@ -3379,9 +3380,10 @@ describe("splitForNotionDepth", () => {
     expect(plan.roots[1].type).toBe("toggle");
   });
 
-  it("throws for a deep never-bare container (column_list)", () => {
+  it("throws for a deep never-bare container (column_list with nested containers)", () => {
     const leaf = makeParagraphBlock("leaf", "Leaf");
-    const column = makeContainerBlock("col", "column", "Column", [leaf]);
+    const deepToggle = makeContainerBlock("toggle", "toggle", "Toggle", [leaf]);
+    const column = makeContainerBlock("col", "column", "Column", [deepToggle]);
     const columnList = makeContainerBlock("cols", "column_list", "Columns", [column]);
 
     expect(() => splitForNotionDepth([columnList])).toThrow(
@@ -3847,5 +3849,202 @@ describe("writeTranslationToNotion deep nesting (Notion 2-level embed limit)", (
     const createArgs = vi.mocked(mockClient.createPage).mock.calls[0][0];
     expect(createArgs.children).toHaveLength(1);
     expect(mockClient.appendBlockChildren).not.toHaveBeenCalled();
+  });
+
+  it("rolls back newly appended bare roots when a deferred child append fails during stub update", async () => {
+    vi.mocked(mockClient.getPage).mockResolvedValue({
+      id: "stub-page-id",
+      properties: {
+        [NOTION_PROPERTIES.PUBLISH_STATUS]: {
+          select: { name: "Automated translations generated" },
+        },
+      },
+    } as unknown as NotionPage);
+
+    vi.mocked(mockClient.getPageBlocks).mockResolvedValueOnce({
+      results: [
+        {
+          id: "old-block-id",
+          type: "paragraph",
+          object: "block",
+          paragraph: { rich_text: [{ type: "text", text: { content: "Original content" } }] },
+        } as unknown as NotionBlock,
+      ],
+      children: {},
+    });
+
+    // 1st append (bare toggle roots) succeeds and triggers onChunk
+    vi.mocked(mockClient.appendBlockChildren).mockImplementationOnce(
+      async (_parentId, children, options) => {
+        const appended = (children as Record<string, unknown>[]).map((c, i) => ({
+          id: `created-root-${i + 1}`,
+          type: c.type as string,
+          object: "block",
+        })) as unknown as NotionBlock[];
+        options?.onChunk?.(appended);
+        return {
+          object: "list",
+          results: appended,
+          next_cursor: null,
+          has_more: false,
+        };
+      },
+    );
+
+    // 2nd append (deferred children into created-root-1) fails
+    vi.mocked(mockClient.appendBlockChildren).mockRejectedValueOnce(
+      new Error("Network failure during deferred children append"),
+    );
+
+    await expect(
+      writeTranslationToNotion({
+        client: mockClient,
+        databaseId: "db-123",
+        targetLocale: "pt",
+        targetTitle: "Stub com Falha no Deferred",
+        parentEnglishPageId: "en-parent-id",
+        targetPageId: "stub-page-id",
+        translatedBlocks: deepTranslatedBlocks,
+      }),
+    ).rejects.toThrow("Network failure during deferred children append");
+
+    // The bare root that was created must be rolled back (deleted)
+    expect(mockClient.deleteBlock).toHaveBeenCalledWith("created-root-1");
+    // The original old block must NOT be deleted
+    expect(mockClient.deleteBlock).not.toHaveBeenCalledWith("old-block-id");
+    // The page properties must NOT be committed
+    expect(mockClient.updatePage).not.toHaveBeenCalled();
+  });
+
+  it("accepts ordinary column_list layouts inline without deferral", () => {
+    const columnListBlock = {
+      type: "column_list",
+      column_list: {
+        children: [
+          {
+            type: "column",
+            column: {
+              children: [
+                {
+                  type: "paragraph",
+                  paragraph: { rich_text: [{ type: "text", text: { content: "Col 1" } }] },
+                },
+              ],
+            },
+          },
+          {
+            type: "column",
+            column: {
+              children: [
+                {
+                  type: "paragraph",
+                  paragraph: { rich_text: [{ type: "text", text: { content: "Col 2" } }] },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+
+    expect(isSupportedInlineColumnList(columnListBlock)).toBe(true);
+    expect(subtreeHeight(columnListBlock)).toBe(2);
+
+    const plan = splitForNotionDepth([columnListBlock]);
+    expect(plan.roots).toHaveLength(1);
+    expect(plan.roots[0]).toBe(columnListBlock);
+    expect(plan.deferred).toHaveLength(0);
+  });
+
+  it("rejects column_list when columns contain deeper nested sub-containers", () => {
+    const deepColumnListBlock = {
+      type: "column_list",
+      column_list: {
+        children: [
+          {
+            type: "column",
+            column: {
+              children: [
+                {
+                  type: "toggle",
+                  toggle: {
+                    rich_text: [{ type: "text", text: { content: "Nested Toggle" } }],
+                    children: [
+                      {
+                        type: "paragraph",
+                        paragraph: { rich_text: [{ type: "text", text: { content: "Leaf" } }] },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+
+    expect(isSupportedInlineColumnList(deepColumnListBlock)).toBe(false);
+    expect(() => splitForNotionDepth([deepColumnListBlock])).toThrow(
+      /Cannot defer children of a "column_list" block exceeding Notion's max embed depth/,
+    );
+  });
+
+  it("writes translation containing ordinary column_list without error", async () => {
+    vi.mocked(mockClient.createPage).mockResolvedValueOnce({
+      id: "column-page-id",
+      object: "page",
+    } as unknown as NotionPage);
+
+    const columnListBlock: NotionBlock = {
+      object: "block",
+      id: "col-list-1",
+      type: "column_list",
+      has_children: true,
+      column_list: {
+        children: [
+          {
+            object: "block",
+            id: "col-1",
+            type: "column",
+            has_children: true,
+            column: {
+              children: [makeParagraphBlock("p-1", "Column 1 text")],
+            },
+          } as unknown as NotionBlock,
+          {
+            object: "block",
+            id: "col-2",
+            type: "column",
+            has_children: true,
+            column: {
+              children: [makeParagraphBlock("p-2", "Column 2 text")],
+            },
+          } as unknown as NotionBlock,
+        ],
+      },
+    } as unknown as NotionBlock;
+
+    const result = await writeTranslationToNotion({
+      client: mockClient,
+      databaseId: "db-123",
+      targetLocale: "es",
+      targetTitle: "Página con Columnas",
+      translatedBlocks: {
+        object: "list",
+        results: [columnListBlock],
+      },
+    });
+
+    expect(result).toMatchObject({
+      written: true,
+      action: "created",
+      pageId: "column-page-id",
+    });
+
+    // Created inline in createPage because it fits embed depth
+    const createArgs = vi.mocked(mockClient.createPage).mock.calls[0][0];
+    expect(createArgs.children).toHaveLength(1);
+    expect((createArgs.children?.[0] as Record<string, unknown>).type).toBe("column_list");
   });
 });

@@ -133,6 +133,28 @@ export function subtreeHeight(block: Record<string, unknown>): number {
 }
 
 /**
+ * Checks whether a column_list layout can be embedded inline in a single request.
+ * Notion requires column_list to contain columns inline, and each column to contain
+ * its initial blocks inline. If all child blocks within all columns are leaf blocks
+ * (subtreeHeight 0), the entire column_list tree has height 2 and is accepted inline
+ * by Notion API without needing deferral.
+ */
+export function isSupportedInlineColumnList(block: Record<string, unknown>): boolean {
+  if (block.type !== "column_list") return false;
+  const payload = block.column_list as Record<string, unknown> | undefined;
+  const columns = payload?.children;
+  if (!Array.isArray(columns) || columns.length === 0) return false;
+  return columns.every((col) => {
+    const colRecord = col as Record<string, unknown>;
+    if (colRecord.type !== "column") return false;
+    const colPayload = colRecord.column as Record<string, unknown> | undefined;
+    const colChildren = colPayload?.children;
+    if (!Array.isArray(colChildren) || colChildren.length === 0) return false;
+    return colChildren.every((child) => subtreeHeight(child as Record<string, unknown>) === 0);
+  });
+}
+
+/**
  * Splits blocks into roots that fit within Notion's embed depth and children
  * deferred to follow-up appends against the created bare containers.
  * Pure: input blocks are not mutated.
@@ -145,7 +167,10 @@ export function splitForNotionDepth(
   const deferred: DeferredChildren[] = [];
 
   for (const block of blocks) {
-    if (subtreeHeight(block) <= maxEmbedDepth) {
+    if (
+      subtreeHeight(block) <= maxEmbedDepth ||
+      isSupportedInlineColumnList(block)
+    ) {
       roots.push(block);
       continue;
     }
