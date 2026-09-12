@@ -270,35 +270,6 @@ async function main() {
     return;
   }
 
-  // 4. Initialize Clients
-  const notionToken = process.env.NOTION_TOKEN || process.env.NOTION_API_KEY;
-  const client = notionToken ? new NotionClient({ token: notionToken }) : null;
-
-  const apiKey =
-    args["api-key"] ||
-    process.env.TRANSLATION_API_KEY ||
-    process.env.OPENAI_API_KEY ||
-    process.env.DEEPSEEK_API_KEY ||
-    process.env.POOLSIDE_API_KEY;
-  if (!dryRun && !apiKey) {
-    console.error("Error: A translation API key is required to generate translations with --apply.");
-    console.error(
-      "Set TRANSLATION_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, or POOLSIDE_API_KEY in the environment, or pass --api-key <key>.",
-    );
-    process.exit(1);
-  }
-
-  if (writeNotion && !dryRun) {
-    if (!notionToken) {
-      console.error("Error: NOTION_TOKEN or NOTION_API_KEY is required to write back to Notion with --write-notion.");
-      process.exit(1);
-    }
-    if (!databaseId) {
-      console.error("Error: NOTION_DATABASE_ID is required to write back to Notion with --write-notion.");
-      process.exit(1);
-    }
-  }
-
   let timeoutMs: number | undefined;
   if (args.timeout !== undefined) {
     const raw = String(args.timeout).trim();
@@ -321,25 +292,37 @@ async function main() {
     batchSize = parsed;
   }
 
-  const baseUrl =
-    args["base-url"] ||
-    process.env.TRANSLATION_BASE_URL ||
-    process.env.OPENAI_BASE_URL ||
-    process.env.DEEPSEEK_BASE_URL;
-  const model =
-    args.model ||
-    process.env.TRANSLATION_MODEL ||
-    process.env.OPENAI_MODEL ||
-    process.env.DEEPSEEK_MODEL;
+  // 4. Initialize Clients
+  const notionToken = process.env.NOTION_TOKEN || process.env.NOTION_API_KEY;
+  const client = notionToken ? new NotionClient({ token: notionToken }) : null;
 
   const translator = new AITranslator({
-    apiKey: apiKey || "dummy-key-for-dry-run",
-    baseUrl,
-    model,
+    apiKey: args["api-key"] || (dryRun ? "dummy-key-for-dry-run" : undefined),
+    baseUrl: args["base-url"],
+    model: args.model,
     batchSize,
     timeoutMs,
     env: process.env,
   });
+
+  if (!dryRun && !translator.apiKey) {
+    console.error("Error: A translation API key is required to generate translations with --apply.");
+    console.error(
+      "Set TRANSLATION_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, or POOLSIDE_API_KEY in the environment, or pass --api-key <key>.",
+    );
+    process.exit(1);
+  }
+
+  if (writeNotion && !dryRun) {
+    if (!notionToken) {
+      console.error("Error: NOTION_TOKEN or NOTION_API_KEY is required to write back to Notion with --write-notion.");
+      process.exit(1);
+    }
+    if (!databaseId) {
+      console.error("Error: NOTION_DATABASE_ID is required to write back to Notion with --write-notion.");
+      process.exit(1);
+    }
+  }
 
   // 5. Execute translations
   const queue = targets.slice(0, limit);

@@ -43,9 +43,9 @@ interface ChatCompletionResponse {
 }
 
 export class AITranslator {
-  private apiKey: string;
-  private baseUrl: string;
-  private model: string;
+  readonly apiKey: string;
+  readonly baseUrl: string;
+  readonly model: string;
   private maxRetries: number;
   private timeoutMs: number;
   private batchSize: number;
@@ -61,57 +61,75 @@ export class AITranslator {
 
     const env = config.env ?? {};
 
-    const poolsideKey = env.POOLSIDE_API_KEY;
-    const deepseekKey = env.DEEPSEEK_API_KEY;
-    const openaiKey = env.OPENAI_API_KEY;
     const translationKey = env.TRANSLATION_API_KEY;
-    this.apiKey =
-      config.apiKey ?? translationKey ?? openaiKey ?? deepseekKey ?? poolsideKey ?? "";
+    const openaiKey = env.OPENAI_API_KEY;
+    const deepseekKey = env.DEEPSEEK_API_KEY;
+    const poolsideKey = env.POOLSIDE_API_KEY;
 
-    // Provider detection: pick defaults from whichever provider the resolved
-    // credentials point at. Explicit base URLs below always win over defaults.
-    const isPoolside =
-      this.apiKey.startsWith("sky_") ||
-      Boolean(
-        poolsideKey &&
-          this.apiKey === poolsideKey &&
-          !env.OPENAI_BASE_URL &&
-          !env.DEEPSEEK_BASE_URL &&
-          !env.TRANSLATION_BASE_URL,
-      );
-    const isDeepseek =
-      !isPoolside &&
-      Boolean(
-        (deepseekKey && this.apiKey === deepseekKey) ||
-          env.DEEPSEEK_BASE_URL ||
-          (config.baseUrl && config.baseUrl.includes("deepseek")) ||
-          (env.OPENAI_BASE_URL && env.OPENAI_BASE_URL.includes("deepseek")) ||
-          (env.TRANSLATION_BASE_URL && env.TRANSLATION_BASE_URL.includes("deepseek")),
-      );
-    const defaultBaseUrl = isPoolside
-      ? "https://inference.poolside.ai/v1"
-      : isDeepseek
-        ? "https://api.deepseek.com/v1"
-        : "https://api.openai.com/v1";
-    const defaultModel = isPoolside
-      ? "poolside/laguna-s-2.1"
-      : isDeepseek
-        ? "deepseek-chat"
-        : "gpt-4o";
+    let selectedKey = config.apiKey ?? translationKey;
+    let selectedBaseUrl = config.baseUrl ?? env.TRANSLATION_BASE_URL;
+    let selectedModel = config.model ?? env.TRANSLATION_MODEL;
 
-    const rawBaseUrl =
-      config.baseUrl ??
-      env.TRANSLATION_BASE_URL ??
-      env.OPENAI_BASE_URL ??
-      env.DEEPSEEK_BASE_URL ??
-      defaultBaseUrl;
-    this.baseUrl = rawBaseUrl.replace(/\/+$/, "");
-    this.model =
-      config.model ??
-      env.TRANSLATION_MODEL ??
-      env.OPENAI_MODEL ??
-      env.DEEPSEEK_MODEL ??
-      defaultModel;
+    // Resolve as an atomic provider-specific group to prevent credentials from
+    // being transmitted across provider boundaries (e.g. OPENAI_API_KEY being sent to DEEPSEEK_BASE_URL).
+    if (selectedKey) {
+      // Explicit or generic key supplied: infer default endpoint/model if not set
+      const isPoolside =
+        selectedKey.startsWith("sky_") ||
+        Boolean(poolsideKey && selectedKey === poolsideKey);
+      const isDeepseek =
+        !isPoolside &&
+        Boolean(
+          (deepseekKey && selectedKey === deepseekKey) ||
+            (selectedBaseUrl && selectedBaseUrl.includes("deepseek")),
+        );
+      const defaultBaseUrl = isPoolside
+        ? "https://inference.poolside.ai/v1"
+        : isDeepseek
+          ? "https://api.deepseek.com/v1"
+          : "https://api.openai.com/v1";
+      const defaultModel = isPoolside
+        ? "poolside/laguna-s-2.1"
+        : isDeepseek
+          ? "deepseek-chat"
+          : "gpt-4o";
+
+      selectedBaseUrl = selectedBaseUrl ?? defaultBaseUrl;
+      selectedModel = selectedModel ?? defaultModel;
+    } else if (openaiKey) {
+      // OpenAI provider group: only OPENAI_* or explicit overrides apply
+      selectedKey = openaiKey;
+      selectedBaseUrl = selectedBaseUrl ?? env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
+      const defaultOpenaiModel = selectedBaseUrl.includes("deepseek") ? "deepseek-chat" : "gpt-4o";
+      selectedModel = selectedModel ?? env.OPENAI_MODEL ?? defaultOpenaiModel;
+    } else if (deepseekKey) {
+      // DeepSeek provider group: only DEEPSEEK_* or explicit overrides apply
+      selectedKey = deepseekKey;
+      selectedBaseUrl = selectedBaseUrl ?? env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com/v1";
+      selectedModel = selectedModel ?? env.DEEPSEEK_MODEL ?? "deepseek-chat";
+    } else if (poolsideKey) {
+      // Poolside provider group
+      selectedKey = poolsideKey;
+      selectedBaseUrl = selectedBaseUrl ?? "https://inference.poolside.ai/v1";
+      selectedModel = selectedModel ?? "poolside/laguna-s-2.1";
+    } else {
+      // No key provided; determine default endpoint and model from provider env vars
+      if (env.OPENAI_BASE_URL || env.OPENAI_MODEL) {
+        selectedBaseUrl = selectedBaseUrl ?? env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
+        selectedModel = selectedModel ?? env.OPENAI_MODEL ?? "gpt-4o";
+      } else if (env.DEEPSEEK_BASE_URL || env.DEEPSEEK_MODEL) {
+        selectedBaseUrl = selectedBaseUrl ?? env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com/v1";
+        selectedModel = selectedModel ?? env.DEEPSEEK_MODEL ?? "deepseek-chat";
+      } else {
+        selectedBaseUrl = selectedBaseUrl ?? "https://api.openai.com/v1";
+        selectedModel = selectedModel ?? "gpt-4o";
+      }
+      selectedKey = "";
+    }
+
+    this.apiKey = selectedKey;
+    this.baseUrl = selectedBaseUrl.replace(/\/+$/, "");
+    this.model = selectedModel;
     this.maxRetries = config.maxRetries ?? 3;
     this.timeoutMs =
       typeof config.timeoutMs === "number" &&
