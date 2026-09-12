@@ -7,5 +7,6 @@ dist/
 test-results/
 coverage/
 output/
-docs/
+docs/*
+!docs/editorial-review-workflow.md
 translation-report.html
