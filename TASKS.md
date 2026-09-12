@@ -12,7 +12,7 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
   - Notion write-back (`src/lib/notion-writer.ts`) supporting stub updates and new page creation parented as siblings under container parents with `Publish Status: "Automated translations generated"`.
   - Notion native `custom_emoji` mention preservation (`data-emoji-id` roundtrip).
   - Image block resolution for private Notion S3 URLs and inline base64 data URIs to permanent public asset URLs.
-  - 627 passing unit tests and live end-to-end verification in Notion and Docusaurus.
+  - 772 passing unit tests, full verification suite passes, and clean 5/5 merge readiness reviews.
 
 ---
 
@@ -23,6 +23,8 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 - [ ] **Configure production LLM credentials**: Document and provision production OpenAI / DeepSeek v4 API credentials (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`) alongside the current Poolside Laguna testing credentials (`POOLSIDE_API_KEY`).
 - [ ] **Notion editor review workflow**: Provide editorial guidelines for reviewers to inspect pages marked `Publish Status: "Automated translations generated"`, make any human adjustments, and transition them to `Draft published` / `Published`.
 - [ ] **Evaluate Worker integration (optional)**: Decide whether translation generation should remain an on-demand CLI operator tool or be exposed via a Cloudflare Worker admin route (e.g. `POST /admin/translate/missing`) or triggered on English page publication.
+- [ ] **Handle Notion nested-children depth limit (>2 levels)**: In `notion-writer.ts:prepareBlocksForNotion`, recursively append grandchildren in follow-up `appendBlockChildren` requests if deeply nested lists/toggles exceed Notion API's 2-level embed limit during batch rollout.
+- [ ] **Refine translation Sub-item linking under container parents**: Review container parent vs English child `Sub-item` two-way relation linking to decide whether container-parented pages should skip linking to the English child's `Sub-item` to minimize diagnostic warnings in `buildHierarchyPlan`.
 
 ### 2. Notion Editorial Cleanup (Content-State Fixes — Editor Access Needed)
 Full-output production build: **46 broken links + 182 broken anchor refs across 35 pages** (warnings only; build succeeds). Traced to Notion content state:
