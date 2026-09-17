@@ -119,6 +119,7 @@ function printHelp(): void {
       "  --force               Override the human-edit safety lock",
       "  --write-notion        Write translations back to Notion",
       "  --database-id <id>    Notion database ID (required with --write-notion)",
+      "  --data-source-id <id> Notion data source ID (optional, falls back to database ID)",
       "  --api-key <key>       Translation API key (overrides environment)",
       "  --base-url <url>      OpenAI-compatible base URL (overrides environment)",
       "  --model <model>       Translation model name (overrides environment)",
@@ -143,8 +144,8 @@ function printHelp(): void {
       "  Poolside  https://inference.poolside.ai/v1  poolside/laguna-s-2.1",
       "",
       "Other environment variables:",
-      "  NOTION_TOKEN, NOTION_DATABASE_ID  Required for fetching pages / --write-notion",
-      "  DOCS_BASE_URL                     Canonical docs URL used in Notion write-back",
+      "  NOTION_TOKEN, NOTION_DATABASE_ID, NOTION_DATA_SOURCE_ID  Required for fetching pages / --write-notion",
+      "  DOCS_BASE_URL                                            Canonical docs URL used in Notion write-back",
     ].join("\n"),
   );
 }
@@ -297,7 +298,7 @@ async function main() {
 
   // 4. Initialize Clients
   const notionToken = process.env.NOTION_TOKEN || process.env.NOTION_API_KEY;
-  const dataSourceId = process.env.NOTION_DATA_SOURCE_ID;
+  const dataSourceId = args["data-source-id"] || process.env.NOTION_DATA_SOURCE_ID;
   const client = notionToken
     ? new NotionClient({ token: notionToken, databaseId, dataSourceId })
     : null;

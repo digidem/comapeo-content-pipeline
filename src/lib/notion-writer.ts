@@ -273,7 +273,10 @@ export function prepareBlocksForNotion(
         delete cleanedPayload[key];
       }
     }
-    if (block.type === "synced_block" && !("synced_from" in cleanedPayload)) {
+    // For synced_block: Notion requires synced_from: null for original synced blocks.
+    // When translating/replicating, force synced_from: null so the translated page owns
+    // its own content instead of referencing the original (English) synced block.
+    if (block.type === "synced_block") {
       cleanedPayload.synced_from = null;
     }
 

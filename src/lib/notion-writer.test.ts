@@ -96,6 +96,26 @@ describe("prepareBlocksForNotion", () => {
     expect((prepared[0] as { synced_block: Record<string, unknown> }).synced_block.synced_from).toBeNull();
   });
 
+  it("sets synced_from: null on duplicate synced_blocks so translations own independent blocks", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "sb-2",
+          type: "synced_block",
+          synced_block: {
+            synced_from: { block_id: "original-block-id" },
+            children: [],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const prepared = prepareBlocksForNotion(rawBlocks);
+    expect((prepared[0] as { synced_block: Record<string, unknown> }).synced_block.synced_from).toBeNull();
+  });
+
   it("converts relative link URLs in rich_text to absolute URLs for Notion API compatibility", () => {
     const rawBlocks: NotionBlockList = {
       object: "list",
