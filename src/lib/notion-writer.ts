@@ -267,10 +267,17 @@ export function prepareBlocksForNotion(
     const cleanedPayload: Record<string, unknown> = { ...typePayload };
 
     // Strip null properties from block payload (e.g. icon: null, which Notion rejects on create/append)
+    // Exception: synced_block requires synced_from: null for original synced blocks
     for (const [key, val] of Object.entries(cleanedPayload)) {
-      if (val === null) {
+      if (val === null && !(block.type === "synced_block" && key === "synced_from")) {
         delete cleanedPayload[key];
       }
+    }
+    // For synced_block: Notion requires synced_from: null for original synced blocks.
+    // When translating/replicating, force synced_from: null so the translated page owns
+    // its own content instead of referencing the original (English) synced block.
+    if (block.type === "synced_block") {
+      cleanedPayload.synced_from = null;
     }
 
     // icon is only valid on callout blocks; strip from any other block type
