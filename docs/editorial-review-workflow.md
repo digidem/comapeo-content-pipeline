@@ -1,5 +1,7 @@
 # Editorial review workflow for AI translations
 
+> 💡 **Live in Notion:** [Editorial Review Workflow for AI Translations (internal)](https://app.notion.com/p/Editorial-Review-Workflow-for-AI-Translations-internal-3de1b08162d5814f8b2cd87bf86dbe59) in `CoMapeo Docs` under section **90+ - Miscellaneous** (Order: 94).
+
 This guide is for **human editors and reviewers** who turn machine-generated
 Portuguese (pt) and Spanish (es) translations into approved, published
 documentation. It covers where to find automated translations in Notion, what

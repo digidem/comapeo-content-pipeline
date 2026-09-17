@@ -80,6 +80,7 @@ bun scripts/translate-missing.ts --apply
 Machine-generated pages land in Notion with `Publish Status: "Automated
 translations generated"` and must pass human review before publication —
 editors, see the [editorial review workflow](./docs/editorial-review-workflow.md)
+(also [live in Notion](https://app.notion.com/p/Editorial-Review-Workflow-for-AI-Translations-internal-3de1b08162d5814f8b2cd87bf86dbe59) under `90+ - Miscellaneous`)
 for the review checklist, status transitions, and regeneration commands.
 
 ### Providers

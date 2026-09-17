@@ -17,7 +17,8 @@
     "translations:missing": "bun scripts/missing-translations.ts --all",
     "translations:generate": "bun scripts/translate-missing.ts",
     "translations:report": "bun scripts/translation-report-html.ts",
-    "translations:check": "bun scripts/translation-report-html.ts --open"
+    "translations:check": "bun scripts/translation-report-html.ts --open",
+    "docs:post-editorial": "bun scripts/post-editorial-guide.ts --apply"
   },
   "dependencies": {
     "@notionhq/client": "^5.12.0",
