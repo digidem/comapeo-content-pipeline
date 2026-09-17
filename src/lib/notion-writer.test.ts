@@ -76,6 +76,26 @@ describe("prepareBlocksForNotion", () => {
     expect((prepared[0] as { paragraph: Record<string, unknown> }).paragraph.icon).toBeUndefined();
   });
 
+  it("preserves synced_from: null on synced_block for original synced blocks", () => {
+    const rawBlocks: NotionBlockList = {
+      object: "list",
+      results: [
+        {
+          object: "block",
+          id: "sb-1",
+          type: "synced_block",
+          synced_block: {
+            synced_from: null,
+            children: [],
+          },
+        } as unknown as NotionBlock,
+      ],
+    };
+
+    const prepared = prepareBlocksForNotion(rawBlocks);
+    expect((prepared[0] as { synced_block: Record<string, unknown> }).synced_block.synced_from).toBeNull();
+  });
+
   it("converts relative link URLs in rich_text to absolute URLs for Notion API compatibility", () => {
     const rawBlocks: NotionBlockList = {
       object: "list",

@@ -297,7 +297,10 @@ async function main() {
 
   // 4. Initialize Clients
   const notionToken = process.env.NOTION_TOKEN || process.env.NOTION_API_KEY;
-  const client = notionToken ? new NotionClient({ token: notionToken }) : null;
+  const dataSourceId = process.env.NOTION_DATA_SOURCE_ID;
+  const client = notionToken
+    ? new NotionClient({ token: notionToken, databaseId, dataSourceId })
+    : null;
 
   const translator = new AITranslator({
     apiKey: args["api-key"],

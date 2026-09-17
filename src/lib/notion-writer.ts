@@ -267,10 +267,14 @@ export function prepareBlocksForNotion(
     const cleanedPayload: Record<string, unknown> = { ...typePayload };
 
     // Strip null properties from block payload (e.g. icon: null, which Notion rejects on create/append)
+    // Exception: synced_block requires synced_from: null for original synced blocks
     for (const [key, val] of Object.entries(cleanedPayload)) {
-      if (val === null) {
+      if (val === null && !(block.type === "synced_block" && key === "synced_from")) {
         delete cleanedPayload[key];
       }
+    }
+    if (block.type === "synced_block" && !("synced_from" in cleanedPayload)) {
+      cleanedPayload.synced_from = null;
     }
 
     // icon is only valid on callout blocks; strip from any other block type
