@@ -75,6 +75,12 @@ describe("resolveManifestPath", () => {
     writeFileSync(versioned, "{}");
     expect(resolveManifestPath({ manifestVersion: "20260918", outDir: tempDir })).toBe(versioned);
   });
+
+  it("throws MarkPublishedError when manifestVersion is supplied but does not exist", () => {
+    expect(() =>
+      resolveManifestPath({ manifestVersion: "missing-version-999", outDir: tempDir }),
+    ).toThrow(MarkPublishedError);
+  });
 });
 
 describe("markPublished", () => {
@@ -93,6 +99,13 @@ describe("markPublished", () => {
   it("throws MarkPublishedError when manifest does not exist", async () => {
     await expect(
       markPublished({ manifestPath: join(tempDir, "nonexistent.json") }),
+    ).rejects.toThrow(MarkPublishedError);
+  });
+
+  it("throws MarkPublishedError when manifest fails schema validation", async () => {
+    writeFileSync(manifestPath, JSON.stringify({ docs: [{ badField: true }] }), "utf-8");
+    await expect(
+      markPublished({ manifestPath, outDir: tempDir }),
     ).rejects.toThrow(MarkPublishedError);
   });
 
@@ -143,7 +156,7 @@ describe("markPublished", () => {
     expect(result.targets[0].pageId).toBe("es1");
   });
 
-  it("executes live writes when live: true and saves rollback log", async () => {
+  it("executes live writes when live: true and saves rollback log incrementally", async () => {
     const manifest = createMockManifest([
       { page_id: "p1", title: "Intro", locale: "en", drafting_status: "Draft published" },
       { page_id: "p2", title: "Guide", locale: "es", drafting_status: "Draft published" },
@@ -152,8 +165,16 @@ describe("markPublished", () => {
     writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
 
     const updatePageStatusMock = vi.fn().mockResolvedValue({});
+    const getPageMock = vi.fn().mockResolvedValue({
+      id: "p1",
+      properties: {
+        "Publish Status": { select: { name: "Draft published" } },
+      },
+    });
+
     const mockClient: StatusUpdateClient = {
       updatePageStatus: updatePageStatusMock,
+      getPage: getPageMock,
     };
 
     const result = await markPublished(
@@ -170,6 +191,7 @@ describe("markPublished", () => {
     expect(result.targetedDocs).toBe(2);
     expect(result.updatedCount).toBe(2);
     expect(result.failedCount).toBe(0);
+    expect(result.skippedCount).toBe(0);
     expect(updatePageStatusMock).toHaveBeenCalledTimes(2);
 
     expect(updatePageStatusMock).toHaveBeenCalledWith("p1", "Published", {
@@ -199,17 +221,98 @@ describe("markPublished", () => {
     );
   });
 
-  it("handles non-blocking errors on individual page updates without halting", async () => {
+  it("skips pages whose live Notion status has changed from fromStatus", async () => {
     const manifest = createMockManifest([
-      { page_id: "p1", title: "Failing Page", locale: "en", drafting_status: "Draft published" },
-      { page_id: "p2", title: "Succeeding Page", locale: "en", drafting_status: "Draft published" },
+      { page_id: "p1", title: "Stale Page", locale: "en", drafting_status: "Draft published" },
+      { page_id: "p2", title: "Valid Page", locale: "en", drafting_status: "Draft published" },
+    ]);
+    writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+
+    const updatePageStatusMock = vi.fn().mockResolvedValue({});
+    const getPageMock = vi.fn().mockImplementation(async (pageId: string) => {
+      if (pageId === "p1") {
+        return {
+          id: "p1",
+          properties: {
+            "Publish Status": { select: { name: "Remove" } }, // Changed by editor!
+          },
+        };
+      }
+      return {
+        id: "p2",
+        properties: {
+          "Publish Status": { select: { name: "Draft published" } },
+        },
+      };
+    });
+
+    const mockClient: StatusUpdateClient = {
+      updatePageStatus: updatePageStatusMock,
+      getPage: getPageMock,
+    };
+
+    const result = await markPublished(
+      {
+        manifestPath,
+        outDir: tempDir,
+        live: true,
+      },
+      { client: mockClient },
+    );
+
+    expect(result.targetedDocs).toBe(2);
+    expect(result.skippedCount).toBe(1);
+    expect(result.updatedCount).toBe(1);
+    expect(updatePageStatusMock).toHaveBeenCalledTimes(1);
+    expect(updatePageStatusMock).toHaveBeenCalledWith("p2", "Published", expect.any(Object));
+  });
+
+  it("bypasses live status check when force: true is specified", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "Forced Page", locale: "en", drafting_status: "Draft published" },
+    ]);
+    writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+
+    const updatePageStatusMock = vi.fn().mockResolvedValue({});
+    const getPageMock = vi.fn().mockResolvedValue({
+      id: "p1",
+      properties: {
+        "Publish Status": { select: { name: "Remove" } },
+      },
+    });
+
+    const mockClient: StatusUpdateClient = {
+      updatePageStatus: updatePageStatusMock,
+      getPage: getPageMock,
+    };
+
+    const result = await markPublished(
+      {
+        manifestPath,
+        outDir: tempDir,
+        live: true,
+        force: true,
+      },
+      { client: mockClient },
+    );
+
+    expect(getPageMock).not.toHaveBeenCalled();
+    expect(result.updatedCount).toBe(1);
+    expect(result.skippedCount).toBe(0);
+    expect(updatePageStatusMock).toHaveBeenCalledWith("p1", "Published", expect.any(Object));
+  });
+
+  it("handles non-blocking errors and persists rollback incrementally for successful updates", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "Succeeding Page", locale: "en", drafting_status: "Draft published" },
+      { page_id: "p2", title: "Failing Page", locale: "en", drafting_status: "Draft published" },
     ]);
     writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
 
     const updatePageStatusMock = vi
       .fn()
-      .mockRejectedValueOnce(new Error("Notion 500 error"))
-      .mockResolvedValueOnce({});
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error("Notion 500 error"));
 
     const mockClient: StatusUpdateClient = {
       updatePageStatus: updatePageStatusMock,
@@ -229,16 +332,16 @@ describe("markPublished", () => {
     expect(result.failedCount).toBe(1);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toEqual({
-      pageId: "p1",
+      pageId: "p2",
       title: "Failing Page",
       error: "Notion 500 error",
     });
 
-    // Rollback log should contain the 1 successful update
+    // Rollback log should be flushed on disk with the 1 successful update
     expect(result.rollbackPath).toBeDefined();
     const rollbackContent = JSON.parse(readFileSync(result.rollbackPath!, "utf-8"));
     expect(rollbackContent.total_updated).toBe(1);
-    expect(rollbackContent.entries[0].page_id).toBe("p2");
+    expect(rollbackContent.entries[0].page_id).toBe("p1");
   });
 
   it("respects custom fromStatus and toStatus and setPublishedDate: false", async () => {

@@ -6,13 +6,14 @@
  * to a published status (default: "Published") via the Notion API.
  *
  * Defaults to DRY-RUN mode. Requires `--live` (or `--dry-run false`) to execute real writes.
- * Supports rollback logging to output/rollback-published-<timestamp>.json.
+ * Supports incremental rollback logging to output/rollback-published-<timestamp>.json.
  * Follows non-blocking failure semantics (logs and collects errors without halting).
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { NotionClient } from "../lib/notion-client.js";
+import { NOTION_PROPERTIES } from "../lib/notion-properties.js";
 import { ContentManifestSchema, type ContentManifest } from "../schemas/manifest.js";
 
 export class MarkPublishedError extends Error {
@@ -28,6 +29,11 @@ export interface StatusUpdateClient {
     status: string,
     options?: { setPublishedDate?: boolean; publishedDate?: string },
   ): Promise<unknown>;
+  getPage?(pageId: string): Promise<{
+    id: string;
+    properties?: Record<string, unknown>;
+    [key: string]: unknown;
+  }>;
 }
 
 export interface RollbackEntry {
@@ -48,6 +54,7 @@ export interface MarkPublishedOptions {
   publishedDate?: string;
   live?: boolean;
   dryRun?: boolean;
+  force?: boolean;
   outDir?: string;
   limit?: number;
   locale?: string;
@@ -61,6 +68,7 @@ export interface MarkPublishedResult {
   targetedDocs: number;
   updatedCount: number;
   failedCount: number;
+  skippedCount: number;
   dryRun: boolean;
   rollbackPath?: string;
   errors: Array<{ pageId: string; title: string; error: string }>;
@@ -69,6 +77,7 @@ export interface MarkPublishedResult {
 
 /**
  * Resolves the manifest file path based on provided options.
+ * Throws MarkPublishedError if an explicit manifestVersion is requested but cannot be found.
  */
 export function resolveManifestPath(options: {
   manifestPath?: string;
@@ -92,6 +101,9 @@ export function resolveManifestPath(options: {
         return p;
       }
     }
+    throw new MarkPublishedError(
+      `Manifest version "${options.manifestVersion}" not found. Checked candidate paths: ${candidatePaths.join(", ")}`,
+    );
   }
 
   return join(baseDir, "manifest.json");
@@ -121,18 +133,12 @@ export async function markPublished(
     const parsed = JSON.parse(raw);
     const validated = ContentManifestSchema.safeParse(parsed);
     if (!validated.success) {
-      // Fallback: check if basic doc array exists
-      if (Array.isArray(parsed?.docs)) {
-        manifest = parsed as ContentManifest;
-      } else {
-        throw new Error(validated.error.message);
-      }
-    } else {
-      manifest = validated.data;
+      throw new Error(validated.error.message);
     }
+    manifest = validated.data;
   } catch (err) {
     throw new MarkPublishedError(
-      `Failed to parse manifest at ${manifestPath}: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to validate manifest at ${manifestPath}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
@@ -171,6 +177,7 @@ export async function markPublished(
       targetedDocs: targetDocs.length,
       updatedCount: 0,
       failedCount: 0,
+      skippedCount: 0,
       dryRun: true,
       errors: [],
       targets: targetsSummary,
@@ -191,45 +198,22 @@ export async function markPublished(
     client = new NotionClient({ token, databaseId, dataSourceId });
   }
 
+  let rollbackPath: string | undefined;
   const rollbackEntries: RollbackEntry[] = [];
   const errors: Array<{ pageId: string; title: string; error: string }> = [];
   let updatedCount = 0;
+  let skippedCount = 0;
 
-  for (const doc of targetDocs) {
-    try {
-      await client.updatePageStatus(doc.page_id, toStatus, {
-        setPublishedDate: shouldSetDate,
-        publishedDate: options.publishedDate,
-      });
-      updatedCount++;
-      rollbackEntries.push({
-        page_id: doc.page_id,
-        title: doc.title,
-        locale: doc.locale,
-        original_status: fromStatus,
-        new_status: toStatus,
-        updated_at: new Date().toISOString(),
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      errors.push({
-        pageId: doc.page_id,
-        title: doc.title,
-        error: msg,
-      });
-      console.warn(
-        `[sync:mark-published] Warning: Failed to update page ${doc.page_id} ("${doc.title}"): ${msg}`,
-      );
+  // Persist rollback record incrementally so entries are not lost if process is interrupted
+  const flushRollback = () => {
+    if (rollbackEntries.length === 0) return;
+    if (!rollbackPath) {
+      if (!existsSync(outDir)) {
+        mkdirSync(outDir, { recursive: true });
+      }
+      const timestamp = Date.now();
+      rollbackPath = join(outDir, `rollback-published-${timestamp}.json`);
     }
-  }
-
-  let rollbackPath: string | undefined;
-  if (rollbackEntries.length > 0) {
-    if (!existsSync(outDir)) {
-      mkdirSync(outDir, { recursive: true });
-    }
-    const timestamp = Date.now();
-    rollbackPath = join(outDir, `rollback-published-${timestamp}.json`);
     writeFileSync(
       rollbackPath,
       JSON.stringify(
@@ -246,6 +230,60 @@ export async function markPublished(
       ),
       "utf-8",
     );
+  };
+
+  for (const doc of targetDocs) {
+    try {
+      // Stale status check: verify live Notion status hasn't changed since manifest was generated
+      if (!options.force && typeof client.getPage === "function") {
+        try {
+          const livePage = await client.getPage(doc.page_id);
+          const liveProps = livePage.properties ?? {};
+          const statusProp = liveProps[NOTION_PROPERTIES.PUBLISH_STATUS] as
+            | { select?: { name?: string } }
+            | undefined;
+          const liveStatus = statusProp?.select?.name ?? null;
+
+          if (liveStatus && liveStatus.toLowerCase() !== fromStatus.toLowerCase()) {
+            skippedCount++;
+            console.warn(
+              `[sync:mark-published] Skipping page ${doc.page_id} ("${doc.title}"): live status is "${liveStatus}", expected "${fromStatus}".`,
+            );
+            continue;
+          }
+        } catch (fetchErr) {
+          const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+          console.warn(
+            `[sync:mark-published] Warning: Failed to verify live status for page ${doc.page_id} ("${doc.title}"): ${fetchMsg}. Proceeding with update.`,
+          );
+        }
+      }
+
+      await client.updatePageStatus(doc.page_id, toStatus, {
+        setPublishedDate: shouldSetDate,
+        publishedDate: options.publishedDate,
+      });
+      updatedCount++;
+      rollbackEntries.push({
+        page_id: doc.page_id,
+        title: doc.title,
+        locale: doc.locale,
+        original_status: fromStatus,
+        new_status: toStatus,
+        updated_at: new Date().toISOString(),
+      });
+      flushRollback();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push({
+        pageId: doc.page_id,
+        title: doc.title,
+        error: msg,
+      });
+      console.warn(
+        `[sync:mark-published] Warning: Failed to update page ${doc.page_id} ("${doc.title}"): ${msg}`,
+      );
+    }
   }
 
   return {
@@ -253,6 +291,7 @@ export async function markPublished(
     targetedDocs: targetDocs.length,
     updatedCount,
     failedCount: errors.length,
+    skippedCount,
     dryRun: false,
     rollbackPath,
     errors,
@@ -292,6 +331,7 @@ export async function cmdMarkPublished(
     publishedDate: args["published-date"],
     live: isLive,
     dryRun: isDryRun,
+    force: args.force === "true",
     outDir: args.out,
     limit,
     locale: args.locale,
@@ -320,7 +360,7 @@ export async function cmdMarkPublished(
     }
 
     console.log(
-      `[sync:mark-published] Completed: ${result.updatedCount} page(s) updated to "${toStatus}". (${result.failedCount} failed).`,
+      `[sync:mark-published] Completed: ${result.updatedCount} page(s) updated to "${toStatus}". (${result.failedCount} failed, ${result.skippedCount} skipped).`,
     );
 
     if (result.rollbackPath) {
