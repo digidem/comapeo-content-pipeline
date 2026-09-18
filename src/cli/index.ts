@@ -31,6 +31,7 @@ import {
   ValidationError,
   type DiffPageFetcher,
 } from "./validate-diff.js";
+import { cmdMarkPublished } from "./mark-published.js";
 
 const command = process.argv[2];
 const args = parseArgs(process.argv.slice(3));
@@ -65,6 +66,9 @@ async function main() {
       break;
     case "db:migrate":
       await cmdDbMigrate(args);
+      break;
+    case "sync:mark-published":
+      await cmdMarkPublished(args);
       break;
     default:
       console.error(`Unknown command: ${command}`);
@@ -713,11 +717,18 @@ Commands:
   validate                Validate manifest
   diff --page <page_id>   Show diff for a page
   db:migrate               Apply D1 migrations (--remote for production)
+  sync:mark-published      Write published status back to Notion post-deploy
 
 Options:
   --out <dir>             Output directory
   --input <file>          Input manifest or metadata file
-  --limit <n>             Max pages for sync:full
+  --manifest-path <file>  Manifest file path for status write-back
+  --manifest-version <ts> Manifest version for status write-back
+  --from <status>         Source status for mark-published (default: "Draft published")
+  --to <status>           Target status for mark-published (default: "Published")
+  --live                  Execute live writes for mark-published (default: dry run)
+  --dry-run               Force dry-run mode
+  --limit <n>             Max pages for sync:full / sync:mark-published
   --all                   sync:full: fetch dead rows too; docs:pull/rag:chunks:
                           include drafts (never deprecated/archived)
   --clean-orphans         Remove .md files not in manifest (docs:pull)
