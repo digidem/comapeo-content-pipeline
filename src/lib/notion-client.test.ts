@@ -632,4 +632,66 @@ describe("NotionClient write operations", () => {
     expect(onChunk).toHaveBeenCalledWith(chunk1Results);
     expect((caughtErr as { appendedBlocks?: unknown[] }).appendedBlocks).toEqual(chunk1Results);
   });
+
+  it("updatePageStatus updates Publish Status select property", async () => {
+    fetchMock.mockResolvedValueOnce(
+      okResponse({
+        id: "page-123",
+        last_edited_time: "2026-09-17T00:00:00.000Z",
+        properties: {
+          "Publish Status": { select: { name: "Published" } },
+        },
+      }),
+    );
+
+    const result = await client.updatePageStatus("page-123", "Published");
+    expect(result.id).toBe("page-123");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.notion.com/v1/pages/page-123");
+    expect(init.method).toBe("PATCH");
+    const payload = JSON.parse(init.body);
+    expect(payload).toEqual({
+      properties: {
+        "Publish Status": {
+          select: {
+            name: "Published",
+          },
+        },
+      },
+    });
+  });
+
+  it("updatePageStatus sets Date Published when requested", async () => {
+    fetchMock.mockResolvedValueOnce(
+      okResponse({
+        id: "page-456",
+        last_edited_time: "2026-09-17T00:00:00.000Z",
+        properties: {},
+      }),
+    );
+
+    await client.updatePageStatus("page-456", "Published", {
+      setPublishedDate: true,
+      publishedDate: "2026-09-17",
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    const payload = JSON.parse(init.body);
+    expect(payload).toEqual({
+      properties: {
+        "Publish Status": {
+          select: {
+            name: "Published",
+          },
+        },
+        "Date Published": {
+          date: {
+            start: "2026-09-17",
+          },
+        },
+      },
+    });
+  });
 });

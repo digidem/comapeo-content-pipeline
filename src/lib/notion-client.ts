@@ -11,7 +11,7 @@
 
 import { Client } from "@notionhq/client";
 import { classifyError, ErrorCategory } from "./errors.js";
-import { NOTION_API } from "./notion-properties.js";
+import { NOTION_API, NOTION_PROPERTIES } from "./notion-properties.js";
 
 // Minimal Notion API types used internally
 export interface NotionPage {
@@ -509,6 +509,32 @@ export class NotionClient {
       method: "PATCH",
       body: params,
     });
+  }
+
+  /**
+   * Update the Publish Status property of a page.
+   * Narrow, audited method for Notion status write-back.
+   */
+  async updatePageStatus(
+    pageId: string,
+    status: string,
+    options?: { setPublishedDate?: boolean; publishedDate?: string },
+  ): Promise<NotionPage> {
+    const properties: Record<string, unknown> = {
+      [NOTION_PROPERTIES.PUBLISH_STATUS]: {
+        select: {
+          name: status,
+        },
+      },
+    };
+    if (options?.setPublishedDate) {
+      properties[NOTION_PROPERTIES.DATE_PUBLISHED] = {
+        date: {
+          start: options.publishedDate ?? new Date().toISOString().split("T")[0],
+        },
+      };
+    }
+    return this.updatePage(pageId, { properties });
   }
 
   /**
