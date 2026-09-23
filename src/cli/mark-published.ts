@@ -150,7 +150,7 @@ export async function markPublished(
   // Filter candidate docs matching fromStatus and optional locale
   const candidateDocs = manifest.docs.filter((doc) => {
     const current = (doc.drafting_status ?? "").trim();
-    if (current.toLowerCase() !== fromStatus.toLowerCase()) {
+    if (fromStatus.toUpperCase() === "UNSET" ? current !== "" : current.toLowerCase() !== fromStatus.toLowerCase()) {
       return false;
     }
     if (options.locale && doc.locale.toLowerCase() !== options.locale.toLowerCase()) {
@@ -244,7 +244,12 @@ export async function markPublished(
             | undefined;
           const liveStatus = statusProp?.select?.name ?? null;
 
-          if (liveStatus && liveStatus.toLowerCase() !== fromStatus.toLowerCase()) {
+          const isMismatch =
+            fromStatus.toUpperCase() === "UNSET"
+              ? liveStatus !== null && liveStatus.trim() !== ""
+              : liveStatus !== null && liveStatus.toLowerCase() !== fromStatus.toLowerCase();
+
+          if (isMismatch) {
             skippedCount++;
             console.warn(
               `[sync:mark-published] Skipping page ${doc.page_id} ("${doc.title}"): live status is "${liveStatus}", expected "${fromStatus}".`,

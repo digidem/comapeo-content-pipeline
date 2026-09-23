@@ -373,4 +373,71 @@ describe("markPublished", () => {
       publishedDate: undefined,
     });
   });
+
+  it("supports fromStatus: 'UNSET' to backfill pages with missing publish status", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "Unset Page", locale: "en", drafting_status: null },
+      { page_id: "p2", title: "Empty Page", locale: "en", drafting_status: "" },
+      { page_id: "p3", title: "Set Page", locale: "en", drafting_status: "Published" },
+    ]);
+    writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+
+    const updatePageStatusMock = vi.fn().mockResolvedValue({});
+    const mockClient: StatusUpdateClient = {
+      updatePageStatus: updatePageStatusMock,
+    };
+
+    const result = await markPublished(
+      {
+        manifestPath,
+        outDir: tempDir,
+        live: true,
+        fromStatus: "UNSET",
+        toStatus: "Draft published",
+      },
+      { client: mockClient },
+    );
+
+    expect(result.targetedDocs).toBe(2);
+    expect(result.updatedCount).toBe(2);
+    expect(updatePageStatusMock).toHaveBeenCalledWith("p1", "Draft published", expect.any(Object));
+    expect(updatePageStatusMock).toHaveBeenCalledWith("p2", "Draft published", expect.any(Object));
+    expect(updatePageStatusMock).not.toHaveBeenCalledWith("p3", expect.anything(), expect.anything());
+  });
+
+  it("skips pages when fromStatus is UNSET but live Notion status is already set", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "Unset In Manifest", locale: "en", drafting_status: null },
+    ]);
+    writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+
+    const updatePageStatusMock = vi.fn().mockResolvedValue({});
+    const getPageMock = vi.fn().mockResolvedValue({
+      id: "p1",
+      properties: {
+        "Publish Status": { select: { name: "Draft published" } },
+      },
+    });
+
+    const mockClient: StatusUpdateClient = {
+      updatePageStatus: updatePageStatusMock,
+      getPage: getPageMock,
+    };
+
+    const result = await markPublished(
+      {
+        manifestPath,
+        outDir: tempDir,
+        live: true,
+        fromStatus: "UNSET",
+        toStatus: "Draft published",
+      },
+      { client: mockClient },
+    );
+
+    expect(result.targetedDocs).toBe(1);
+    expect(result.skippedCount).toBe(1);
+    expect(result.updatedCount).toBe(0);
+    expect(updatePageStatusMock).not.toHaveBeenCalled();
+  });
 });
