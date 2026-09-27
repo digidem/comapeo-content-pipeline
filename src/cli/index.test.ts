@@ -256,7 +256,7 @@ describe.skipIf(!hasBun)("manifest:generate destination directory handling", () 
     expect(existsSync(nonExistentOut)).toBe(false);
   });
 
-  it("fails with 'Input directory not found' when input is a file rather than a directory", () => {
+  it("fails with 'Input path is not a directory' when input is a file rather than a directory", () => {
     const filePath = join(tempDir, "file-not-dir.txt");
     writeFileSync(filePath, "hello world");
     const nonExistentOut = join(tempDir, "should-not-exist");
@@ -372,5 +372,53 @@ describe.skipIf(!hasBun)("manifest:generate destination directory handling", () 
     expect(exitCode).toBe(1);
     expect(stderr).toContain("Output path exists and is not a JSON file or directory");
     expect(readFileSync(existingTxtFile, "utf-8")).toBe("do not touch this file");
+  });
+
+  it("writes directly to file when --out points to a dotfile ending in .json", () => {
+    const mockPageId = "mock-page-dotfile";
+    const mockMetadata = {
+      page_id: mockPageId,
+      id: mockPageId,
+      title: "Test Dotfile",
+      slug: "test-dotfile",
+      locale: "en",
+      section: "getting-started",
+      order: 1,
+      element_type: "Page",
+      drafting_status: "Draft published",
+      last_edited_time: new Date().toISOString(),
+      content_hash: "hashdot",
+      raw_hash: "rawdot",
+      source_page_id: mockPageId,
+      r2_path: `docs/en/docs/getting-started/test-dotfile.md`,
+      notion_url: "https://notion.so/test-dotfile",
+    };
+
+    writeFileSync(
+      join(tempDir, `${mockPageId}.metadata.json`),
+      JSON.stringify(mockMetadata, null, 2),
+    );
+
+    const dotfileOut = join(tempDir, ".json");
+
+    execFileSync("bun", [
+      cliPath,
+      "manifest:generate",
+      "--input",
+      tempDir,
+      "--out",
+      dotfileOut,
+    ], {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 10_000,
+    });
+
+    expect(existsSync(dotfileOut)).toBe(true);
+    // Ensure it is a file, not a directory
+    const stat = readFileSync(dotfileOut, "utf-8");
+    const parsed = JSON.parse(stat);
+    expect(parsed.docs.length).toBe(1);
+    expect(parsed.docs[0].page_id).toBe(mockPageId);
   });
 });

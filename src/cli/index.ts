@@ -13,7 +13,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync } from "node:fs";
-import { join, dirname, extname } from "node:path";
+import { join, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { NotionClient } from "../lib/notion-client.js";
 import { buildQueryFilter } from "../lib/notion-filters.js";
@@ -379,19 +379,20 @@ async function cmdManifestGenerate(args: Record<string, string>) {
 
   let outFile = args.out || join(input, "manifest.json");
 
-  // Determine if outFile is intended as a directory or file.
-  // If it already exists as a file, ensure it's a JSON file.
+  // Determine if outFile is intended as a directory or a JSON file.
+  const isJsonFile = (p: string) =>
+    !p.endsWith("/") && !p.endsWith("\\") && p.toLowerCase().endsWith(".json");
+
   if (existsSync(outFile)) {
     const stat = statSync(outFile);
     if (stat.isDirectory()) {
       outFile = join(outFile, "manifest.json");
-    } else if (extname(outFile).toLowerCase() !== ".json") {
+    } else if (!isJsonFile(outFile)) {
       console.error(`Error: Output path exists and is not a JSON file or directory: ${outFile}`);
       process.exit(1);
     }
   } else {
-    const ext = extname(outFile).toLowerCase();
-    if (outFile.endsWith("/") || outFile.endsWith("\\") || ext !== ".json") {
+    if (!isJsonFile(outFile)) {
       outFile = join(outFile, "manifest.json");
     }
   }
