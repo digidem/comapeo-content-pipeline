@@ -687,7 +687,26 @@ function createClient(): NotionClient {
   });
 }
 
-function parseArgs(raw: string[]): Record<string, string> {
+const VALUE_FLAGS = new Set([
+  "out",
+  "input",
+  "manifest-path",
+  "manifest-version",
+  "from",
+  "to",
+  "filter-title",
+  "exclude-title",
+  "limit",
+  "locale",
+  "published-date",
+  "page",
+  "filter",
+  "token",
+  "database-id",
+  "data-source-id",
+]);
+
+export function parseArgs(raw: string[]): Record<string, string> {
   const result: Record<string, string> = {};
   const positional: string[] = [];
   for (let i = 0; i < raw.length; i++) {
@@ -703,6 +722,8 @@ function parseArgs(raw: string[]): Record<string, string> {
         if (next && !next.startsWith("-")) {
           result[key] = next;
           i++;
+        } else if (VALUE_FLAGS.has(key)) {
+          result[key] = "";
         } else {
           result[key] = "true";
         }
@@ -713,6 +734,8 @@ function parseArgs(raw: string[]): Record<string, string> {
       if (next && !next.startsWith("-")) {
         result[key] = next;
         i++;
+      } else if (VALUE_FLAGS.has(key)) {
+        result[key] = "";
       } else {
         result[key] = "true";
       }

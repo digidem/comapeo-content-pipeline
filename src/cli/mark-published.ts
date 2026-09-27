@@ -99,11 +99,6 @@ export interface MarkPublishedOptions {
 
 export function createRegexFilter(pattern: string | undefined, optionName: string): RegExp | null {
   if (pattern === undefined || pattern === null || pattern === "") return null;
-  if (pattern === "true") {
-    throw new MarkPublishedError(
-      `Option ${optionName} requires a non-empty regular expression string value (e.g. ${optionName} "^\\[(PRUEBA|TESTE)\\]").`,
-    );
-  }
   try {
     return new RegExp(pattern, "i");
   } catch (err) {
@@ -564,6 +559,21 @@ Options:
     setPublishedDate = false;
   } else if (args["set-published-date"] !== undefined) {
     setPublishedDate = args["set-published-date"] !== "false";
+  }
+
+  if (args["filter-title"] !== undefined && args["filter-title"].trim() === "") {
+    console.error(
+      '[sync:mark-published] Error: Option --filter-title requires a valid regular expression value, e.g. --filter-title "guide".',
+    );
+    process.exit(1);
+    return;
+  }
+  if (args["exclude-title"] !== undefined && args["exclude-title"].trim() === "") {
+    console.error(
+      '[sync:mark-published] Error: Option --exclude-title requires a valid regular expression value, e.g. --exclude-title "^\\[(PRUEBA|TESTE)\\]".',
+    );
+    process.exit(1);
+    return;
   }
 
   const options: MarkPublishedOptions = {

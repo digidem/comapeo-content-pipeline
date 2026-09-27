@@ -629,22 +629,24 @@ describe("markPublished", () => {
         excludeTitle: "(unclosed-group",
       }),
     ).rejects.toThrow(MarkPublishedError);
+  });
 
-    await expect(
-      markPublished({
-        manifestPath,
-        outDir: tempDir,
-        filterTitle: "true",
-      }),
-    ).rejects.toThrow("requires a non-empty regular expression");
+  it("permits literal 'true' pattern to match titles containing the word 'true'", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "A true story of mapping", locale: "en", drafting_status: "Draft published" },
+      { page_id: "p2", title: "Untrue claims", locale: "en", drafting_status: "Draft published" },
+      { page_id: "p3", title: "Something else", locale: "en", drafting_status: "Draft published" },
+    ]);
+    writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
 
-    await expect(
-      markPublished({
-        manifestPath,
-        outDir: tempDir,
-        excludeTitle: "true",
-      }),
-    ).rejects.toThrow("requires a non-empty regular expression");
+    const result = await markPublished({
+      manifestPath,
+      outDir: tempDir,
+      filterTitle: "true",
+    });
+
+    expect(result.targetedDocs).toBe(2);
+    expect(result.targets.map((t) => t.pageId)).toEqual(["p1", "p2"]);
   });
 });
 
@@ -920,18 +922,18 @@ describe("cmdMarkPublished", () => {
     expect(updatePageStatusMock).toHaveBeenCalledWith("p1", "Published", expect.any(Object));
   });
 
-  it("rejects --exclude-title without value in cmdMarkPublished", async () => {
+  it("rejects --exclude-title with empty value in cmdMarkPublished", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
 
     await cmdMarkPublished({
       out: tempDir,
-      "exclude-title": "true",
+      "exclude-title": "",
       live: "true",
     });
 
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Option --exclude-title requires a non-empty regular expression"),
+      expect.stringContaining("Option --exclude-title requires a valid regular expression value"),
     );
     expect(exitSpy).toHaveBeenCalledWith(1);
     errorSpy.mockRestore();
