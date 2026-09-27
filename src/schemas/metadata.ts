@@ -44,3 +44,31 @@ export const PageMetadataSchema = z.object({
 
 export type PageMetadata = z.infer<typeof PageMetadataSchema>;
 export type PageAsset = z.infer<typeof PageAssetSchema>;
+
+/** Individual editorial diagnostic issue found in upstream Notion content */
+export const EditorialDiagnosticItemSchema = z.object({
+  category: z.enum(["broken_anchor", "base64_blob", "slug_drift", "unmapped_reference"]),
+  severity: z.enum(["error", "warning", "info"]),
+  page_id: z.string(),
+  page_title: z.string().optional(),
+  locale: z.string().optional(),
+  block_id: z.string().optional(),
+  details: z.record(z.string(), z.unknown()),
+  guidance: z.string(),
+});
+
+/** Aggregate report emitted to output/editorial-diagnostics.json */
+export const EditorialDiagnosticsReportSchema = z.object({
+  generated_at: z.string(),
+  total_issues: z.number(),
+  summary: z.object({
+    broken_anchors: z.number(),
+    base64_blobs: z.number(),
+    slug_drift: z.number(),
+    unmapped_references: z.number(),
+  }),
+  items: z.array(EditorialDiagnosticItemSchema),
+});
+
+export type EditorialDiagnosticItem = z.infer<typeof EditorialDiagnosticItemSchema>;
+export type EditorialDiagnosticsReport = z.infer<typeof EditorialDiagnosticsReportSchema>;

@@ -32,6 +32,7 @@ import {
   type DiffPageFetcher,
 } from "./validate-diff.js";
 import { cmdMarkPublished } from "./mark-published.js";
+import { cmdValidateEditorial } from "./editorial-diagnostics.js";
 
 const command = process.argv[2];
 const args = parseArgs(process.argv.slice(3));
@@ -69,6 +70,9 @@ async function main() {
       break;
     case "sync:mark-published":
       await cmdMarkPublished(args);
+      break;
+    case "validate:editorial":
+      await cmdValidateEditorial(args);
       break;
     default:
       console.error(`Unknown command: ${command}`);
@@ -734,6 +738,7 @@ Commands:
   diff --page <page_id>   Show diff for a page
   db:migrate               Apply D1 migrations (--remote for production)
   sync:mark-published      Write published status back to Notion post-deploy
+  validate:editorial       Scan fetched content for editorial issues (dead anchors, base64, slug drift)
 
 Options:
   --out <dir>             Output directory
