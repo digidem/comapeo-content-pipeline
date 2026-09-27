@@ -5,6 +5,8 @@ import {
   PageMetadataSchema,
   RagChunkSchema,
   RagChunksManifestSchema,
+  EditorialDiagnosticItemSchema,
+  EditorialDiagnosticsReportSchema,
 } from "./index.js";
 
 describe("ManifestDocSchema", () => {
@@ -234,5 +236,60 @@ describe("RagChunksManifestSchema", () => {
       chunks: [],
     };
     expect(() => RagChunksManifestSchema.parse(manifest)).not.toThrow();
+  });
+});
+
+describe("EditorialDiagnosticItemSchema", () => {
+  const validItem = {
+    category: "broken_anchor" as const,
+    severity: "warning" as const,
+    page_id: "3591b081-62d5-802d-840d-cd6344fe95db",
+    page_title: "Using Exchange",
+    locale: "en",
+    block_id: "block-123",
+    details: { anchor: "exchange-problems", target: "troubleshooting" },
+    guidance: "Fix anchor in target page",
+  };
+
+  it("validates a correct diagnostic item", () => {
+    expect(() => EditorialDiagnosticItemSchema.parse(validItem)).not.toThrow();
+  });
+
+  it("rejects unknown category", () => {
+    expect(() =>
+      EditorialDiagnosticItemSchema.parse({ ...validItem, category: "invalid_category" })
+    ).toThrow();
+  });
+
+  it("rejects unknown severity", () => {
+    expect(() =>
+      EditorialDiagnosticItemSchema.parse({ ...validItem, severity: "critical" })
+    ).toThrow();
+  });
+});
+
+describe("EditorialDiagnosticsReportSchema", () => {
+  it("validates an editorial diagnostics report", () => {
+    const report = {
+      generated_at: new Date().toISOString(),
+      total_issues: 1,
+      summary: {
+        broken_anchors: 1,
+        base64_blobs: 0,
+        slug_drift: 0,
+        unmapped_references: 0,
+      },
+      items: [
+        {
+          category: "broken_anchor" as const,
+          severity: "warning" as const,
+          page_id: "page-1",
+          page_title: "Test",
+          details: {},
+          guidance: "Fix it",
+        },
+      ],
+    };
+    expect(() => EditorialDiagnosticsReportSchema.parse(report)).not.toThrow();
   });
 });
