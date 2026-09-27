@@ -48,17 +48,18 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
    - **Action needed (Notion):** Either draft the actual content or remove the incoming links in Notion once final content exists.
 
 2. **Fix mislabeled EN content row**
-   - **Issue:** The English `troubleshooting-mapping-with-collaborators` page carries a Spanish title ("Solución de Problemas: Mapeo con Colaboradores") and the English introduction contains a Spanish heading ("Sitio web de CoMapeo").
-   - **Action needed (Notion):** Update the title and heading to English in Notion.
+   - **Issue:** The English introduction contained a Spanish heading ("Sitio web de CoMapeo") and paragraph.
+   - **Resolution (Completed via Notion API):** Updated blocks `27d1b081-62d5-80dc-a09c-e14da19b77bc` and `2871b081-62d5-809a-87b1-de6c3f3a6761` to English ("CoMapeo Website", "Visit comapeo.app for general information..."). Verified via page sync reflection in markdown.
+   - **Orphan Stub Status:** The Spanish-titled page `3131b081-62d5-8027-aeb1-ca253f17aa67` ("Solución de Problemas: Mapeo con Colaboradores", body `[Insert content here]`) was verified as a sub-item relation under parent `2a71b081-62d5-8039-8caa-fbe0f822d4a5`. Canonical EN page `2a71b081-62d5-809c-8295-f8a3c2d0709c` is already correctly titled in English.
 
 3. **Clean up base64-pasted image in Notion**
    - **Issue:** Page `3591b081-62d5-802d-840d-cd6344fe95db` ("Using Exchange over the Internet with Remote Archive") contains a raw 581 KB base64 string pasted directly into block `3591b081-62d5-8182-81fc-d736ed109576`.
-   - **Audit Status:** Confirmed via page block inspection. Block ID `3591b081-62d5-8182-81fc-d736ed109576` holds a 581,058-character `data:image/png;base64` URI.
-   - **Action needed (Notion):** Replace the pasted base64 data with a standard Notion file/image upload.
+   - **Audit Status:** Confirmed via page block inspection. Block ID `3591b081-62d5-8182-81fc-d736ed109576` holds a 581,058-character `data:image/png;base64` URI. The Notion REST API does not support uploading binaries directly to Notion AWS S3 (`type: "file"`). The pipeline sync automatically extracts and re-hosts these images to R2 assets.
+   - **Action needed (Notion):** Human editors can drag-and-drop a replacement image in the Notion UI if they wish to clean up Notion's internal block payload.
 
 4. **Cosmetic link label fix**
-   - **Issue:** The video link on `creating-a-new-observation` (EN+ES) displays as `Video: @document_4997224092760278339_trimmed.mp4`.
-   - **Action needed (Notion):** Provide a human-readable title/label for the Drive link.
+   - **Issue:** The video link on `creating-a-new-observation` displayed raw filename `Video: @document_4997224092760278339_trimmed.mp4`.
+   - **Resolution (Completed via Notion API):** Localized clean video titles applied across all 3 locales (EN block `26a1b081-62d5-8108-9c4f-c0a649398543`, ES block `3211b081-62d5-800e-a695-e0905005df9e`, PT block `3131b081-62d5-8115-a8e3-d87570e430ef`). Verified with downstream sync generating clean Markdown links.
 
 5. **Status vocabulary catch-up & Publish gate**
    - **Issue:** Only ~36 pages carry an active Publish Status ("Draft published") while the site publishes ~100 docs. Consumers currently use `docs:pull --all` as a workaround.
