@@ -269,6 +269,91 @@ describe("markPublished", () => {
     expect(updatePageStatusMock).toHaveBeenCalledWith("p2", "Published", expect.any(Object));
   });
 
+  it("skips pages whose live Notion title has changed to match excludeTitle regex", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "Original Title", locale: "en", drafting_status: "Draft published" },
+      { page_id: "p2", title: "Valid Page", locale: "en", drafting_status: "Draft published" },
+    ]);
+    writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+
+    const updatePageStatusMock = vi.fn().mockResolvedValue({});
+    const getPageMock = vi.fn().mockImplementation(async (pageId: string) => {
+      if (pageId === "p1") {
+        return {
+          id: "p1",
+          properties: {
+            "Content elements": { title: [{ plain_text: "[PRUEBA] Renamed Scratchpad" }] },
+            "Publish Status": { select: { name: "Draft published" } },
+          },
+        };
+      }
+      return {
+        id: "p2",
+        properties: {
+          "Content elements": { title: [{ plain_text: "Valid Page" }] },
+          "Publish Status": { select: { name: "Draft published" } },
+        },
+      };
+    });
+
+    const mockClient: StatusUpdateClient = {
+      updatePageStatus: updatePageStatusMock,
+      getPage: getPageMock,
+    };
+
+    const result = await markPublished(
+      {
+        manifestPath,
+        outDir: tempDir,
+        live: true,
+        excludeTitle: "^\\[(PRUEBA|TESTE)\\]",
+      },
+      { client: mockClient },
+    );
+
+    expect(result.targetedDocs).toBe(2);
+    expect(result.skippedCount).toBe(1);
+    expect(result.updatedCount).toBe(1);
+    expect(updatePageStatusMock).toHaveBeenCalledTimes(1);
+    expect(updatePageStatusMock).toHaveBeenCalledWith("p2", "Published", expect.any(Object));
+  });
+
+  it("skips pages whose live Notion title no longer matches filterTitle regex", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "Official Guide", locale: "en", drafting_status: "Draft published" },
+    ]);
+    writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+
+    const updatePageStatusMock = vi.fn().mockResolvedValue({});
+    const getPageMock = vi.fn().mockResolvedValue({
+      id: "p1",
+      properties: {
+        "Content elements": { title: [{ plain_text: "Renamed Something Else" }] },
+        "Publish Status": { select: { name: "Draft published" } },
+      },
+    });
+
+    const mockClient: StatusUpdateClient = {
+      updatePageStatus: updatePageStatusMock,
+      getPage: getPageMock,
+    };
+
+    const result = await markPublished(
+      {
+        manifestPath,
+        outDir: tempDir,
+        live: true,
+        filterTitle: "guide",
+      },
+      { client: mockClient },
+    );
+
+    expect(result.targetedDocs).toBe(1);
+    expect(result.skippedCount).toBe(1);
+    expect(result.updatedCount).toBe(0);
+    expect(updatePageStatusMock).not.toHaveBeenCalled();
+  });
+
   it("bypasses live status check when force: true is specified", async () => {
     const manifest = createMockManifest([
       { page_id: "p1", title: "Forced Page", locale: "en", drafting_status: "Draft published" },

@@ -397,8 +397,9 @@ export async function markPublished(
   };
 
   for (const doc of targetDocs) {
+    let targetTitle = doc.title;
     try {
-      // Stale status check: verify live Notion status hasn't changed since manifest was generated
+      // Stale status and title check: verify live Notion state hasn't changed since manifest was generated
       if (!options.force && typeof client.getPage === "function") {
         try {
           const livePage = await client.getPage(doc.page_id);
@@ -420,6 +421,32 @@ export async function markPublished(
             );
             continue;
           }
+
+          // Live title check: re-verify title regex filters against live Notion title
+          if (filterTitleRegex || excludeTitleRegex) {
+            const titleProp = liveProps[NOTION_PROPERTIES.TITLE] as
+              | { title?: Array<{ plain_text?: string }> }
+              | undefined;
+            const liveTitle =
+              titleProp?.title?.map((part) => part.plain_text || "").join("") || doc.title;
+            targetTitle = liveTitle;
+
+            if (filterTitleRegex && !filterTitleRegex.test(liveTitle)) {
+              skippedCount++;
+              console.warn(
+                `[sync:mark-published] Skipping page ${doc.page_id} ("${liveTitle}"): live title does not match filter regex "${options.filterTitle}".`,
+              );
+              continue;
+            }
+
+            if (excludeTitleRegex && excludeTitleRegex.test(liveTitle)) {
+              skippedCount++;
+              console.warn(
+                `[sync:mark-published] Skipping page ${doc.page_id} ("${liveTitle}"): live title matches exclude regex "${options.excludeTitle}".`,
+              );
+              continue;
+            }
+          }
         } catch (fetchErr) {
           const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
           console.warn(
@@ -439,7 +466,7 @@ export async function markPublished(
           : fromStatus;
       rollbackEntries.push({
         page_id: doc.page_id,
-        title: doc.title,
+        title: targetTitle,
         locale: doc.locale,
         original_status: originalStatus,
         new_status: toStatus,
