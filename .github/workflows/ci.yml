@@ -34,3 +34,6 @@ jobs:
       #   - converter golden fixtures.
       - name: Test
         run: npm test
+
+      - name: Validate MDX Canary
+        run: npm run validate:mdx

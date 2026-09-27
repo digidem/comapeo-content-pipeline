@@ -18,7 +18,8 @@
     "translations:generate": "bun scripts/translate-missing.ts",
     "translations:report": "bun scripts/translation-report-html.ts",
     "translations:check": "bun scripts/translation-report-html.ts --open",
-    "docs:post-editorial": "bun scripts/post-editorial-guide.ts --apply"
+    "docs:post-editorial": "bun scripts/post-editorial-guide.ts --apply",
+    "validate:mdx": "node --experimental-strip-types scripts/validate-mdx.ts"
   },
   "dependencies": {
     "@notionhq/client": "^5.12.0",
@@ -31,9 +32,16 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260609.1",
     "@eslint/js": "^10.0.1",
+    "@mdx-js/mdx": "^3.1.0",
     "@types/node": "^25.4.0",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
     "@vitest/coverage-v8": "^4.0.18",
     "eslint": "^10.0.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remark-frontmatter": "^5.0.0",
+    "remark-gfm": "^4.0.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.63.0",
     "vitest": "^4.0.18",
