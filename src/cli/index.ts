@@ -372,22 +372,28 @@ async function cmdManifestGenerate(args: Record<string, string>) {
     process.exit(1);
   }
 
+  if (!statSync(input).isDirectory()) {
+    console.error(`Error: Input path is not a directory: ${input}`);
+    process.exit(1);
+  }
+
   let outFile = args.out || join(input, "manifest.json");
 
-  // If outFile is an existing directory, ends with a slash, or does not end with .json,
-  // treat it as a directory destination and place manifest.json inside it.
-  if (
-    (existsSync(outFile) && statSync(outFile).isDirectory()) ||
-    outFile.endsWith("/") ||
-    outFile.endsWith("\\") ||
-    !outFile.endsWith(".json")
-  ) {
-    mkdirSync(outFile, { recursive: true });
-    outFile = join(outFile, "manifest.json");
+  // Determine if outFile is intended as a directory or a JSON file.
+  const isJsonFile = (p: string) =>
+    !p.endsWith("/") && !p.endsWith("\\") && p.toLowerCase().endsWith(".json");
+
+  if (existsSync(outFile)) {
+    const stat = statSync(outFile);
+    if (stat.isDirectory()) {
+      outFile = join(outFile, "manifest.json");
+    } else if (!isJsonFile(outFile)) {
+      console.error(`Error: Output path exists and is not a JSON file or directory: ${outFile}`);
+      process.exit(1);
+    }
   } else {
-    const parentDir = dirname(outFile);
-    if (parentDir && !existsSync(parentDir)) {
-      mkdirSync(parentDir, { recursive: true });
+    if (!isJsonFile(outFile)) {
+      outFile = join(outFile, "manifest.json");
     }
   }
 
@@ -442,6 +448,12 @@ async function cmdManifestGenerate(args: Record<string, string>) {
         process.exit(1);
       }
     } catch { /* unparseable existing file — allow overwrite */ }
+  }
+
+  // Ensure parent directory exists ONLY right before writing to disk
+  const parentDir = dirname(outFile);
+  if (parentDir && !existsSync(parentDir)) {
+    mkdirSync(parentDir, { recursive: true });
   }
 
   writeFileSync(outFile, JSON.stringify(manifest, null, 2));
