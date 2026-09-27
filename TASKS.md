@@ -79,6 +79,14 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 
 ## Completed Milestones (Reference)
 
+- [x] **Deferred Directory Creation & Input Path Hardening in CLI** ([#25](https://github.com/digidem/comapeo-content-pipeline/pull/25)):
+  - Deferred output directory creation (`mkdirSync`) in `manifest:generate` until immediately before `writeFileSync`, ensuring no empty destination directories are left behind when input is empty or lacking metadata files.
+  - Added strict input directory validation (`statSync(input).isDirectory()`) distinguishing missing paths from file paths with clean user-facing errors.
+  - Implemented `isJsonFile` to robustly detect JSON files including dotfiles like `.json` without creating unintended subdirectories.
+  - Added collision detection rejecting existing non-JSON files at destination paths without corrupting them.
+  - Pinned `bun-version: "1.3.14"` in CI and added timeouts (`10_000ms`) to CLI test subprocesses.
+  - Satisfied full triple-gate consensus: DeepSeek-Reasoner (R1) & Codestral (APPROVE, Low Risk, 5/5 Confidence), green CI, and 0 unresolved Greptile review threads.
+
 - [x] **CLI Manifest Generation Directory Handling & Smoke Tests** ([#24](https://github.com/digidem/comapeo-content-pipeline/pull/24)):
   - Fixed `manifest:generate` to automatically create parent destination directories when `--out` specifies a path in a new directory.
   - Prioritized input directory existence validation before creating output directories to avoid creating empty directories when the input directory is missing.
