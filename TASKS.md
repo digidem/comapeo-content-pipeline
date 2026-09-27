@@ -14,20 +14,8 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 - [x] **P1: Align Agent Workflow & Tooling Specs in `AGENTS.md`**
    - **Completed:** Formalized Antigravity/Gemini and Claude Code workflows, updated subagent delegation rules, and configured the autonomous merge policy (autonomous merge on consensus + clean CI/Greptile, only prompting human if not confident).
 
-3. **P2: Upstream Notion Editorial Diagnostics & Linter Report**
-   - **Context:** Hardcoded dictionaries in `src/lib/links.ts` (`KNOWN_SLUG_ALIASES`, `KNOWN_DOC_ANCHOR_ALIASES`) compensate for upstream authoring errors (dead anchors, stale localized slugs, base64 image pastes) by accumulating debt in code.
-   - **Files involved:**
-     - `src/cli/index.ts`
-     - `scripts/editorial-diagnostics.ts` (or `src/lib/editorial-linter.ts`)
-     - `src/schemas/metadata.ts` / `src/lib/links.ts`
-   - **Acceptance Criteria:**
-     - Add CLI command `bun src/cli/index.ts validate:editorial` (or `bun scripts/editorial-diagnostics.ts`).
-     - Scans all fetched Notion pages and reports:
-       1. Broken anchors targeting missing/placeholder sections (`#exchange-problems`, etc.).
-       2. Blocks containing raw base64 data URIs (>10 KB).
-       3. Localized slug drift and unmapped internal Notion page references.
-     - Emits `output/editorial-diagnostics.json` with page IDs, block IDs, and human-readable guidance for editors.
-     - Adds a summary table to console output.
+- [x] **P2: Upstream Notion Editorial Diagnostics & Linter Report** ([#20](https://github.com/digidem/comapeo-content-pipeline/pull/20))
+   - **Completed:** Added runtime-agnostic linter engine (`src/lib/editorial-linter.ts`), CLI command `bun src/cli/index.ts validate:editorial` (`src/cli/editorial-diagnostics.ts`), and Zod schemas (`EditorialDiagnosticItemSchema`, `EditorialDiagnosticsReportSchema`). Scans all content for broken anchors, oversized base64 data URIs (>10 KB), localized slug drift, and unmapped Notion page references. Generates `output/editorial-diagnostics.json` with console summary table and guidance for editors.
 
 4. **P3: Controlled Publish Status Backfill & Publish Gate Migration**
    - **Context:** Consumers are currently forced to pass `docs:pull --all` because only ~36 pages have an explicit Publish Status in Notion.
@@ -76,6 +64,12 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 ---
 
 ## Completed Milestones (Reference)
+
+- [x] **Upstream Notion Editorial Diagnostics & Linter Report** ([#20](https://github.com/digidem/comapeo-content-pipeline/pull/20)):
+  - Added runtime-agnostic linter engine (`src/lib/editorial-linter.ts`), CLI command `bun src/cli/index.ts validate:editorial` (`src/cli/editorial-diagnostics.ts`), and Zod schemas (`EditorialDiagnosticItemSchema`, `EditorialDiagnosticsReportSchema`).
+  - Scans all content for broken anchors, oversized base64 data URIs (>10 KB), localized slug drift, and unmapped Notion page references.
+  - Generates `output/editorial-diagnostics.json` with console summary table and guidance for editors.
+  - 906/906 tests passing, clean typecheck, lint, and MDX canary validation.
 
 - [x] **Real Docusaurus/MDX Canary Build Gate in CI** ([#19](https://github.com/digidem/comapeo-content-pipeline/pull/19)):
   - Added real MDX AST parsing and React DOM Server SSR validation (`scripts/validate-mdx.ts`, `test/validate-mdx.test.ts`).
