@@ -4,6 +4,8 @@
  * Implements Track B1 (comapeo-docs#185 / TASKS.md §3):
  * Transitions pages matching a pre-publish status (default: "Draft published")
  * to a published status (default: "Published") via the Notion API.
+ * Supports special source status "UNSET" to match and backfill pages with
+ * null, empty, or whitespace-only Publish Status in Notion.
  *
  * Defaults to DRY-RUN mode. Requires `--live` (or `--dry-run false`) to execute real writes.
  * Supports incremental rollback logging to output/rollback-published-<timestamp>.json.
@@ -26,7 +28,7 @@ export class MarkPublishedError extends Error {
 export interface StatusUpdateClient {
   updatePageStatus(
     pageId: string,
-    status: string,
+    status: string | null,
     options?: { setPublishedDate?: boolean; publishedDate?: string },
   ): Promise<unknown>;
   getPage?(pageId: string): Promise<{
@@ -40,7 +42,7 @@ export interface RollbackEntry {
   page_id: string;
   title: string;
   locale: string;
-  original_status: string;
+  original_status: string | null;
   new_status: string;
   updated_at: string;
 }
@@ -48,7 +50,15 @@ export interface RollbackEntry {
 export interface MarkPublishedOptions {
   manifestPath?: string;
   manifestVersion?: string;
+  /**
+   * Source status to filter by (default: "Draft published").
+   * Special value: pass "UNSET" (case-insensitive) to match pages where Publish Status
+   * is null, empty string, or whitespace-only in Notion.
+   */
   fromStatus?: string;
+  /**
+   * Target status to apply to matched pages (default: "Published").
+   */
   toStatus?: string;
   setPublishedDate?: boolean;
   publishedDate?: string;
@@ -220,7 +230,7 @@ export async function markPublished(
         {
           timestamp: new Date().toISOString(),
           operation: `${fromStatus}-to-${toStatus}`,
-          from_status: fromStatus,
+          from_status: fromStatus.toUpperCase() === "UNSET" ? null : fromStatus,
           to_status: toStatus,
           total_updated: rollbackEntries.length,
           entries: rollbackEntries,
@@ -269,11 +279,15 @@ export async function markPublished(
         publishedDate: options.publishedDate,
       });
       updatedCount++;
+      const originalStatus =
+        fromStatus.toUpperCase() === "UNSET"
+          ? (doc.drafting_status && doc.drafting_status.trim() !== "" ? doc.drafting_status : null)
+          : fromStatus;
       rollbackEntries.push({
         page_id: doc.page_id,
         title: doc.title,
         locale: doc.locale,
-        original_status: fromStatus,
+        original_status: originalStatus,
         new_status: toStatus,
         updated_at: new Date().toISOString(),
       });
@@ -311,6 +325,32 @@ export async function cmdMarkPublished(
   args: Record<string, string>,
   deps?: { client?: StatusUpdateClient },
 ): Promise<void> {
+  if (args.help === "true" || args.h === "true" || args.help === "" || args.h === "") {
+    console.log(`Usage: pnpm pipeline sync:mark-published [options]
+
+Transitions pages in the manifest from a pre-published status to a published status.
+Defaults to dry-run mode. Use --live to perform actual writes.
+
+Options:
+  --from <status>          Source status to match (default: "Draft published").
+                           Special value "UNSET" matches pages where Publish Status
+                           is null, empty, or whitespace-only in Notion.
+  --to <status>            Target status to apply (default: "Published").
+  --manifest-path <file>   Path to manifest.json (default: ./output/manifest.json).
+  --manifest-version <ts>  Versioned manifest identifier (manifest-<ts>.json).
+  --out <dir>              Output directory for rollback logs (default: ./output).
+  --live                   Execute updates in Notion (default is dry-run).
+  --dry-run                Force dry-run mode (default: true).
+  --force                  Bypass pre-update live Notion page status verification.
+  --limit <n>              Maximum number of pages to update in this run.
+  --locale <locale>        Restrict status update to a specific locale (e.g. en, es, pt).
+  --set-published-date     Set publication date property to today's date (default: true).
+  --no-set-published-date  Do not update the publication date property.
+  --published-date <date>  Override publication date (YYYY-MM-DD format).
+`);
+    return;
+  }
+
   const isLive = args.live === "true" || args["dry-run"] === "false";
   const isDryRun = args["dry-run"] === "true" || !isLive;
 

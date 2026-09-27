@@ -694,4 +694,48 @@ describe("NotionClient write operations", () => {
       },
     });
   });
+
+  it("updatePageStatus clears Publish Status select property when status is null", async () => {
+    fetchMock.mockResolvedValueOnce(
+      okResponse({
+        id: "page-789",
+        last_edited_time: "2026-09-17T00:00:00.000Z",
+        properties: {},
+      }),
+    );
+
+    await client.updatePageStatus("page-789", null);
+
+    const [, init] = fetchMock.mock.calls[0];
+    const payload = JSON.parse(init.body);
+    expect(payload).toEqual({
+      properties: {
+        "Publish Status": {
+          select: null,
+        },
+      },
+    });
+  });
+
+  it("updatePageStatus clears Publish Status select property when status is UNSET or whitespace", async () => {
+    fetchMock.mockResolvedValueOnce(
+      okResponse({
+        id: "page-789",
+        last_edited_time: "2026-09-17T00:00:00.000Z",
+        properties: {},
+      }),
+    );
+
+    await client.updatePageStatus("page-789", "UNSET");
+
+    const [, init] = fetchMock.mock.calls[0];
+    const payload = JSON.parse(init.body);
+    expect(payload).toEqual({
+      properties: {
+        "Publish Status": {
+          select: null,
+        },
+      },
+    });
+  });
 });

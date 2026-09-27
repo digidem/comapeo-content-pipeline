@@ -514,18 +514,22 @@ export class NotionClient {
   /**
    * Update the Publish Status property of a page.
    * Narrow, audited method for Notion status write-back.
+   * Passing null, empty string, or "UNSET" clears the select property ({ select: null }).
    */
   async updatePageStatus(
     pageId: string,
-    status: string,
+    status: string | null,
     options?: { setPublishedDate?: boolean; publishedDate?: string },
   ): Promise<NotionPage> {
+    const isClear = status === null || status.trim() === "" || status.toUpperCase() === "UNSET";
     const properties: Record<string, unknown> = {
-      [NOTION_PROPERTIES.PUBLISH_STATUS]: {
-        select: {
-          name: status,
-        },
-      },
+      [NOTION_PROPERTIES.PUBLISH_STATUS]: isClear
+        ? { select: null }
+        : {
+            select: {
+              name: status,
+            },
+          },
     };
     if (options?.setPublishedDate) {
       properties[NOTION_PROPERTIES.DATE_PUBLISHED] = {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   markPublished,
+  cmdMarkPublished,
   resolveManifestPath,
   MarkPublishedError,
   type StatusUpdateClient,
@@ -403,6 +404,13 @@ describe("markPublished", () => {
     expect(updatePageStatusMock).toHaveBeenCalledWith("p1", "Draft published", expect.any(Object));
     expect(updatePageStatusMock).toHaveBeenCalledWith("p2", "Draft published", expect.any(Object));
     expect(updatePageStatusMock).not.toHaveBeenCalledWith("p3", expect.anything(), expect.anything());
+
+    // Verify rollback log stores null as original_status and from_status, not literal "UNSET"
+    expect(result.rollbackPath).toBeDefined();
+    const rollbackContent = JSON.parse(readFileSync(result.rollbackPath!, "utf-8"));
+    expect(rollbackContent.from_status).toBeNull();
+    expect(rollbackContent.entries[0].original_status).toBeNull();
+    expect(rollbackContent.entries[1].original_status).toBeNull();
   });
 
   it("skips pages when fromStatus is UNSET but live Notion status is already set", async () => {
@@ -439,5 +447,25 @@ describe("markPublished", () => {
     expect(result.skippedCount).toBe(1);
     expect(result.updatedCount).toBe(0);
     expect(updatePageStatusMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("cmdMarkPublished", () => {
+  it("prints help and returns early when --help is passed", async () => {
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await cmdMarkPublished({ help: "true" });
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Special value "UNSET" matches pages where Publish Status'),
+    );
+    consoleSpy.mockRestore();
+  });
+
+  it("prints help and returns early when -h is passed", async () => {
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await cmdMarkPublished({ h: "true" });
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Special value "UNSET" matches pages where Publish Status'),
+    );
+    consoleSpy.mockRestore();
   });
 });

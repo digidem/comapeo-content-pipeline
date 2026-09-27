@@ -724,7 +724,9 @@ Options:
   --input <file>          Input manifest or metadata file
   --manifest-path <file>  Manifest file path for status write-back
   --manifest-version <ts> Manifest version for status write-back
-  --from <status>         Source status for mark-published (default: "Draft published")
+  --from <status>         Source status for mark-published (default: "Draft published").
+                          Special value "UNSET" matches null, empty, or whitespace-only
+                          Publish Status in Notion.
   --to <status>           Target status for mark-published (default: "Published")
   --live                  Execute live writes for mark-published (default: dry run)
   --dry-run               Force dry-run mode
