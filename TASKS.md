@@ -6,9 +6,52 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 
 ## Pending Tasks
 
-All remaining tasks require Notion editorial access (content state fixes) or editorial sign-off to finalize the publish gate:
+### Engineering & Pipeline Improvements (Dev Agent Backlog)
 
-### Notion Editorial Cleanup & Release Gate
+1. **P0: Real Docusaurus/MDX Canary Build Gate in CI**
+   - **Context:** In `.github/workflows/ci.yml`, CI tests currently use regex checks (e.g., bare `style=` attributes) to approximate MDX safety because the consumer repo is external. Malformed MDX or invalid JSX expressions can pass pipeline tests but break the production Docusaurus build in `comapeo-docs`.
+   - **Files involved:**
+     - `.github/workflows/ci.yml`
+     - `package.json`
+     - `scripts/validate-mdx.ts` (or `src/lib/mdx-validator.ts` + unit tests)
+   - **Acceptance Criteria:**
+     - A validation script/test parses all emitted markdown files (`output/docs/**/*.md` or golden fixtures) using an actual MDX parser (e.g. `@mdx-js/mdx` or `@docusaurus/core` compiler harness).
+     - Fails with exit code 1 and line numbers if unescaped JSX brackets `<...>`, bare HTML attributes, or broken component tags are found.
+     - Wires into `npm test` or a dedicated `npm run validate:mdx` step in `.github/workflows/ci.yml`.
+     - Zero false positives on valid documentation blocks (code fences, admonitions, HTML tables).
+
+- [x] **P1: Align Agent Workflow & Tooling Specs in `AGENTS.md`**
+   - **Completed:** Formalized Antigravity/Gemini and Claude Code workflows, updated subagent delegation rules, and configured the autonomous merge policy (autonomous merge on consensus + clean CI/Greptile, only prompting human if not confident).
+
+3. **P2: Upstream Notion Editorial Diagnostics & Linter Report**
+   - **Context:** Hardcoded dictionaries in `src/lib/links.ts` (`KNOWN_SLUG_ALIASES`, `KNOWN_DOC_ANCHOR_ALIASES`) compensate for upstream authoring errors (dead anchors, stale localized slugs, base64 image pastes) by accumulating debt in code.
+   - **Files involved:**
+     - `src/cli/index.ts`
+     - `scripts/editorial-diagnostics.ts` (or `src/lib/editorial-linter.ts`)
+     - `src/schemas/metadata.ts` / `src/lib/links.ts`
+   - **Acceptance Criteria:**
+     - Add CLI command `bun src/cli/index.ts validate:editorial` (or `bun scripts/editorial-diagnostics.ts`).
+     - Scans all fetched Notion pages and reports:
+       1. Broken anchors targeting missing/placeholder sections (`#exchange-problems`, etc.).
+       2. Blocks containing raw base64 data URIs (>10 KB).
+       3. Localized slug drift and unmapped internal Notion page references.
+     - Emits `output/editorial-diagnostics.json` with page IDs, block IDs, and human-readable guidance for editors.
+     - Adds a summary table to console output.
+
+4. **P3: Controlled Publish Status Backfill & Publish Gate Migration**
+   - **Context:** Consumers are currently forced to pass `docs:pull --all` because only 36 pages have an explicit Publish Status in Notion.
+   - **Files involved:**
+     - `src/cli/mark-published.ts`
+     - `scripts/sync-to-comapeo-docs.sh`
+   - **Acceptance Criteria:**
+     - Execute a dry-run check: `bun src/cli/index.ts sync:mark-published --from UNSET --to "Draft published" --dry-run` to verify list of affected canonical pages.
+     - Execute live run with rollback logging: `bun src/cli/index.ts sync:mark-published --from UNSET --to "Draft published" --live`.
+     - Update `scripts/sync-to-comapeo-docs.sh` to remove `--all` from the pull command.
+     - Verify downstream `docs:pull` retrieves all required canonical docs under the active status gate.
+
+---
+
+### Notion Editorial Cleanup & Release Gate (Editor Access Required)
 
 1. **Fill or unlink placeholder pages**
    - **Issue:** Troubleshooting pages (e.g., `troubleshooting-mapping-with-collaborators`) are marked "Content coming soon" in Notion, yet 9+ pages link to their anchors (`#exchange-problems` ×9, `#custom-category-set-problems` ×9, `#solution-check-app-permissions` ×5).

@@ -15,8 +15,25 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { NotionClient } from "../lib/notion-client.js";
-import { NOTION_PROPERTIES } from "../lib/notion-properties.js";
+import { NOTION_PROPERTIES, normalizeLocale, isContentPage } from "../lib/notion-properties.js";
 import { ContentManifestSchema, type ContentManifest } from "../schemas/manifest.js";
+
+const CANONICAL_NOTION_STATUSES: Record<string, string> = {
+  "draft published": "Draft published",
+  "published": "Published",
+  "ready to publish": "Ready to publish",
+  "adding to staging site": "Adding to staging site",
+  "not started": "Not started",
+  "update in progress": "Update in progress",
+  "ready for translation": "Ready for translation",
+  "automated translation in progress": "Automated translation in progress",
+  "automated translations generated": "Automated translations generated",
+  "auto translation generated": "Auto translation generated",
+  "reviewing translations": "Reviewing translations",
+  "remove": "Remove",
+  "unplublished": "Unplublished",
+  "unpublished": "Unpublished",
+};
 
 export class MarkPublishedError extends Error {
   constructor(message: string) {
@@ -36,6 +53,11 @@ export interface StatusUpdateClient {
     properties?: Record<string, unknown>;
     [key: string]: unknown;
   }>;
+  queryDatabase?(params?: {
+    filter?: Record<string, unknown>;
+    sorts?: Array<Record<string, unknown>>;
+    pageSize?: number;
+  }): Promise<{ results: Array<{ id: string; properties?: Record<string, unknown>; [key: string]: unknown }> }>;
 }
 
 export interface RollbackEntry {
@@ -133,41 +155,138 @@ export async function markPublished(
     outDir,
   });
 
-  if (!existsSync(manifestPath)) {
-    throw new MarkPublishedError(`Manifest file not found at: ${manifestPath}`);
-  }
-
-  let manifest: ContentManifest;
-  try {
-    const raw = readFileSync(manifestPath, "utf-8");
-    const parsed = JSON.parse(raw);
-    const validated = ContentManifestSchema.safeParse(parsed);
-    if (!validated.success) {
-      throw new Error(validated.error.message);
-    }
-    manifest = validated.data;
-  } catch (err) {
-    throw new MarkPublishedError(
-      `Failed to validate manifest at ${manifestPath}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-
   const fromStatus = (options.fromStatus ?? "Draft published").trim();
   const toStatus = (options.toStatus ?? "Published").trim();
   const isDryRun = options.dryRun ?? (!options.live);
   const shouldSetDate = options.setPublishedDate ?? (toStatus.toLowerCase() === "published");
 
-  // Filter candidate docs matching fromStatus and optional locale
-  const candidateDocs = manifest.docs.filter((doc) => {
-    const current = (doc.drafting_status ?? "").trim();
-    if (fromStatus.toUpperCase() === "UNSET" ? current !== "" : current.toLowerCase() !== fromStatus.toLowerCase()) {
-      return false;
+  let client = deps?.client;
+  let candidateDocs: Array<{
+    page_id: string;
+    title: string;
+    locale: string;
+    drafting_status: string | null;
+  }>;
+  let totalDocsCount: number;
+
+  if (existsSync(manifestPath)) {
+    let manifest: ContentManifest;
+    try {
+      const raw = readFileSync(manifestPath, "utf-8");
+      const parsed = JSON.parse(raw);
+      const validated = ContentManifestSchema.safeParse(parsed);
+      if (!validated.success) {
+        throw new Error(validated.error.message);
+      }
+      manifest = validated.data;
+    } catch (err) {
+      throw new MarkPublishedError(
+        `Failed to validate manifest at ${manifestPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
-    if (options.locale && doc.locale.toLowerCase() !== options.locale.toLowerCase()) {
-      return false;
+
+    totalDocsCount = manifest.docs.length;
+    // Filter candidate docs matching fromStatus and optional locale
+    candidateDocs = manifest.docs
+      .filter((doc) => {
+        const current = (doc.drafting_status ?? "").trim();
+        if (fromStatus.toUpperCase() === "UNSET" ? current !== "" : current.toLowerCase() !== fromStatus.toLowerCase()) {
+          return false;
+        }
+        if (options.locale && doc.locale.toLowerCase() !== options.locale.toLowerCase()) {
+          return false;
+        }
+        return true;
+      })
+      .map((doc) => ({
+        page_id: doc.page_id,
+        title: doc.title,
+        locale: doc.locale,
+        drafting_status: doc.drafting_status ?? null,
+      }));
+  } else {
+    // If an explicit manifest was requested, fail immediately
+    if (options.manifestPath || options.manifestVersion) {
+      throw new MarkPublishedError(`Manifest file not found at: ${manifestPath}`);
     }
-    return true;
-  });
+
+    // Direct live Notion query fallback
+    if (!client) {
+      const token = options.token || process.env.NOTION_TOKEN || process.env.NOTION_API_KEY;
+      if (!token) {
+        throw new MarkPublishedError(
+          `Manifest file not found at: ${manifestPath}, and Notion API token is required to query live Notion database. Set NOTION_TOKEN or pass --token.`,
+        );
+      }
+      const databaseId = options.databaseId || process.env.NOTION_DATABASE_ID || process.env.DATABASE_ID;
+      const dataSourceId = options.dataSourceId || process.env.NOTION_DATA_SOURCE_ID || process.env.DATA_SOURCE_ID;
+      client = new NotionClient({ token, databaseId, dataSourceId });
+    }
+
+    if (typeof client.queryDatabase !== "function") {
+      throw new MarkPublishedError(
+        `Manifest file not found at: ${manifestPath} and client does not support queryDatabase.`,
+      );
+    }
+
+    console.log(
+      `[sync:mark-published] No manifest found at ${manifestPath}. Querying Notion database directly for pages with status "${fromStatus}"...`,
+    );
+
+    const canonicalFrom =
+      CANONICAL_NOTION_STATUSES[fromStatus.toLowerCase()] ?? fromStatus;
+    const queryFilter =
+      fromStatus.toUpperCase() === "UNSET"
+        ? {
+            property: NOTION_PROPERTIES.PUBLISH_STATUS,
+            select: { is_empty: true },
+          }
+        : {
+            property: NOTION_PROPERTIES.PUBLISH_STATUS,
+            select: { equals: canonicalFrom },
+          };
+
+    const queryRes = await client.queryDatabase({ filter: queryFilter });
+    totalDocsCount = queryRes.results.length;
+
+    candidateDocs = queryRes.results
+      .map((p) => {
+        const titleProp = p.properties?.[NOTION_PROPERTIES.TITLE] as
+          | { title?: Array<{ plain_text?: string }> }
+          | undefined;
+        const title =
+          titleProp?.title?.map((part) => part.plain_text || "").join("") || "untitled";
+        const langProp = p.properties?.[NOTION_PROPERTIES.LANGUAGE] as
+          | { select?: { name?: string } }
+          | undefined;
+        const rawLocale = langProp?.select?.name || "en";
+        const locale = normalizeLocale(rawLocale);
+        const statusProp = p.properties?.[NOTION_PROPERTIES.PUBLISH_STATUS] as
+          | { select?: { name?: string } }
+          | undefined;
+        const currentStatus = statusProp?.select?.name || null;
+        const elemTypeProp = p.properties?.[NOTION_PROPERTIES.ELEMENT_TYPE] as
+          | { select?: { name?: string } }
+          | undefined;
+        const elementType = elemTypeProp?.select?.name || "";
+        return {
+          page_id: p.id,
+          title,
+          locale,
+          elementType,
+          drafting_status: currentStatus,
+        };
+      })
+      .filter((doc) => {
+        if (!isContentPage(doc.elementType)) {
+          return false;
+        }
+        if (options.locale && doc.locale.toLowerCase() !== options.locale.toLowerCase()) {
+          return false;
+        }
+        return true;
+      });
+  }
 
   const targetDocs = options.limit && options.limit > 0
     ? candidateDocs.slice(0, options.limit)
@@ -183,7 +302,7 @@ export async function markPublished(
   // In dry-run mode, return target plan without executing writes
   if (isDryRun) {
     return {
-      totalManifestDocs: manifest.docs.length,
+      totalManifestDocs: totalDocsCount,
       targetedDocs: targetDocs.length,
       updatedCount: 0,
       failedCount: 0,
@@ -194,8 +313,7 @@ export async function markPublished(
     };
   }
 
-  // Live execution mode: initialize client
-  let client = deps?.client;
+  // Live execution mode: ensure client initialized
   if (!client) {
     const token = options.token || process.env.NOTION_TOKEN || process.env.NOTION_API_KEY;
     if (!token) {
@@ -203,8 +321,8 @@ export async function markPublished(
         "Notion API token is required for live write-back. Set NOTION_TOKEN or pass --token.",
       );
     }
-    const databaseId = options.databaseId || process.env.NOTION_DATABASE_ID;
-    const dataSourceId = options.dataSourceId || process.env.NOTION_DATA_SOURCE_ID;
+    const databaseId = options.databaseId || process.env.NOTION_DATABASE_ID || process.env.DATABASE_ID;
+    const dataSourceId = options.dataSourceId || process.env.NOTION_DATA_SOURCE_ID || process.env.DATA_SOURCE_ID;
     client = new NotionClient({ token, databaseId, dataSourceId });
   }
 
@@ -306,7 +424,7 @@ export async function markPublished(
   }
 
   return {
-    totalManifestDocs: manifest.docs.length,
+    totalManifestDocs: totalDocsCount,
     targetedDocs: targetDocs.length,
     updatedCount,
     failedCount: errors.length,

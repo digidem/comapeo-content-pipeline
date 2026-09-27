@@ -60,8 +60,32 @@ Hono app. Routes: `GET /health`, `GET /health/deep` (D1+R2+Notion check), `POST 
 - `strict` TypeScript; `src/cli/index.ts` is excluded from coverage.
 - TASKS.md tracks remaining work against the spec's Definition of Done; `comapeo_content_pipeline_spec.md` is the authoritative spec.
 
-## Delegation
+## Delegation & Development Workflow
 
-- Use a senior/junior pattern for implementation work: delegate edits to a junior (GLM by default; fall back to Sonnet 5 as a mid-tier junior when GLM isn't specified or is capacity-exhausted), push as much execution as possible to the junior, but verify everything yourself before committing.
-- Before working a TASKS.md item, confirm it's still real and necessary — the list isn't guaranteed current.
-- **Autonomous Merge Policy:** When a PR cycle achieves Low/Very Low risk and High confidence (5/5) consensus from frontier models, a 5/5 score from Greptile with 0 unresolved comments, and all CI checks green, proceed directly to merge (`gh pr merge --squash --delete-branch`) and continue to the next task without waiting for manual human approval.
+### Agent Roles & Hierarchy
+- The orchestrating agent (Antigravity with Gemini 3.8 Flash or Claude Code) operates as the Senior Engineer: plans tasks, defines technical contracts, inspects requirements in `TASKS.md`, and conducts final verification.
+- For focused research, heavy file exploration, or repetitive mechanical edits, delegate to subagents (using `invoke_subagent` with `research` for read-only exploration or `self` for isolated edits, or lighter models like Flash).
+- The Senior Agent must verify all code changes before committing: run `npm run lint`, `npm run typecheck`, and `npm test`.
+
+### Task Execution Cycle
+1. Read `TASKS.md` and select the highest-priority uncompleted task under `Engineering & Pipeline Improvements`.
+2. Confirm the task is still real and necessary against current code and git history.
+3. Implement changes following repository conventions (runtime-agnostic `src/lib/`, Zod schemas, golden converter fixtures).
+4. Run full local verification:
+   ```bash
+   npm run lint
+   npm run typecheck
+   npm test
+   ```
+5. Update `TASKS.md` to mark the task as complete (`- [x]`).
+6. Commit with conventional commit format, push branch, and open a PR.
+
+### Autonomous Merge & Human Escalation Policy
+- **Autonomous Merge Gate:**
+  When a PR cycle satisfies all of the following:
+  1. All deterministic CI checks pass (`lint`, `typecheck`, `test`).
+  2. Frontier model review consensus is achieved (Low/Very Low risk, High confidence 5/5).
+  3. Greptile review cycle completes with a 5/5 score and 0 unresolved comments.
+  -> **Proceed directly to merge** (`gh pr merge --squash --delete-branch`), delete the branch, mark the task as done in `TASKS.md`, and continue to the next task without waiting for manual human approval.
+- **Human Escalation Rule:**
+  **ONLY prompt the user to approve a merge if NOT confident after all Greptile loops and frontier checks have run** (e.g., conflicting reviews, ambiguous architectural requirements, or persistent unresolved test failures). When confident, merge autonomously and proceed.
