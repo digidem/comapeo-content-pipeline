@@ -12,8 +12,8 @@
  *   pnpm pipeline diff --page <page_id>
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { NotionClient } from "../lib/notion-client.js";
 import { buildQueryFilter } from "../lib/notion-filters.js";
@@ -363,16 +363,8 @@ async function cmdSyncFull(args: Record<string, string>) {
 
 async function cmdManifestGenerate(args: Record<string, string>) {
   const input = args.input || join(process.cwd(), "output");
-  let outFile = args.out || join(input, "manifest.json");
 
-  // Read all metadata files in input dir
-  const fs = await import("node:fs");
-
-  if (fs.existsSync(outFile) && fs.statSync(outFile).isDirectory()) {
-    outFile = join(outFile, "manifest.json");
-  }
-
-  if (!fs.existsSync(input)) {
+  if (!existsSync(input)) {
     console.error(`Error: Input directory not found: ${input}`);
     console.error(
       "Run sync:full first to populate the directory with <page_id>.metadata.json files."
@@ -380,7 +372,26 @@ async function cmdManifestGenerate(args: Record<string, string>) {
     process.exit(1);
   }
 
-  const files = fs.readdirSync(input).filter((f: string) => f.endsWith(".metadata.json"));
+  let outFile = args.out || join(input, "manifest.json");
+
+  // If outFile is an existing directory, ends with a slash, or does not end with .json,
+  // treat it as a directory destination and place manifest.json inside it.
+  if (
+    (existsSync(outFile) && statSync(outFile).isDirectory()) ||
+    outFile.endsWith("/") ||
+    outFile.endsWith("\\") ||
+    !outFile.endsWith(".json")
+  ) {
+    mkdirSync(outFile, { recursive: true });
+    outFile = join(outFile, "manifest.json");
+  } else {
+    const parentDir = dirname(outFile);
+    if (parentDir && !existsSync(parentDir)) {
+      mkdirSync(parentDir, { recursive: true });
+    }
+  }
+
+  const files = readdirSync(input).filter((f: string) => f.endsWith(".metadata.json"));
 
   // Guard: no metadata blobs — do NOT write (and never clobber) the manifest.
   //
@@ -405,7 +416,7 @@ async function cmdManifestGenerate(args: Record<string, string>) {
   }
 
   const pages = files.map((f: string) =>
-    JSON.parse(fs.readFileSync(join(input, f), "utf8")),
+    JSON.parse(readFileSync(join(input, f), "utf8")),
   );
 
   const dbId = process.env.NOTION_DATABASE_ID || "";
@@ -418,9 +429,9 @@ async function cmdManifestGenerate(args: Record<string, string>) {
 
   // Belt-and-suspenders: refuse to overwrite a non-empty manifest with a 0-doc result.
   // This guards against data races, stale input dirs, or generateManifest edge cases.
-  if (manifest.docs.length === 0 && fs.existsSync(outFile)) {
+  if (manifest.docs.length === 0 && existsSync(outFile)) {
     try {
-      const existing = JSON.parse(fs.readFileSync(outFile, "utf8"));
+      const existing = JSON.parse(readFileSync(outFile, "utf8"));
       if (Array.isArray(existing.docs) && existing.docs.length > 0) {
         console.error(
           `Error: Would clobber existing manifest (${existing.docs.length} docs) with an empty 0-doc result.\n` +

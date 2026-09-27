@@ -67,7 +67,7 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 5. **Status vocabulary catch-up & Publish gate**
    - **Issue:** Only ~36 pages carry an active Publish Status ("Draft published") while the site publishes ~100 docs. Consumers currently use `docs:pull --all` as a workaround.
    - **Audit Status & Gap Measurement (Claude Opus 5.5 Consensus):**
-     - Measured actual release gap: `docs:pull --all` pulls **138 docs**, while gated `docs:pull` without `--all` pulls only **15 docs** (a drop of 128 docs from the site).
+     - Measured actual release gap: `docs:pull --all` pulls **138 docs**, while gated `docs:pull` without `--all` pulls only **15 docs** (a drop of 123 docs from the site; 128 total section-path file differences).
      - Running a blind bulk backfill risks promoting unreviewed placeholders or test pages into "Draft published".
      - Dry-run check with `--exclude-title "^\[(PRUEBA|TESTE)\]"` identified 154 backfill candidates (`/tmp/backfill-candidates.txt`).
    - **Release Gate Decision:**
