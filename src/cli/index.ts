@@ -363,6 +363,15 @@ async function cmdSyncFull(args: Record<string, string>) {
 
 async function cmdManifestGenerate(args: Record<string, string>) {
   const input = args.input || join(process.cwd(), "output");
+
+  if (!existsSync(input)) {
+    console.error(`Error: Input directory not found: ${input}`);
+    console.error(
+      "Run sync:full first to populate the directory with <page_id>.metadata.json files."
+    );
+    process.exit(1);
+  }
+
   let outFile = args.out || join(input, "manifest.json");
 
   // If outFile is an existing directory, ends with a slash, or does not end with .json,
@@ -380,14 +389,6 @@ async function cmdManifestGenerate(args: Record<string, string>) {
     if (parentDir && !existsSync(parentDir)) {
       mkdirSync(parentDir, { recursive: true });
     }
-  }
-
-  if (!existsSync(input)) {
-    console.error(`Error: Input directory not found: ${input}`);
-    console.error(
-      "Run sync:full first to populate the directory with <page_id>.metadata.json files."
-    );
-    process.exit(1);
   }
 
   const files = readdirSync(input).filter((f: string) => f.endsWith(".metadata.json"));

@@ -176,4 +176,30 @@ describe.skipIf(!hasBun)("manifest:generate destination directory handling", () 
     expect(content.docs.length).toBe(1);
     expect(content.docs[0].page_id).toBe(mockPageId);
   });
+
+  it("fails with 'Input directory not found' when input directory does not exist and does not create an empty directory", () => {
+    const nonExistentInput = join(tempDir, "does-not-exist");
+    let stderr = "";
+    let exitCode = 0;
+
+    try {
+      execFileSync("bun", [
+        cliPath,
+        "manifest:generate",
+        "--input",
+        nonExistentInput,
+      ], {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (err) {
+      const execErr = err as ExecError;
+      exitCode = execErr.status ?? 1;
+      stderr = execErr.stderr?.toString() || "";
+    }
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain(`Error: Input directory not found: ${nonExistentInput}`);
+    expect(existsSync(nonExistentInput)).toBe(false);
+  });
 });
