@@ -738,4 +738,29 @@ describe("NotionClient write operations", () => {
       },
     });
   });
+
+  it("updateBlock issues a PATCH to /blocks/{blockId} with correct body", async () => {
+    fetchMock.mockResolvedValueOnce(
+      okResponse({
+        object: "block",
+        id: "block-123",
+        type: "paragraph",
+        paragraph: { rich_text: [] },
+      }),
+    );
+
+    const updatePayload = {
+      paragraph: {
+        rich_text: [{ type: "text", text: { content: "Updated text" } }],
+      },
+    };
+
+    const result = await client.updateBlock("block-123", updatePayload);
+    expect(result.id).toBe("block-123");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.notion.com/v1/blocks/block-123");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body)).toEqual(updatePayload);
+  });
 });

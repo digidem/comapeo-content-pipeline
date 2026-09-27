@@ -582,6 +582,19 @@ export class NotionClient {
   }
 
   /**
+   * Update a block's content or properties by ID.
+   */
+  async updateBlock(
+    blockId: string,
+    params: Record<string, unknown>,
+  ): Promise<NotionBlock> {
+    return this.request<NotionBlock>(`/blocks/${blockId}`, {
+      method: "PATCH",
+      body: params,
+    });
+  }
+
+  /**
    * Delete (archive) a block by ID.
    */
   async deleteBlock(blockId: string): Promise<{ object: "block"; id: string; archived: true }> {
