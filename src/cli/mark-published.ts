@@ -235,7 +235,8 @@ export async function markPublished(
         const titleProp = p.properties?.[NOTION_PROPERTIES.TITLE] as
           | { title?: Array<{ plain_text?: string }> }
           | undefined;
-        const title = titleProp?.title?.[0]?.plain_text || "untitled";
+        const title =
+          titleProp?.title?.map((part) => part.plain_text || "").join("") || "untitled";
         const langProp = p.properties?.[NOTION_PROPERTIES.LANGUAGE] as
           | { select?: { name?: string } }
           | undefined;
