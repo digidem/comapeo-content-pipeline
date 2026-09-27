@@ -15,8 +15,25 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { NotionClient } from "../lib/notion-client.js";
-import { NOTION_PROPERTIES, normalizeLocale } from "../lib/notion-properties.js";
+import { NOTION_PROPERTIES, normalizeLocale, isContentPage } from "../lib/notion-properties.js";
 import { ContentManifestSchema, type ContentManifest } from "../schemas/manifest.js";
+
+const CANONICAL_NOTION_STATUSES: Record<string, string> = {
+  "draft published": "Draft published",
+  "published": "Published",
+  "ready to publish": "Ready to publish",
+  "adding to staging site": "Adding to staging site",
+  "not started": "Not started",
+  "update in progress": "Update in progress",
+  "ready for translation": "Ready for translation",
+  "automated translation in progress": "Automated translation in progress",
+  "automated translations generated": "Automated translations generated",
+  "auto translation generated": "Auto translation generated",
+  "reviewing translations": "Reviewing translations",
+  "remove": "Remove",
+  "unplublished": "Unplublished",
+  "unpublished": "Unpublished",
+};
 
 export class MarkPublishedError extends Error {
   constructor(message: string) {
@@ -216,6 +233,8 @@ export async function markPublished(
       `[sync:mark-published] No manifest found at ${manifestPath}. Querying Notion database directly for pages with status "${fromStatus}"...`,
     );
 
+    const canonicalFrom =
+      CANONICAL_NOTION_STATUSES[fromStatus.toLowerCase()] ?? fromStatus;
     const queryFilter =
       fromStatus.toUpperCase() === "UNSET"
         ? {
@@ -224,7 +243,7 @@ export async function markPublished(
           }
         : {
             property: NOTION_PROPERTIES.PUBLISH_STATUS,
-            select: { equals: fromStatus },
+            select: { equals: canonicalFrom },
           };
 
     const queryRes = await client.queryDatabase({ filter: queryFilter });
@@ -246,14 +265,22 @@ export async function markPublished(
           | { select?: { name?: string } }
           | undefined;
         const currentStatus = statusProp?.select?.name || null;
+        const elemTypeProp = p.properties?.[NOTION_PROPERTIES.ELEMENT_TYPE] as
+          | { select?: { name?: string } }
+          | undefined;
+        const elementType = elemTypeProp?.select?.name || "";
         return {
           page_id: p.id,
           title,
           locale,
+          elementType,
           drafting_status: currentStatus,
         };
       })
       .filter((doc) => {
+        if (!isContentPage(doc.elementType)) {
+          return false;
+        }
         if (options.locale && doc.locale.toLowerCase() !== options.locale.toLowerCase()) {
           return false;
         }
