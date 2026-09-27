@@ -90,9 +90,22 @@ export interface MarkPublishedOptions {
   outDir?: string;
   limit?: number;
   locale?: string;
+  filterTitle?: string;
+  excludeTitle?: string;
   token?: string;
   databaseId?: string;
   dataSourceId?: string;
+}
+
+export function createRegexFilter(pattern: string | undefined, optionName: string): RegExp | null {
+  if (pattern === undefined || pattern === null || pattern === "") return null;
+  try {
+    return new RegExp(pattern, "i");
+  } catch (err) {
+    throw new MarkPublishedError(
+      `Invalid regular expression for ${optionName} ("${pattern}"): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 export interface MarkPublishedResult {
@@ -160,6 +173,9 @@ export async function markPublished(
   const isDryRun = options.dryRun ?? (!options.live);
   const shouldSetDate = options.setPublishedDate ?? (toStatus.toLowerCase() === "published");
 
+  const filterTitleRegex = createRegexFilter(options.filterTitle, "--filter-title");
+  const excludeTitleRegex = createRegexFilter(options.excludeTitle, "--exclude-title");
+
   let client = deps?.client;
   let candidateDocs: Array<{
     page_id: string;
@@ -186,14 +202,23 @@ export async function markPublished(
     }
 
     totalDocsCount = manifest.docs.length;
-    // Filter candidate docs matching fromStatus and optional locale
+    // Filter candidate docs matching element_type, fromStatus, optional locale, and title regexes
     candidateDocs = manifest.docs
       .filter((doc) => {
+        if (!isContentPage(doc.element_type || "")) {
+          return false;
+        }
         const current = (doc.drafting_status ?? "").trim();
         if (fromStatus.toUpperCase() === "UNSET" ? current !== "" : current.toLowerCase() !== fromStatus.toLowerCase()) {
           return false;
         }
         if (options.locale && doc.locale.toLowerCase() !== options.locale.toLowerCase()) {
+          return false;
+        }
+        if (filterTitleRegex && !filterTitleRegex.test(doc.title)) {
+          return false;
+        }
+        if (excludeTitleRegex && excludeTitleRegex.test(doc.title)) {
           return false;
         }
         return true;
@@ -284,6 +309,12 @@ export async function markPublished(
         if (options.locale && doc.locale.toLowerCase() !== options.locale.toLowerCase()) {
           return false;
         }
+        if (filterTitleRegex && !filterTitleRegex.test(doc.title)) {
+          return false;
+        }
+        if (excludeTitleRegex && excludeTitleRegex.test(doc.title)) {
+          return false;
+        }
         return true;
       });
   }
@@ -361,8 +392,9 @@ export async function markPublished(
   };
 
   for (const doc of targetDocs) {
+    let targetTitle = doc.title;
     try {
-      // Stale status check: verify live Notion status hasn't changed since manifest was generated
+      // Stale status and title check: verify live Notion state hasn't changed since manifest was generated
       if (!options.force && typeof client.getPage === "function") {
         try {
           const livePage = await client.getPage(doc.page_id);
@@ -384,6 +416,32 @@ export async function markPublished(
             );
             continue;
           }
+
+          // Live title check: re-verify title regex filters against live Notion title
+          if (filterTitleRegex || excludeTitleRegex) {
+            const titleProp = liveProps[NOTION_PROPERTIES.TITLE] as
+              | { title?: Array<{ plain_text?: string }> }
+              | undefined;
+            const liveTitle =
+              titleProp?.title?.map((part) => part.plain_text || "").join("") || doc.title;
+            targetTitle = liveTitle;
+
+            if (filterTitleRegex && !filterTitleRegex.test(liveTitle)) {
+              skippedCount++;
+              console.warn(
+                `[sync:mark-published] Skipping page ${doc.page_id} ("${liveTitle}"): live title does not match filter regex "${options.filterTitle}".`,
+              );
+              continue;
+            }
+
+            if (excludeTitleRegex && excludeTitleRegex.test(liveTitle)) {
+              skippedCount++;
+              console.warn(
+                `[sync:mark-published] Skipping page ${doc.page_id} ("${liveTitle}"): live title matches exclude regex "${options.excludeTitle}".`,
+              );
+              continue;
+            }
+          }
         } catch (fetchErr) {
           const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
           console.warn(
@@ -403,7 +461,7 @@ export async function markPublished(
           : fromStatus;
       rollbackEntries.push({
         page_id: doc.page_id,
-        title: doc.title,
+        title: targetTitle,
         locale: doc.locale,
         original_status: originalStatus,
         new_status: toStatus,
@@ -464,6 +522,8 @@ Options:
                            Special value "UNSET" matches pages where Publish Status
                            is null, empty, or whitespace-only in Notion.
   --to <status>            Target status to apply (default: "Published").
+  --filter-title <regex>   Filter target pages by title regex (case-insensitive).
+  --exclude-title <regex>  Exclude target pages by title regex (case-insensitive).
   --manifest-path <file>   Path to manifest.json (default: ./output/manifest.json).
   --manifest-version <ts>  Versioned manifest identifier (manifest-<ts>.json).
   --out <dir>              Output directory for rollback logs (default: ./output).
@@ -501,6 +561,21 @@ Options:
     setPublishedDate = args["set-published-date"] !== "false";
   }
 
+  if (args["filter-title"] !== undefined && args["filter-title"].trim() === "") {
+    console.error(
+      '[sync:mark-published] Error: Option --filter-title requires a valid regular expression value, e.g. --filter-title "guide".',
+    );
+    process.exit(1);
+    return;
+  }
+  if (args["exclude-title"] !== undefined && args["exclude-title"].trim() === "") {
+    console.error(
+      '[sync:mark-published] Error: Option --exclude-title requires a valid regular expression value, e.g. --exclude-title "^\\[(PRUEBA|TESTE)\\]".',
+    );
+    process.exit(1);
+    return;
+  }
+
   const options: MarkPublishedOptions = {
     manifestPath: args["manifest-path"] || args.input,
     manifestVersion: args["manifest-version"],
@@ -514,6 +589,8 @@ Options:
     outDir: args.out,
     limit,
     locale: args.locale,
+    filterTitle: args["filter-title"],
+    excludeTitle: args["exclude-title"],
     token: args.token,
     databaseId: args["database-id"],
     dataSourceId: args["data-source-id"],
@@ -553,9 +630,10 @@ Options:
       }
     }
   } catch (err) {
-    if (err instanceof MarkPublishedError) {
+    if (err instanceof MarkPublishedError || (err instanceof Error && err.name === "MarkPublishedError")) {
       console.error(`[sync:mark-published] Error: ${err.message}`);
       process.exit(1);
+      return;
     }
     throw err;
   }
