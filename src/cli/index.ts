@@ -687,17 +687,33 @@ function parseArgs(raw: string[]): Record<string, string> {
   const result: Record<string, string> = {};
   const positional: string[] = [];
   for (let i = 0; i < raw.length; i++) {
-    if (raw[i].startsWith("--")) {
-      const key = raw[i].slice(2);
+    const token = raw[i];
+    if (token.startsWith("--")) {
+      const key = token.slice(2);
+      if (key.startsWith("no-")) {
+        const positiveKey = key.slice(3);
+        result[key] = "true";
+        result[positiveKey] = "false";
+      } else {
+        const next = raw[i + 1];
+        if (next && !next.startsWith("-")) {
+          result[key] = next;
+          i++;
+        } else {
+          result[key] = "true";
+        }
+      }
+    } else if (token.startsWith("-") && token.length > 1) {
+      const key = token.slice(1);
       const next = raw[i + 1];
-      if (next && !next.startsWith("--")) {
+      if (next && !next.startsWith("-")) {
         result[key] = next;
         i++;
       } else {
         result[key] = "true";
       }
     } else {
-      positional.push(raw[i]);
+      positional.push(token);
     }
   }
   result._ = JSON.stringify(positional);
@@ -724,7 +740,9 @@ Options:
   --input <file>          Input manifest or metadata file
   --manifest-path <file>  Manifest file path for status write-back
   --manifest-version <ts> Manifest version for status write-back
-  --from <status>         Source status for mark-published (default: "Draft published")
+  --from <status>         Source status for mark-published (default: "Draft published").
+                          Special value "UNSET" matches null, empty, or whitespace-only
+                          Publish Status in Notion.
   --to <status>           Target status for mark-published (default: "Published")
   --live                  Execute live writes for mark-published (default: dry run)
   --dry-run               Force dry-run mode
