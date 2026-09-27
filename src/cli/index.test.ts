@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 interface ExecError {
   status?: number;
@@ -12,16 +13,16 @@ interface ExecError {
 
 const hasBun = (() => {
   try {
-    execFileSync("bun", ["--version"], { stdio: "ignore" });
+    execFileSync("bun", ["--version"], { stdio: "ignore", timeout: 5000 });
     return true;
   } catch {
     return false;
   }
 })();
 
-describe.skipIf(!hasBun)("CLI boot and smoke tests", () => {
-  const cliPath = join(process.cwd(), "src/cli/index.ts");
+const cliPath = fileURLToPath(new URL("./index.ts", import.meta.url));
 
+describe.skipIf(!hasBun)("CLI boot and smoke tests", () => {
   it("boots cleanly with no arguments and prints usage without TDZ ReferenceError", () => {
     let stdout = "";
     let stderr = "";
@@ -31,6 +32,7 @@ describe.skipIf(!hasBun)("CLI boot and smoke tests", () => {
       execFileSync("bun", [cliPath], {
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
+        timeout: 10_000,
       });
     } catch (err) {
       const execErr = err as ExecError;
@@ -54,6 +56,7 @@ describe.skipIf(!hasBun)("CLI boot and smoke tests", () => {
       execFileSync("bun", [cliPath, "--unknown-flag"], {
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
+        timeout: 10_000,
       });
     } catch (err) {
       const execErr = err as ExecError;
@@ -69,7 +72,6 @@ describe.skipIf(!hasBun)("CLI boot and smoke tests", () => {
 });
 
 describe.skipIf(!hasBun)("manifest:generate destination directory handling", () => {
-  const cliPath = join(process.cwd(), "src/cli/index.ts");
   let tempDir: string;
 
   beforeEach(() => {
@@ -120,6 +122,7 @@ describe.skipIf(!hasBun)("manifest:generate destination directory handling", () 
     ], {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
+      timeout: 10_000,
     });
 
     const expectedManifest = join(targetDir, "manifest.json");
@@ -169,6 +172,7 @@ describe.skipIf(!hasBun)("manifest:generate destination directory handling", () 
     ], {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
+      timeout: 10_000,
     });
 
     expect(existsSync(customManifestFile)).toBe(true);
@@ -177,8 +181,53 @@ describe.skipIf(!hasBun)("manifest:generate destination directory handling", () 
     expect(content.docs[0].page_id).toBe(mockPageId);
   });
 
+  it("creates destination directory when --out has a trailing slash", () => {
+    const mockPageId = "mock-page-trailing";
+    const mockMetadata = {
+      page_id: mockPageId,
+      id: mockPageId,
+      title: "Test Page Trailing",
+      slug: "test-page-trailing",
+      locale: "en",
+      section: "getting-started",
+      order: 1,
+      element_type: "Page",
+      drafting_status: "Draft published",
+      last_edited_time: new Date().toISOString(),
+      content_hash: "hash789",
+      raw_hash: "raw789",
+      source_page_id: mockPageId,
+      r2_path: `docs/en/docs/getting-started/test-page-trailing.md`,
+      notion_url: "https://notion.so/test-trailing",
+    };
+
+    writeFileSync(
+      join(tempDir, `${mockPageId}.metadata.json`),
+      JSON.stringify(mockMetadata, null, 2),
+    );
+
+    const trailingDir = join(tempDir, "trailing-dir") + "/";
+
+    execFileSync("bun", [
+      cliPath,
+      "manifest:generate",
+      "--input",
+      tempDir,
+      "--out",
+      trailingDir,
+    ], {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 10_000,
+    });
+
+    const expectedManifest = join(tempDir, "trailing-dir", "manifest.json");
+    expect(existsSync(expectedManifest)).toBe(true);
+  });
+
   it("fails with 'Input directory not found' when input directory does not exist and does not create an empty directory", () => {
     const nonExistentInput = join(tempDir, "does-not-exist");
+    const nonExistentOut = join(tempDir, "should-not-be-created");
     let stderr = "";
     let exitCode = 0;
 
@@ -188,9 +237,12 @@ describe.skipIf(!hasBun)("manifest:generate destination directory handling", () 
         "manifest:generate",
         "--input",
         nonExistentInput,
+        "--out",
+        nonExistentOut,
       ], {
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
+        timeout: 10_000,
       });
     } catch (err) {
       const execErr = err as ExecError;
@@ -201,5 +253,124 @@ describe.skipIf(!hasBun)("manifest:generate destination directory handling", () 
     expect(exitCode).toBe(1);
     expect(stderr).toContain(`Error: Input directory not found: ${nonExistentInput}`);
     expect(existsSync(nonExistentInput)).toBe(false);
+    expect(existsSync(nonExistentOut)).toBe(false);
+  });
+
+  it("fails with 'Input directory not found' when input is a file rather than a directory", () => {
+    const filePath = join(tempDir, "file-not-dir.txt");
+    writeFileSync(filePath, "hello world");
+    const nonExistentOut = join(tempDir, "should-not-exist");
+
+    let stderr = "";
+    let exitCode = 0;
+
+    try {
+      execFileSync("bun", [
+        cliPath,
+        "manifest:generate",
+        "--input",
+        filePath,
+        "--out",
+        nonExistentOut,
+      ], {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 10_000,
+      });
+    } catch (err) {
+      const execErr = err as ExecError;
+      exitCode = execErr.status ?? 1;
+      stderr = execErr.stderr?.toString() || "";
+    }
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain(`Error: Input path is not a directory: ${filePath}`);
+    expect(existsSync(nonExistentOut)).toBe(false);
+  });
+
+  it("fails with 'No .metadata.json files found' when input directory is empty and does not create output directory", () => {
+    const emptyInputDir = mkdtempSync(join(tempDir, "empty-"));
+    const nonExistentOut = join(tempDir, "never-created-dir");
+
+    let stderr = "";
+    let exitCode = 0;
+
+    try {
+      execFileSync("bun", [
+        cliPath,
+        "manifest:generate",
+        "--input",
+        emptyInputDir,
+        "--out",
+        nonExistentOut,
+      ], {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 10_000,
+      });
+    } catch (err) {
+      const execErr = err as ExecError;
+      exitCode = execErr.status ?? 1;
+      stderr = execErr.stderr?.toString() || "";
+    }
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("Error: No .metadata.json files found");
+    expect(existsSync(nonExistentOut)).toBe(false);
+  });
+
+  it("fails with error when --out points to an existing non-JSON file and does not clobber it", () => {
+    const mockPageId = "mock-page-collision";
+    const mockMetadata = {
+      page_id: mockPageId,
+      id: mockPageId,
+      title: "Test Collision",
+      slug: "test-collision",
+      locale: "en",
+      section: "getting-started",
+      order: 1,
+      element_type: "Page",
+      drafting_status: "Draft published",
+      last_edited_time: new Date().toISOString(),
+      content_hash: "hash999",
+      raw_hash: "raw999",
+      source_page_id: mockPageId,
+      r2_path: `docs/en/docs/getting-started/test-collision.md`,
+      notion_url: "https://notion.so/test-collision",
+    };
+
+    writeFileSync(
+      join(tempDir, `${mockPageId}.metadata.json`),
+      JSON.stringify(mockMetadata, null, 2),
+    );
+
+    const existingTxtFile = join(tempDir, "existing-file.txt");
+    writeFileSync(existingTxtFile, "do not touch this file");
+
+    let stderr = "";
+    let exitCode = 0;
+
+    try {
+      execFileSync("bun", [
+        cliPath,
+        "manifest:generate",
+        "--input",
+        tempDir,
+        "--out",
+        existingTxtFile,
+      ], {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 10_000,
+      });
+    } catch (err) {
+      const execErr = err as ExecError;
+      exitCode = execErr.status ?? 1;
+      stderr = execErr.stderr?.toString() || "";
+    }
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("Output path exists and is not a JSON file or directory");
+    expect(readFileSync(existingTxtFile, "utf-8")).toBe("do not touch this file");
   });
 });

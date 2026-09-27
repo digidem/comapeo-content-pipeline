@@ -13,7 +13,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, extname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { NotionClient } from "../lib/notion-client.js";
 import { buildQueryFilter } from "../lib/notion-filters.js";
@@ -372,22 +372,27 @@ async function cmdManifestGenerate(args: Record<string, string>) {
     process.exit(1);
   }
 
+  if (!statSync(input).isDirectory()) {
+    console.error(`Error: Input path is not a directory: ${input}`);
+    process.exit(1);
+  }
+
   let outFile = args.out || join(input, "manifest.json");
 
-  // If outFile is an existing directory, ends with a slash, or does not end with .json,
-  // treat it as a directory destination and place manifest.json inside it.
-  if (
-    (existsSync(outFile) && statSync(outFile).isDirectory()) ||
-    outFile.endsWith("/") ||
-    outFile.endsWith("\\") ||
-    !outFile.endsWith(".json")
-  ) {
-    mkdirSync(outFile, { recursive: true });
-    outFile = join(outFile, "manifest.json");
+  // Determine if outFile is intended as a directory or file.
+  // If it already exists as a file, ensure it's a JSON file.
+  if (existsSync(outFile)) {
+    const stat = statSync(outFile);
+    if (stat.isDirectory()) {
+      outFile = join(outFile, "manifest.json");
+    } else if (extname(outFile).toLowerCase() !== ".json") {
+      console.error(`Error: Output path exists and is not a JSON file or directory: ${outFile}`);
+      process.exit(1);
+    }
   } else {
-    const parentDir = dirname(outFile);
-    if (parentDir && !existsSync(parentDir)) {
-      mkdirSync(parentDir, { recursive: true });
+    const ext = extname(outFile).toLowerCase();
+    if (outFile.endsWith("/") || outFile.endsWith("\\") || ext !== ".json") {
+      outFile = join(outFile, "manifest.json");
     }
   }
 
@@ -442,6 +447,12 @@ async function cmdManifestGenerate(args: Record<string, string>) {
         process.exit(1);
       }
     } catch { /* unparseable existing file — allow overwrite */ }
+  }
+
+  // Ensure parent directory exists ONLY right before writing to disk
+  const parentDir = dirname(outFile);
+  if (parentDir && !existsSync(parentDir)) {
+    mkdirSync(parentDir, { recursive: true });
   }
 
   writeFileSync(outFile, JSON.stringify(manifest, null, 2));
