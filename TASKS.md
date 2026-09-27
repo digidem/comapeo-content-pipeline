@@ -39,15 +39,19 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
      - Adds a summary table to console output.
 
 4. **P3: Controlled Publish Status Backfill & Publish Gate Migration**
-   - **Context:** Consumers are currently forced to pass `docs:pull --all` because only 36 pages have an explicit Publish Status in Notion.
+   - **Context:** Consumers are currently forced to pass `docs:pull --all` because only ~36 pages have an explicit Publish Status in Notion.
+   - **Status / Audit Evaluation:**
+     - Executed dry-run audit: `bun src/cli/index.ts sync:mark-published --from UNSET --to "Draft published" --limit 50 --dry-run`.
+     - Found 210 UNSET rows (including `[PRUEBA]`, `[TESTE]`, unmerged translation stubs, and Title/Toggle structural rows). Without `--all`, `buildHierarchyPlan` emits only 15 canonical pages vs 138 with `--all`.
+     - **Decision:** A blind automated `--from UNSET` live backfill would promote internal draft/test pages to production. Retiring `--all` in `scripts/sync-to-comapeo-docs.sh` is held pending editorial status curation per [`docs/editorial-review-workflow.md`](docs/editorial-review-workflow.md).
    - **Files involved:**
      - `src/cli/mark-published.ts`
      - `scripts/sync-to-comapeo-docs.sh`
    - **Acceptance Criteria:**
-     - Execute a dry-run check: `bun src/cli/index.ts sync:mark-published --from UNSET --to "Draft published" --dry-run` to verify list of affected canonical pages.
-     - Execute live run with rollback logging: `bun src/cli/index.ts sync:mark-published --from UNSET --to "Draft published" --live`.
-     - Update `scripts/sync-to-comapeo-docs.sh` to remove `--all` from the pull command.
-     - Verify downstream `docs:pull` retrieves all required canonical docs under the active status gate.
+     - [x] Execute a dry-run check: `bun src/cli/index.ts sync:mark-published --from UNSET --to "Draft published" --dry-run` to verify list of affected canonical pages.
+     - [ ] Execute live run with rollback logging once editors curate status: `bun src/cli/index.ts sync:mark-published --from UNSET --to "Draft published" --live`.
+     - [ ] Update `scripts/sync-to-comapeo-docs.sh` to remove `--all` from the pull command once status backfill is complete.
+     - [ ] Verify downstream `docs:pull` retrieves all required canonical docs under the active status gate.
 
 ---
 
@@ -55,7 +59,8 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 
 1. **Fill or unlink placeholder pages**
    - **Issue:** Troubleshooting pages (e.g., `troubleshooting-mapping-with-collaborators`) are marked "Content coming soon" in Notion, yet 9+ pages link to their anchors (`#exchange-problems` ×9, `#custom-category-set-problems` ×9, `#solution-check-app-permissions` ×5).
-   - **Action needed (Notion):** Either draft the actual content or remove the incoming links in Notion until the content exists.
+   - **Audit / Pipeline Status:** Verified via `docs:pull` that `KNOWN_DOC_ANCHOR_ALIASES` in `src/lib/links.ts` cleanly suppresses dead anchor warnings until editors populate target content.
+   - **Action needed (Notion):** Either draft the actual content or remove the incoming links in Notion once final content exists.
 
 2. **Fix mislabeled EN content row**
    - **Issue:** The English `troubleshooting-mapping-with-collaborators` page carries a Spanish title ("Solución de Problemas: Mapeo con Colaboradores") and the English introduction contains a Spanish heading ("Sitio web de CoMapeo").
@@ -63,6 +68,7 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 
 3. **Clean up base64-pasted image in Notion**
    - **Issue:** Page `3591b081-62d5-802d-840d-cd6344fe95db` ("Using Exchange over the Internet with Remote Archive") contains a raw 581 KB base64 string pasted directly into block `3591b081-62d5-8182-81fc-d736ed109576`.
+   - **Audit Status:** Confirmed via page block inspection. Block ID `3591b081-62d5-8182-81fc-d736ed109576` holds a 581,058-character `data:image/png;base64` URI.
    - **Action needed (Notion):** Replace the pasted base64 data with a standard Notion file/image upload.
 
 4. **Cosmetic link label fix**
@@ -71,13 +77,27 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 
 5. **Status vocabulary catch-up & Publish gate**
    - **Issue:** Only ~36 pages carry an active Publish Status ("Draft published") while the site publishes ~100 docs. Consumers currently use `docs:pull --all` as a workaround.
+   - **Audit Status:** Evaluated 210 UNSET pages. Blind backfill risks publishing test pages.
    - **Action needed (Pipeline / Editors):**
-     1. Backfill statuses via `sync:mark-published --from UNSET` or have editors approve pages per [`docs/editorial-review-workflow.md`](docs/editorial-review-workflow.md).
+     1. Backfill statuses via `sync:mark-published --from UNSET` after editors approve pages per [`docs/editorial-review-workflow.md`](docs/editorial-review-workflow.md).
      2. Once Notion statuses are accurate, flip the default publish gate in `scripts/sync-to-comapeo-docs.sh` to active-only and retire `--all`.
 
 ---
 
 ## Completed Milestones (Reference)
+
+- [x] **Track B2: Update `comapeo-docs` Deploy Production Workflow** ([comapeo-docs#185](https://github.com/digidem/comapeo-docs/issues/185), [comapeo-docs#215](https://github.com/digidem/comapeo-docs/pull/215)):
+  - Updated `.github/workflows/deploy-production.yml` in `comapeo-docs` to replace legacy `bun run notionStatus:publish-production` with `bun .pipeline/src/cli/index.ts sync:mark-published --from "Draft published" --to "Published" --live`.
+  - Pipeline checkout is pinned to commit revision (`81e536fb5fb100099a9236e69f7323fce6008cca`) with `continue-on-error: true` so pipeline checkout or status update failures are non-blocking to production site deployments.
+  - Added step outcome check to deployment summary to distinguish between successful status write-back and skipped/failed write-back.
+  - Fixed pre-existing `comapeo-docs` CI issues: patched `image-size` to `2.0.4` resolving Trivy CVE-2025-71329 and CVE-2025-71330, and fixed sharp build in `deploy-pr-preview.yml`.
+
+- [x] **Track B1: Direct Database Query Fallback in `sync:mark-published`** ([#18](https://github.com/digidem/comapeo-content-pipeline/pull/18)):
+  - Added direct Notion database query fallback in `src/cli/mark-published.ts` using `client.queryDatabase` when `output/manifest.json` is absent on disk (enabling standalone CI runs in downstream consumer repos).
+  - Status casing normalization via `CANONICAL_NOTION_STATUSES` mapping.
+  - Page element filtering to only process active content pages (`Element Type` == 'Page' / 'Title' / 'Toggle').
+  - Joined multi-segment Notion rich text titles for accurate dry-run reporting and rollback logging.
+  - 864/864 Vitest tests passing, clean typecheck and lint.
 
 - [x] **AI Translation Generator (PT & ES)** (`feat/ai-translation-generator`):
   - Inverted block translation engine (`src/lib/ai-translator.ts`, `src/lib/block-translator.ts`, `src/lib/page-translator.ts`) with CoMapeo bilingual domain glossary (`config/glossary.json`).
