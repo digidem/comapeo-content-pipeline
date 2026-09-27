@@ -90,9 +90,22 @@ export interface MarkPublishedOptions {
   outDir?: string;
   limit?: number;
   locale?: string;
+  filterTitle?: string;
+  excludeTitle?: string;
   token?: string;
   databaseId?: string;
   dataSourceId?: string;
+}
+
+export function createRegexFilter(pattern: string | undefined, optionName: string): RegExp | null {
+  if (!pattern) return null;
+  try {
+    return new RegExp(pattern, "i");
+  } catch (err) {
+    throw new MarkPublishedError(
+      `Invalid regular expression for ${optionName} ("${pattern}"): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 export interface MarkPublishedResult {
@@ -160,6 +173,9 @@ export async function markPublished(
   const isDryRun = options.dryRun ?? (!options.live);
   const shouldSetDate = options.setPublishedDate ?? (toStatus.toLowerCase() === "published");
 
+  const filterTitleRegex = createRegexFilter(options.filterTitle, "--filter-title");
+  const excludeTitleRegex = createRegexFilter(options.excludeTitle, "--exclude-title");
+
   let client = deps?.client;
   let candidateDocs: Array<{
     page_id: string;
@@ -186,14 +202,23 @@ export async function markPublished(
     }
 
     totalDocsCount = manifest.docs.length;
-    // Filter candidate docs matching fromStatus and optional locale
+    // Filter candidate docs matching element_type, fromStatus, optional locale, and title regexes
     candidateDocs = manifest.docs
       .filter((doc) => {
+        if (!isContentPage(doc.element_type || "")) {
+          return false;
+        }
         const current = (doc.drafting_status ?? "").trim();
         if (fromStatus.toUpperCase() === "UNSET" ? current !== "" : current.toLowerCase() !== fromStatus.toLowerCase()) {
           return false;
         }
         if (options.locale && doc.locale.toLowerCase() !== options.locale.toLowerCase()) {
+          return false;
+        }
+        if (filterTitleRegex && !filterTitleRegex.test(doc.title)) {
+          return false;
+        }
+        if (excludeTitleRegex && excludeTitleRegex.test(doc.title)) {
           return false;
         }
         return true;
@@ -282,6 +307,12 @@ export async function markPublished(
           return false;
         }
         if (options.locale && doc.locale.toLowerCase() !== options.locale.toLowerCase()) {
+          return false;
+        }
+        if (filterTitleRegex && !filterTitleRegex.test(doc.title)) {
+          return false;
+        }
+        if (excludeTitleRegex && excludeTitleRegex.test(doc.title)) {
           return false;
         }
         return true;
@@ -514,6 +545,8 @@ Options:
     outDir: args.out,
     limit,
     locale: args.locale,
+    filterTitle: args["filter-title"],
+    excludeTitle: args["exclude-title"],
     token: args.token,
     databaseId: args["database-id"],
     dataSourceId: args["data-source-id"],

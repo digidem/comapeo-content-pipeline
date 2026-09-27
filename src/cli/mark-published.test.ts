@@ -16,6 +16,7 @@ function createMockManifest(docs: Array<{
   title: string;
   locale: string;
   drafting_status?: string | null;
+  element_type?: string | null;
 }>): ContentManifest {
   return {
     schema_version: "1.0",
@@ -31,7 +32,7 @@ function createMockManifest(docs: Array<{
       locale: d.locale,
       section: "test-section",
       section_order: index,
-      element_type: "Page",
+      element_type: d.element_type ?? "Page",
       drafting_status: d.drafting_status ?? null,
       slug: `slug-${d.page_id}`,
       docusaurus_id: `test-section/slug-${d.page_id}`,
@@ -448,6 +449,102 @@ describe("markPublished", () => {
     expect(result.updatedCount).toBe(0);
     expect(updatePageStatusMock).not.toHaveBeenCalled();
   });
+
+  it("filters out non-content pages (Title, Toggle) from manifest", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "Content Page", locale: "en", drafting_status: "Draft published", element_type: "Page" },
+      { page_id: "p2", title: "Empty Type Page", locale: "en", drafting_status: "Draft published", element_type: "" },
+      { page_id: "p3", title: "Section Header", locale: "en", drafting_status: "Draft published", element_type: "Title" },
+      { page_id: "p4", title: "Collapsible Section", locale: "en", drafting_status: "Draft published", element_type: "Toggle" },
+    ]);
+    writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+
+    const result = await markPublished({
+      manifestPath,
+      outDir: tempDir,
+    });
+
+    expect(result.targetedDocs).toBe(2);
+    expect(result.targets.map((t) => t.pageId)).toEqual(["p1", "p2"]);
+  });
+
+  it("filters candidate docs by filterTitle regex", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "Getting Started with Sync", locale: "en", drafting_status: "Draft published" },
+      { page_id: "p2", title: "Installation Guide", locale: "en", drafting_status: "Draft published" },
+      { page_id: "p3", title: "Troubleshooting", locale: "en", drafting_status: "Draft published" },
+    ]);
+    writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+
+    const result = await markPublished({
+      manifestPath,
+      outDir: tempDir,
+      filterTitle: "guide",
+    });
+
+    expect(result.targetedDocs).toBe(1);
+    expect(result.targets[0].title).toBe("Installation Guide");
+  });
+
+  it("excludes candidate docs by excludeTitle regex", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "Official Documentation", locale: "en", drafting_status: "Draft published" },
+      { page_id: "p2", title: "[PRUEBA] Spanish Test", locale: "es", drafting_status: "Draft published" },
+      { page_id: "p3", title: "[TESTE] Portuguese Scratch", locale: "pt", drafting_status: "Draft published" },
+    ]);
+    writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+
+    const result = await markPublished({
+      manifestPath,
+      outDir: tempDir,
+      excludeTitle: "^\\[(PRUEBA|TESTE)\\]",
+    });
+
+    expect(result.targetedDocs).toBe(1);
+    expect(result.targets[0].title).toBe("Official Documentation");
+  });
+
+  it("combines filterTitle and excludeTitle correctly", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "Setup Guide", locale: "en", drafting_status: "Draft published" },
+      { page_id: "p2", title: "Setup Guide [DRAFT]", locale: "en", drafting_status: "Draft published" },
+      { page_id: "p3", title: "Reference Manual", locale: "en", drafting_status: "Draft published" },
+    ]);
+    writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+
+    const result = await markPublished({
+      manifestPath,
+      outDir: tempDir,
+      filterTitle: "guide",
+      excludeTitle: "\\[DRAFT\\]",
+    });
+
+    expect(result.targetedDocs).toBe(1);
+    expect(result.targets[0].pageId).toBe("p1");
+  });
+
+  it("throws MarkPublishedError when invalid regex pattern is provided for title filters", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "Sample", locale: "en", drafting_status: "Draft published" },
+    ]);
+    writeFileSync(manifestPath, JSON.stringify(manifest), "utf-8");
+
+    await expect(
+      markPublished({
+        manifestPath,
+        outDir: tempDir,
+        filterTitle: "[unclosed",
+      }),
+    ).rejects.toThrow(MarkPublishedError);
+
+    await expect(
+      markPublished({
+        manifestPath,
+        outDir: tempDir,
+        excludeTitle: "(unclosed-group",
+      }),
+    ).rejects.toThrow(MarkPublishedError);
+  });
 });
 
 describe("cmdMarkPublished", () => {
@@ -617,6 +714,59 @@ describe("cmdMarkPublished", () => {
       });
     });
 
+    it("applies filterTitle and excludeTitle to database query results", async () => {
+      const queryDatabaseMock = vi.fn().mockResolvedValue({
+        results: [
+          {
+            id: "db-1",
+            properties: {
+              "Content elements": { title: [{ plain_text: "User Guide" }] },
+              Language: { select: { name: "English" } },
+              "Publish Status": { select: { name: "Draft published" } },
+              "Element Type": { select: { name: "Page" } },
+            },
+          },
+          {
+            id: "db-2",
+            properties: {
+              "Content elements": { title: [{ plain_text: "User Guide [PRUEBA]" }] },
+              Language: { select: { name: "English" } },
+              "Publish Status": { select: { name: "Draft published" } },
+              "Element Type": { select: { name: "Page" } },
+            },
+          },
+          {
+            id: "db-3",
+            properties: {
+              "Content elements": { title: [{ plain_text: "Overview" }] },
+              Language: { select: { name: "English" } },
+              "Publish Status": { select: { name: "Draft published" } },
+              "Element Type": { select: { name: "Page" } },
+            },
+          },
+        ],
+      });
+
+      const mockClient: StatusUpdateClient = {
+        updatePageStatus: vi.fn(),
+        queryDatabase: queryDatabaseMock,
+      };
+
+      const result = await markPublished(
+        {
+          outDir: tempDir,
+          fromStatus: "Draft published",
+          filterTitle: "guide",
+          excludeTitle: "\\[PRUEBA\\]",
+          dryRun: true,
+        },
+        { client: mockClient },
+      );
+
+      expect(result.targetedDocs).toBe(1);
+      expect(result.targets[0].pageId).toBe("db-1");
+    });
+
     it("throws MarkPublishedError when client does not support queryDatabase and manifest is absent", async () => {
       const mockClient: StatusUpdateClient = {
         updatePageStatus: vi.fn(),
@@ -633,6 +783,34 @@ describe("cmdMarkPublished", () => {
         ),
       ).rejects.toThrow(MarkPublishedError);
     });
+  });
+
+  it("passes --filter-title and --exclude-title flags to markPublished", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "Included Guide", locale: "en", drafting_status: "Draft published" },
+      { page_id: "p2", title: "Excluded Guide [TEST]", locale: "en", drafting_status: "Draft published" },
+    ]);
+    const localManifestPath = join(tempDir, "manifest-filter-test.json");
+    writeFileSync(localManifestPath, JSON.stringify(manifest), "utf-8");
+
+    const updatePageStatusMock = vi.fn().mockResolvedValue({});
+    const mockClient: StatusUpdateClient = {
+      updatePageStatus: updatePageStatusMock,
+    };
+
+    await cmdMarkPublished(
+      {
+        "manifest-path": localManifestPath,
+        out: tempDir,
+        live: "true",
+        "filter-title": "guide",
+        "exclude-title": "\\[TEST\\]",
+      },
+      { client: mockClient },
+    );
+
+    expect(updatePageStatusMock).toHaveBeenCalledTimes(1);
+    expect(updatePageStatusMock).toHaveBeenCalledWith("p1", "Published", expect.any(Object));
   });
 });
 

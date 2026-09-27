@@ -749,6 +749,8 @@ Options:
                           Special value "UNSET" matches null, empty, or whitespace-only
                           Publish Status in Notion.
   --to <status>           Target status for mark-published (default: "Published")
+  --filter-title <regex>  Filter target pages by title regex (case-insensitive)
+  --exclude-title <regex> Exclude target pages by title regex (case-insensitive)
   --live                  Execute live writes for mark-published (default: dry run)
   --dry-run               Force dry-run mode
   --limit <n>             Max pages for sync:full / sync:mark-published
