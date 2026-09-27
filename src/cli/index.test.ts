@@ -10,7 +10,16 @@ interface ExecError {
   stderr?: string | Buffer;
 }
 
-describe("CLI boot and smoke tests", () => {
+const hasBun = (() => {
+  try {
+    execFileSync("bun", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(!hasBun)("CLI boot and smoke tests", () => {
   const cliPath = join(process.cwd(), "src/cli/index.ts");
 
   it("boots cleanly with no arguments and prints usage without TDZ ReferenceError", () => {
@@ -25,7 +34,7 @@ describe("CLI boot and smoke tests", () => {
       });
     } catch (err) {
       const execErr = err as ExecError;
-      exitCode = execErr.status ?? 0;
+      exitCode = execErr.status ?? 1;
       stdout = execErr.stdout?.toString() || "";
       stderr = execErr.stderr?.toString() || "";
     }
@@ -48,7 +57,7 @@ describe("CLI boot and smoke tests", () => {
       });
     } catch (err) {
       const execErr = err as ExecError;
-      exitCode = execErr.status ?? 0;
+      exitCode = execErr.status ?? 1;
       stdout = execErr.stdout?.toString() || "";
       stderr = execErr.stderr?.toString() || "";
     }
@@ -59,7 +68,7 @@ describe("CLI boot and smoke tests", () => {
   });
 });
 
-describe("manifest:generate destination directory handling", () => {
+describe.skipIf(!hasBun)("manifest:generate destination directory handling", () => {
   const cliPath = join(process.cwd(), "src/cli/index.ts");
   let tempDir: string;
 
