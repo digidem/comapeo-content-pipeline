@@ -354,7 +354,7 @@ Options:
   --force                  Bypass pre-update live Notion page status verification.
   --limit <n>              Maximum number of pages to update in this run.
   --locale <locale>        Restrict status update to a specific locale (e.g. en, es, pt).
-  --set-published-date     Set publication date property to today's date (default: true).
+  --set-published-date     Set publication date property to today's date (default: true when --to is Published).
   --no-set-published-date  Do not update the publication date property.
   --published-date <date>  Override publication date (YYYY-MM-DD format).
 `);
