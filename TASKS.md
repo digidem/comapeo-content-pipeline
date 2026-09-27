@@ -79,6 +79,24 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 
 ## Completed Milestones (Reference)
 
+- [x] **CLI Manifest Generation Directory Handling & Smoke Tests** ([#24](https://github.com/digidem/comapeo-content-pipeline/pull/24)):
+  - Fixed `manifest:generate` to automatically create parent destination directories when `--out` specifies a path in a new directory.
+  - Prioritized input directory existence validation before creating output directories to avoid creating empty directories when the input directory is missing.
+  - Added CLI entrypoint boot smoke tests testing real invocation with help, missing args, unknown commands, and directory handling in `src/cli/index.test.ts`.
+  - Added `oven-sh/setup-bun@v2` to GitHub Actions CI workflow to ensure Bun is available for CLI runner smoke tests.
+  - Fully resolved all Greptile review comments on PR #23 and PR #24 via GraphQL review thread resolution.
+
+- [x] **CLI Flag Parsing Hoisting & In-Trash API Support** ([#23](https://github.com/digidem/comapeo-content-pipeline/pull/23)):
+  - Fixed Temporal Dead Zone (TDZ) issue in `parseArgs` by moving `VALUE_FLAGS` constant above `parseArgs` declaration.
+  - Extended `NotionClient.updatePage` to support `in_trash` parameter for soft-deleting Notion pages via the REST API.
+  - Recorded Claude Opus 5.5 release gate and status catch-up consensus in `TASKS.md`.
+
+- [x] **Notion Block Updates & Editorial Content Fixes** ([#22](https://github.com/digidem/comapeo-content-pipeline/pull/22)):
+  - Added `updateBlock` API method to `NotionClient` for modifying Notion block contents.
+  - Fixed Spanish content in English introduction page (restored English title and body).
+  - Unlinked orphaned Spanish stub page from parent container sub-items and soft-deleted it in Notion.
+  - Replaced raw video filename labels with localized video titles across EN, ES, and PT pages.
+
 - [x] **Title Regex Filtering & Element-Type Parity in `sync:mark-published`** ([#21](https://github.com/digidem/comapeo-content-pipeline/pull/21)):
   - Enforced `isContentPage(doc.element_type || "")` parity across manifest-reading and direct database fallback modes (excluding structural rows: Title, Toggle).
   - Added `--filter-title <regex>` and `--exclude-title <regex>` options to both modes with centralized `createRegexFilter` validation and empty argument detection in `parseArgs`.
