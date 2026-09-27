@@ -1,6 +1,36 @@
 # CoMapeo Content Pipeline — Tasks & Backlog
 
-This file is the single source of truth for pending, actionable tasks. Resolved work lives in git log; accepted/won't-fix decisions live in PR discussion and code comments, not here.
+This file is the single source of truth for pending, actionable tasks. Resolved work lives in git log and the completed milestones section below.
+
+---
+
+## Pending Tasks
+
+All remaining tasks require Notion editorial access (content state fixes) or editorial sign-off to finalize the publish gate:
+
+### Notion Editorial Cleanup & Release Gate
+
+1. **Fill or unlink placeholder pages**
+   - **Issue:** Troubleshooting pages (e.g., `troubleshooting-mapping-with-collaborators`) are marked "Content coming soon" in Notion, yet 9+ pages link to their anchors (`#exchange-problems` ×9, `#custom-category-set-problems` ×9, `#solution-check-app-permissions` ×5).
+   - **Action needed (Notion):** Either draft the actual content or remove the incoming links in Notion until the content exists.
+
+2. **Fix mislabeled EN content row**
+   - **Issue:** The English `troubleshooting-mapping-with-collaborators` page carries a Spanish title ("Solución de Problemas: Mapeo con Colaboradores") and the English introduction contains a Spanish heading ("Sitio web de CoMapeo").
+   - **Action needed (Notion):** Update the title and heading to English in Notion.
+
+3. **Clean up base64-pasted image in Notion**
+   - **Issue:** Page `3591b081-62d5-802d-840d-cd6344fe95db` ("Using Exchange over the Internet with Remote Archive") contains a raw 581 KB base64 string pasted directly into block `3591b081-62d5-8182-81fc-d736ed109576`.
+   - **Action needed (Notion):** Replace the pasted base64 data with a standard Notion file/image upload.
+
+4. **Cosmetic link label fix**
+   - **Issue:** The video link on `creating-a-new-observation` (EN+ES) displays as `Video: @document_4997224092760278339_trimmed.mp4`.
+   - **Action needed (Notion):** Provide a human-readable title/label for the Drive link.
+
+5. **Status vocabulary catch-up & Publish gate**
+   - **Issue:** Only ~36 pages carry an active Publish Status ("Draft published") while the site publishes ~100 docs. Consumers currently use `docs:pull --all` as a workaround.
+   - **Action needed (Pipeline / Editors):**
+     1. Backfill statuses via `sync:mark-published --from UNSET` or have editors approve pages per [`docs/editorial-review-workflow.md`](docs/editorial-review-workflow.md).
+     2. Once Notion statuses are accurate, flip the default publish gate in `scripts/sync-to-comapeo-docs.sh` to active-only and retire `--all`.
 
 ---
 
@@ -12,32 +42,26 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
   - Notion write-back (`src/lib/notion-writer.ts`) supporting stub updates and new page creation parented as siblings under container parents with `Publish Status: "Automated translations generated"`.
   - Notion native `custom_emoji` mention preservation (`data-emoji-id` roundtrip).
   - Image block resolution for private Notion S3 URLs and inline base64 data URIs to permanent public asset URLs.
-  - 772 passing unit tests, full verification suite passes, and clean 5/5 merge readiness reviews.
+  - Automated translation rollout for 100% of missing Spanish and Portuguese pages.
+  - Configured production LLM credentials and provider auto-detection (`OPENAI_*`, `DEEPSEEK_*`).
+  - Provided Notion editorial review workflow guide ([`docs/editorial-review-workflow.md`](docs/editorial-review-workflow.md) and live in Notion).
+  - Evaluated Cloudflare Worker integration and maintained CLI operator model for safety/rate-limits.
+  - Handled Notion nested-children depth limit (>2 levels) recursively.
+  - Refined container parent vs child `Sub-item` linking.
 
----
+- [x] **Internal Links, Slugs, and Anchors Healing** (#16):
+  - Automated slug aliasing (`KNOWN_SLUG_ALIASES` in `src/lib/links.ts`) mapping stale localized slugs to canonical published English slugs.
+  - Automated link healing for nested markdown link anomalies, `/doc/` route typos, missing leading slashes, and Notion ID fallbacks.
+  - Target-scoped cross-language heading anchor resolution (`KNOWN_DOC_ANCHOR_ALIASES`).
+  - Archived orphaned duplicate draft toggle row in Notion.
 
-## Pending Tasks
+- [x] **Repo Housekeeping & Notion Status Write-Back** (#15, #16):
+  - Moved status write-back ownership into this pipeline via CLI `sync:mark-published` (`src/cli/mark-published.ts`) with `--dry-run`, rollback logging, and non-blocking failure semantics ([comapeo-docs#185](https://github.com/digidem/comapeo-docs/issues/185)).
+  - Supported `UNSET` status backfill for pages without explicit Publish Status.
+  - Decommissioned legacy `scripts/notion-fetch/` in comapeo-docs for PR previews ([comapeo-docs#187](https://github.com/digidem/comapeo-docs/issues/187)).
 
-### 1. AI Translation Generator — Follow-ups & Rollout
-- [x] **Run initial batch translation for missing pages**: Execute `bun scripts/translate-missing.ts --all --apply --write-notion` across remaining missing Portuguese and Spanish documentation pages to populate Notion with initial translations. (Completed: 100% missing pages translated, synced to Notion with `Publish Status: "Automated translations generated"`, and registered in manifest).
-- [x] **Configure production LLM credentials**: Document and provision production OpenAI / DeepSeek v4 API credentials (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`, `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`) alongside Poolside Laguna testing credentials (`POOLSIDE_API_KEY`), `.env.example`, and CLI provider auto-detection.
-- [x] **Notion editor review workflow**: Provide editorial guidelines for reviewers to inspect pages marked `Publish Status: "Automated translations generated"`, make any human adjustments, and transition them to `Draft published` / `Published`. Guide: [`docs/editorial-review-workflow.md`](docs/editorial-review-workflow.md) and live in Notion under `90+ - Miscellaneous` (Order: 94).
-- [x] **Evaluate Worker integration (optional)**: Decide whether translation generation should remain an on-demand CLI operator tool or be exposed via a Cloudflare Worker admin route (e.g. `POST /admin/translate/missing`) or triggered on English page publication. (Completed: ADR in [`plans/2026-09-17-worker-translation-integration-evaluation.md`](plans/2026-09-17-worker-translation-integration-evaluation.md) concludes maintaining CLI operator workflow; rejected Worker/webhook coupling due to timeouts, rate limits, and editorial safety locks).
-- [x] **Handle Notion nested-children depth limit (>2 levels)**: In `notion-writer.ts:prepareBlocksForNotion`, recursively append grandchildren in follow-up `appendBlockChildren` requests if deeply nested lists/toggles exceed Notion API's 2-level embed limit during batch rollout (`splitForNotionDepth` & `appendBlockTree`).
-- [x] **Refine translation Sub-item linking under container parents**: Review container parent vs English child `Sub-item` two-way relation linking to decide whether container-parented pages should skip linking to the English child's `Sub-item` to minimize diagnostic warnings in `buildHierarchyPlan` (`isContainerMode` sibling scoping & manifest updater).
-
-### 2. Notion Editorial Cleanup (Content-State Fixes — Editor Access Needed)
-Full-output production build: **46 broken links + 182 broken anchor refs across 35 pages** (warnings only; build succeeds). Traced to Notion content state:
-- [ ] **Fill or unlink placeholder pages**: `troubleshooting-mapping-with-collaborators` (and other troubleshooting pages) are "Content coming soon" in Notion, yet 9+ pages link into their anchors (`#exchange-problems` ×9, `#custom-category-set-problems` ×9, `#solution-check-app-permissions` ×5). Either write the content or remove the links until it exists.
-- [x] **Fix stale localized-slug links**: Resolved programmatically in pipeline via `KNOWN_SLUG_ALIASES` in `src/lib/links.ts` mapping stale localized slugs (`entiende-como-funciona-el-intercambio`, `seleccion-de-roles-y-equipos-de-dispositivos`, `comprende-las-bases-sobre-proyectos`, `using-a-remote-archive`, `edita-observaciones`, etc.) to canonical published English slugs.
-- [x] **Fix authoring errors**: Automated healing in `src/lib/links.ts` for nested markdown link anomalies (`[Title]([Title](url) /docs/target)`), singular `/doc/` route typos, missing leading slashes, dead Notion hex ID fallback from label text, and target-scoped cross-language heading anchor resolution (`KNOWN_DOC_ANCHOR_ALIASES`).
-- [ ] **Mislabeled row**: The EN `troubleshooting-mapping-with-collaborators` page carries a Spanish title ("Solución de Problemas: Mapeo con Colaboradores"); the EN introduction contains a Spanish heading ("Sitio web de CoMapeo").
-- [ ] **Clean up base64-pasted image in Notion**: Page `3591b081-62d5-802d-840d-cd6344fe95db` ("Using Exchange over the Internet with Remote Archive") contains a raw 581 KB base64 string pasted into block `3591b081-62d5-8182-81fc-d736ed109576`. Replace with a standard Notion file upload.
-- [ ] **Cosmetic**: Give the `Video: @document_4997224092760278339_trimmed.mp4` Drive link on `creating-a-new-observation` (EN+ES) a human-readable label.
-- [x] **Duplicate EN Toggle rows**: Archived orphaned duplicate draft toggle row `26a1b081-62d5-80d3-b2af-fe9513c4106f` ("Managing Data Privacy & Security") in Notion via `scripts/notion-cleanup.ts` (`deleteBlock`), preserving canonical active toggle `2331b081-62d5-8094-9d5c-d0bff969ccd4` ("Managing Data Privacy and Security").
-- [ ] **Status vocabulary catch-up**: Only 36 pages carry an active Publish Status ("Draft published") while the site publishes ~100 docs — consumers must keep using `docs:pull --all` until editors set real statuses. Once statuses are trustworthy, flip the default publish gate to active-only and retire `--all` from the sync script.
-
-### 3. Repo Housekeeping (`comapeo-docs`)
-- [ ] **Execution plan for remaining comapeo-docs items**: [`plans/2026-07-14-remaining-work-execution-plan.md`](plans/2026-07-14-remaining-work-execution-plan.md). Read before starting either item below.
-- [x] **`comapeo-docs`'s "Update Notion status to Published" deploy step is broken**: Move status write-back ownership into this pipeline instead of patching `comapeo-docs`. Implemented write-back primitive CLI `sync:mark-published` (`src/cli/mark-published.ts`) with `--dry-run` default, rollback logging, and non-blocking failure semantics. Design doc: [`plans/2026-07-14-notion-status-writeback-design.md`](plans/2026-07-14-notion-status-writeback-design.md). Tracked as [comapeo-docs#185](https://github.com/digidem/comapeo-docs/issues/185).
-- [x] **`scripts/notion-fetch/` (comapeo-docs) decommissioning**: Migrate PR previews to use this pipeline's output instead of legacy fetch scripts. Design doc: [`plans/2026-07-14-pr-preview-pipeline-migration-design.md`](plans/2026-07-14-pr-preview-pipeline-migration-design.md). Tracked as [comapeo-docs#187](https://github.com/digidem/comapeo-docs/issues/187).
+- [x] **Pipeline Hardening & API-Level Status Filtering** (#1):
+  - Centralized Notion property constants, element types, and locales in `src/lib/notion-properties.ts`.
+  - Implemented API-level exclusion filter for `DEAD_STATUSES` ("Remove", "Unplublished").
+  - Worker/CLI parity for markdown conversion and asset uploading.
+  - Full automated regression test suite (855+ tests passing).
