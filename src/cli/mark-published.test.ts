@@ -544,6 +544,22 @@ describe("markPublished", () => {
         excludeTitle: "(unclosed-group",
       }),
     ).rejects.toThrow(MarkPublishedError);
+
+    await expect(
+      markPublished({
+        manifestPath,
+        outDir: tempDir,
+        filterTitle: "true",
+      }),
+    ).rejects.toThrow("requires a non-empty regular expression");
+
+    await expect(
+      markPublished({
+        manifestPath,
+        outDir: tempDir,
+        excludeTitle: "true",
+      }),
+    ).rejects.toThrow("requires a non-empty regular expression");
   });
 });
 
@@ -563,6 +579,12 @@ describe("cmdMarkPublished", () => {
     await cmdMarkPublished({ help: "true" });
     expect(consoleSpy).toHaveBeenCalledWith(
       expect.stringContaining('Special value "UNSET" matches pages where Publish Status'),
+    );
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining("--filter-title <regex>"),
+    );
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining("--exclude-title <regex>"),
     );
     consoleSpy.mockRestore();
   });
@@ -811,6 +833,24 @@ describe("cmdMarkPublished", () => {
 
     expect(updatePageStatusMock).toHaveBeenCalledTimes(1);
     expect(updatePageStatusMock).toHaveBeenCalledWith("p1", "Published", expect.any(Object));
+  });
+
+  it("rejects --exclude-title without value in cmdMarkPublished", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+
+    await cmdMarkPublished({
+      out: tempDir,
+      "exclude-title": "true",
+      live: "true",
+    });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Option --exclude-title requires a non-empty regular expression"),
+    );
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    errorSpy.mockRestore();
+    exitSpy.mockRestore();
   });
 });
 

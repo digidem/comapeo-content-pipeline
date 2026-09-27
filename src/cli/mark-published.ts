@@ -98,7 +98,12 @@ export interface MarkPublishedOptions {
 }
 
 export function createRegexFilter(pattern: string | undefined, optionName: string): RegExp | null {
-  if (!pattern) return null;
+  if (pattern === undefined || pattern === null || pattern === "") return null;
+  if (pattern === "true") {
+    throw new MarkPublishedError(
+      `Option ${optionName} requires a non-empty regular expression string value (e.g. ${optionName} "^\\[(PRUEBA|TESTE)\\]").`,
+    );
+  }
   try {
     return new RegExp(pattern, "i");
   } catch (err) {
@@ -495,6 +500,8 @@ Options:
                            Special value "UNSET" matches pages where Publish Status
                            is null, empty, or whitespace-only in Notion.
   --to <status>            Target status to apply (default: "Published").
+  --filter-title <regex>   Filter target pages by title regex (case-insensitive).
+  --exclude-title <regex>  Exclude target pages by title regex (case-insensitive).
   --manifest-path <file>   Path to manifest.json (default: ./output/manifest.json).
   --manifest-version <ts>  Versioned manifest identifier (manifest-<ts>.json).
   --out <dir>              Output directory for rollback logs (default: ./output).
@@ -586,9 +593,10 @@ Options:
       }
     }
   } catch (err) {
-    if (err instanceof MarkPublishedError) {
+    if (err instanceof MarkPublishedError || (err instanceof Error && err.name === "MarkPublishedError")) {
       console.error(`[sync:mark-published] Error: ${err.message}`);
       process.exit(1);
+      return;
     }
     throw err;
   }
