@@ -8,17 +8,8 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 
 ### Engineering & Pipeline Improvements (Dev Agent Backlog)
 
-1. **P0: Real Docusaurus/MDX Canary Build Gate in CI**
-   - **Context:** In `.github/workflows/ci.yml`, CI tests currently use regex checks (e.g., bare `style=` attributes) to approximate MDX safety because the consumer repo is external. Malformed MDX or invalid JSX expressions can pass pipeline tests but break the production Docusaurus build in `comapeo-docs`.
-   - **Files involved:**
-     - `.github/workflows/ci.yml`
-     - `package.json`
-     - `scripts/validate-mdx.ts` (or `src/lib/mdx-validator.ts` + unit tests)
-   - **Acceptance Criteria:**
-     - A validation script/test parses all emitted markdown files (`output/docs/**/*.md` or golden fixtures) using an actual MDX parser (e.g. `@mdx-js/mdx` or `@docusaurus/core` compiler harness).
-     - Fails with exit code 1 and line numbers if unescaped JSX brackets `<...>`, bare HTML attributes, or broken component tags are found.
-     - Wires into `npm test` or a dedicated `npm run validate:mdx` step in `.github/workflows/ci.yml`.
-     - Zero false positives on valid documentation blocks (code fences, admonitions, HTML tables).
+- [x] **P0: Real Docusaurus/MDX Canary Build Gate in CI** ([#19](https://github.com/digidem/comapeo-content-pipeline/pull/19))
+   - **Completed:** Added real MDX AST parsing and React DOM Server SSR validation (`scripts/validate-mdx.ts`, `test/validate-mdx.test.ts`). Catches unescaped JSX brackets `<...>`, string/bare `style=` attributes, and broken tags with line and column accuracy. Wires into `npm test`, `npm run validate:mdx`, and `.github/workflows/ci.yml`. Zero false positives on code fences, admonitions, tables, and frontmatter across all golden fixtures and emitted docs.
 
 - [x] **P1: Align Agent Workflow & Tooling Specs in `AGENTS.md`**
    - **Completed:** Formalized Antigravity/Gemini and Claude Code workflows, updated subagent delegation rules, and configured the autonomous merge policy (autonomous merge on consensus + clean CI/Greptile, only prompting human if not confident).
@@ -85,6 +76,12 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 ---
 
 ## Completed Milestones (Reference)
+
+- [x] **Real Docusaurus/MDX Canary Build Gate in CI** ([#19](https://github.com/digidem/comapeo-content-pipeline/pull/19)):
+  - Added real MDX AST parsing and React DOM Server SSR validation (`scripts/validate-mdx.ts`, `test/validate-mdx.test.ts`).
+  - Catches unescaped JSX brackets `<...>`, string/bare `style=` attributes, and broken tags with line and column accuracy.
+  - Wires into `npm test`, `npm run validate:mdx`, and `.github/workflows/ci.yml`.
+  - Zero false positives on code fences, admonitions, tables, and frontmatter across all golden fixtures and emitted docs.
 
 - [x] **Track B2: Update `comapeo-docs` Deploy Production Workflow** ([comapeo-docs#185](https://github.com/digidem/comapeo-docs/issues/185), [comapeo-docs#215](https://github.com/digidem/comapeo-docs/pull/215)):
   - Updated `.github/workflows/deploy-production.yml` in `comapeo-docs` to replace legacy `bun run notionStatus:publish-production` with `bun .pipeline/src/cli/index.ts sync:mark-published --from "Draft published" --to "Published" --live`.
