@@ -34,6 +34,25 @@ import {
 import { cmdMarkPublished } from "./mark-published.js";
 import { cmdValidateEditorial } from "./editorial-diagnostics.js";
 
+const VALUE_FLAGS = new Set([
+  "out",
+  "input",
+  "manifest-path",
+  "manifest-version",
+  "from",
+  "to",
+  "filter-title",
+  "exclude-title",
+  "limit",
+  "locale",
+  "published-date",
+  "page",
+  "filter",
+  "token",
+  "database-id",
+  "data-source-id",
+]);
+
 const command = process.argv[2];
 const args = parseArgs(process.argv.slice(3));
 
@@ -344,10 +363,14 @@ async function cmdSyncFull(args: Record<string, string>) {
 
 async function cmdManifestGenerate(args: Record<string, string>) {
   const input = args.input || join(process.cwd(), "output");
-  const outFile = args.out || join(input, "manifest.json");
+  let outFile = args.out || join(input, "manifest.json");
 
   // Read all metadata files in input dir
   const fs = await import("node:fs");
+
+  if (fs.existsSync(outFile) && fs.statSync(outFile).isDirectory()) {
+    outFile = join(outFile, "manifest.json");
+  }
 
   if (!fs.existsSync(input)) {
     console.error(`Error: Input directory not found: ${input}`);
@@ -686,25 +709,6 @@ function createClient(): NotionClient {
     maxRps: parseInt(process.env.MAX_NOTION_RPS || "3", 10),
   });
 }
-
-const VALUE_FLAGS = new Set([
-  "out",
-  "input",
-  "manifest-path",
-  "manifest-version",
-  "from",
-  "to",
-  "filter-title",
-  "exclude-title",
-  "limit",
-  "locale",
-  "published-date",
-  "page",
-  "filter",
-  "token",
-  "database-id",
-  "data-source-id",
-]);
 
 export function parseArgs(raw: string[]): Record<string, string> {
   const result: Record<string, string> = {};

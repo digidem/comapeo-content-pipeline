@@ -535,6 +535,19 @@ describe("NotionClient write operations", () => {
     expect(body.properties["Publish Status"].select.name).toBe("Automated translations generated");
   });
 
+  it("updatePage supports in_trash parameter for soft deletion", async () => {
+    const mockPage = { id: "page-123", object: "page", in_trash: true };
+    fetchMock.mockResolvedValueOnce(okResponse(mockPage));
+
+    const result = await client.updatePage("page-123", { in_trash: true });
+
+    expect(result).toEqual(mockPage);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.notion.com/v1/pages/page-123");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body)).toEqual({ in_trash: true });
+  });
+
   it("appendBlockChildren sends PATCH to /v1/blocks/{blockId}/children in chunks of 100", async () => {
     // 150 blocks should be chunked into 2 calls (100 + 50)
     const blocks = Array.from({ length: 150 }, (_, i) => ({
