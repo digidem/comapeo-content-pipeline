@@ -451,6 +451,16 @@ describe("markPublished", () => {
 });
 
 describe("cmdMarkPublished", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "cmd-mark-pub-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
   it("prints help and returns early when --help is passed", async () => {
     const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     await cmdMarkPublished({ help: "true" });
@@ -467,5 +477,42 @@ describe("cmdMarkPublished", () => {
       expect.stringContaining('Special value "UNSET" matches pages where Publish Status'),
     );
     consoleSpy.mockRestore();
+  });
+
+  it("prints help and returns early when -h is passed via positional argument", async () => {
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await cmdMarkPublished({ _: JSON.stringify(["-h"]) });
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Special value "UNSET" matches pages where Publish Status'),
+    );
+    consoleSpy.mockRestore();
+  });
+
+  it("respects --no-set-published-date to prevent updating publication date", async () => {
+    const manifest = createMockManifest([
+      { page_id: "p1", title: "Date Page", locale: "en", drafting_status: "Draft published" },
+    ]);
+    const localManifestPath = join(tempDir, "manifest-date-test.json");
+    writeFileSync(localManifestPath, JSON.stringify(manifest), "utf-8");
+
+    const updatePageStatusMock = vi.fn().mockResolvedValue({});
+    const mockClient: StatusUpdateClient = {
+      updatePageStatus: updatePageStatusMock,
+    };
+
+    await cmdMarkPublished(
+      {
+        "manifest-path": localManifestPath,
+        out: tempDir,
+        live: "true",
+        "no-set-published-date": "true",
+      },
+      { client: mockClient },
+    );
+
+    expect(updatePageStatusMock).toHaveBeenCalledWith("p1", "Published", {
+      setPublishedDate: false,
+      publishedDate: undefined,
+    });
   });
 });

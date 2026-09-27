@@ -325,7 +325,17 @@ export async function cmdMarkPublished(
   args: Record<string, string>,
   deps?: { client?: StatusUpdateClient },
 ): Promise<void> {
-  if (args.help === "true" || args.h === "true" || args.help === "" || args.h === "") {
+  const positional = JSON.parse(args._ || "[]") as string[];
+  const isHelp =
+    args.help === "true" ||
+    args.h === "true" ||
+    args.help === "" ||
+    args.h === "" ||
+    positional.includes("-h") ||
+    positional.includes("--help") ||
+    positional.includes("help");
+
+  if (isHelp) {
     console.log(`Usage: pnpm pipeline sync:mark-published [options]
 
 Transitions pages in the manifest from a pre-published status to a published status.
@@ -363,7 +373,13 @@ Options:
   }
 
   let setPublishedDate: boolean | undefined;
-  if (args["set-published-date"] !== undefined) {
+  if (
+    args["no-set-published-date"] === "true" ||
+    args["no-set-published-date"] === "" ||
+    args["set-published-date"] === "false"
+  ) {
+    setPublishedDate = false;
+  } else if (args["set-published-date"] !== undefined) {
     setPublishedDate = args["set-published-date"] !== "false";
   }
 
