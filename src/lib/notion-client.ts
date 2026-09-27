@@ -503,6 +503,7 @@ export class NotionClient {
     params: {
       properties?: Record<string, unknown>;
       archived?: boolean;
+      in_trash?: boolean;
     },
   ): Promise<NotionPage> {
     return this.request<NotionPage>(`/pages/${pageId}`, {

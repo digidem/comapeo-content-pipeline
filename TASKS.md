@@ -47,15 +47,18 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
    - **Audit / Pipeline Status:** Verified via `docs:pull` that `KNOWN_DOC_ANCHOR_ALIASES` in `src/lib/links.ts` cleanly suppresses dead anchor warnings until editors populate target content.
    - **Action needed (Notion):** Either draft the actual content or remove the incoming links in Notion once final content exists.
 
-2. **Fix mislabeled EN content row**
-   - **Issue:** The English introduction contained a Spanish heading ("Sitio web de CoMapeo") and paragraph.
-   - **Resolution (Completed via Notion API):** Updated blocks `27d1b081-62d5-80dc-a09c-e14da19b77bc` and `2871b081-62d5-809a-87b1-de6c3f3a6761` to English ("CoMapeo Website", "Visit comapeo.app for general information..."). Verified via page sync reflection in markdown.
-   - **Orphan Stub Status:** The Spanish-titled page `3131b081-62d5-8027-aeb1-ca253f17aa67` ("Solución de Problemas: Mapeo con Colaboradores", body `[Insert content here]`) was verified as a sub-item relation under parent `2a71b081-62d5-8039-8caa-fbe0f822d4a5`. Canonical EN page `2a71b081-62d5-809c-8295-f8a3c2d0709c` is already correctly titled in English.
+2. **Fix mislabeled EN content row & archive orphaned stub**
+   - **Issue:** The English introduction contained a Spanish heading ("Sitio web de CoMapeo") and paragraph. In addition, an empty Spanish stub page `3131b081-62d5-8027-aeb1-ca253f17aa67` ("Solución de Problemas: Mapeo con Colaboradores", body `[Insert content here]`) was linked as a child under parent `2a71b081-62d5-8039-8caa-fbe0f822d4a5`.
+   - **Resolution (Completed via Notion API):**
+     - Updated blocks `27d1b081-62d5-80dc-a09c-e14da19b77bc` and `2871b081-62d5-809a-87b1-de6c3f3a6761` to English ("CoMapeo Website", "Visit comapeo.app for general information..."). Verified via page sync reflection in markdown.
+     - Unlinked stub `3131b081-62d5-8027-aeb1-ca253f17aa67` from parent container `2a71b081-62d5-8039-8caa-fbe0f822d4a5`'s `Sub-item` relation (leaving the 4 legitimate EN/PT/ES/PT-automated children).
+     - Soft-deleted stub `3131b081-62d5-8027-aeb1-ca253f17aa67` in Notion via `in_trash: true`.
+     - Regenerated manifest (`output/manifest.json`), confirming 0 remaining references to the stub.
 
 3. **Clean up base64-pasted image in Notion**
    - **Issue:** Page `3591b081-62d5-802d-840d-cd6344fe95db` ("Using Exchange over the Internet with Remote Archive") contains a raw 581 KB base64 string pasted directly into block `3591b081-62d5-8182-81fc-d736ed109576`.
    - **Audit Status:** Confirmed via page block inspection. Block ID `3591b081-62d5-8182-81fc-d736ed109576` holds a 581,058-character `data:image/png;base64` URI. The Notion REST API does not support uploading binaries directly to Notion AWS S3 (`type: "file"`). The pipeline sync automatically extracts and re-hosts these images to R2 assets.
-   - **Action needed (Notion):** Human editors can drag-and-drop a replacement image in the Notion UI if they wish to clean up Notion's internal block payload.
+   - **Architectural Policy (Claude Opus 5.5 Consensus):** Notion blocks should NOT be pointed to R2 generated URLs to preserve clean separation between editorial source and generated output (avoiding circular dependency). Human editors can drag-and-drop replacement images in the Notion UI when convenient to reduce Notion block payload sizes.
 
 4. **Cosmetic link label fix**
    - **Issue:** The video link on `creating-a-new-observation` displayed raw filename `Video: @document_4997224092760278339_trimmed.mp4`.
@@ -63,10 +66,14 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 
 5. **Status vocabulary catch-up & Publish gate**
    - **Issue:** Only ~36 pages carry an active Publish Status ("Draft published") while the site publishes ~100 docs. Consumers currently use `docs:pull --all` as a workaround.
-   - **Audit Status:** Evaluated 210 UNSET pages. Blind backfill risks publishing test pages.
-   - **Action needed (Pipeline / Editors):**
-     1. Backfill statuses via `sync:mark-published --from UNSET` after editors approve pages per [`docs/editorial-review-workflow.md`](docs/editorial-review-workflow.md).
-     2. Once Notion statuses are accurate, flip the default publish gate in `scripts/sync-to-comapeo-docs.sh` to active-only and retire `--all`.
+   - **Audit Status & Gap Measurement (Claude Opus 5.5 Consensus):**
+     - Measured actual release gap: `docs:pull --all` pulls **138 docs**, while gated `docs:pull` without `--all` pulls only **15 docs** (a drop of 128 docs from the site).
+     - Running a blind bulk backfill risks promoting unreviewed placeholders or test pages into "Draft published".
+     - Dry-run check with `--exclude-title "^\[(PRUEBA|TESTE)\]"` identified 154 backfill candidates (`/tmp/backfill-candidates.txt`).
+   - **Release Gate Decision:**
+     - Retain `--all` in `scripts/sync-to-comapeo-docs.sh` to protect live documentation production.
+     - Provide the 154-page candidate list to editors per [`docs/editorial-review-workflow.md`](docs/editorial-review-workflow.md).
+     - Retire `--all` only when the diff between `docs:pull --all` and gated `docs:pull` reaches 0.
 
 ---
 
