@@ -17,17 +17,23 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 - [x] **P2: Upstream Notion Editorial Diagnostics & Linter Report** ([#20](https://github.com/digidem/comapeo-content-pipeline/pull/20))
    - **Completed:** Added runtime-agnostic linter engine (`src/lib/editorial-linter.ts`), CLI command `bun src/cli/index.ts validate:editorial` (`src/cli/editorial-diagnostics.ts`), and Zod schemas (`EditorialDiagnosticItemSchema`, `EditorialDiagnosticsReportSchema`). Scans all content for broken anchors, oversized base64 data URIs (>10 KB), localized slug drift, and unmapped Notion page references. Generates `output/editorial-diagnostics.json` with console summary table and guidance for editors.
 
-4. **P3: Controlled Publish Status Backfill & Publish Gate Migration**
+- [x] **P3: Controlled Publish Status Filtering & Element-Type Parity** ([#21](https://github.com/digidem/comapeo-content-pipeline/pull/21))
    - **Context:** Consumers are currently forced to pass `docs:pull --all` because only ~36 pages have an explicit Publish Status in Notion.
-   - **Status / Audit Evaluation:**
+   - **Completed Enhancements:**
+     - Enforced `isContentPage(doc.element_type || "")` parity across manifest and direct database fallback modes (excluding non-content structural rows: Title, Toggle).
+     - Added `--filter-title <regex>` and `--exclude-title <regex>` flags to both manifest and live-query modes in `sync:mark-published`, enabling targeted backfills (e.g. `--exclude-title "^\[(PRUEBA|TESTE)\]"`).
+     - Added pre-update live title re-verification in live mode so renamed Notion pages do not bypass exclusions.
+     - Documented title regex options in CLI `--help` and added comprehensive unit test suite (917/917 passing).
+   - **Audit Evaluation & Publish Gate Decision:**
      - Executed dry-run audit: `bun src/cli/index.ts sync:mark-published --from UNSET --to "Draft published" --limit 50 --dry-run`.
-     - Found 210 UNSET rows (including `[PRUEBA]`, `[TESTE]`, unmerged translation stubs, and Title/Toggle structural rows). Without `--all`, `buildHierarchyPlan` emits only 15 canonical pages vs 138 with `--all`.
-     - **Decision:** A blind automated `--from UNSET` live backfill would promote internal draft/test pages to production. Retiring `--all` in `scripts/sync-to-comapeo-docs.sh` is held pending editorial status curation per [`docs/editorial-review-workflow.md`](docs/editorial-review-workflow.md).
+     - Found 210 UNSET rows (including `[PRUEBA]`, `[TESTE]`, unmerged translation stubs). Retiring `--all` in `scripts/sync-to-comapeo-docs.sh` remains held pending editorial status curation per [`docs/editorial-review-workflow.md`](docs/editorial-review-workflow.md).
    - **Files involved:**
      - `src/cli/mark-published.ts`
+     - `src/cli/index.ts`
      - `scripts/sync-to-comapeo-docs.sh`
    - **Acceptance Criteria:**
      - [x] Execute a dry-run check: `bun src/cli/index.ts sync:mark-published --from UNSET --to "Draft published" --dry-run` to verify list of affected canonical pages.
+     - [x] Implement title regex filtering (`--filter-title`, `--exclude-title`) and element-type parity in `sync:mark-published` ([#21](https://github.com/digidem/comapeo-content-pipeline/pull/21)).
      - [ ] Execute live run with rollback logging once editors curate status: `bun src/cli/index.ts sync:mark-published --from UNSET --to "Draft published" --live`.
      - [ ] Update `scripts/sync-to-comapeo-docs.sh` to remove `--all` from the pull command once status backfill is complete.
      - [ ] Verify downstream `docs:pull` retrieves all required canonical docs under the active status gate.
@@ -64,6 +70,12 @@ This file is the single source of truth for pending, actionable tasks. Resolved 
 ---
 
 ## Completed Milestones (Reference)
+
+- [x] **Title Regex Filtering & Element-Type Parity in `sync:mark-published`** ([#21](https://github.com/digidem/comapeo-content-pipeline/pull/21)):
+  - Enforced `isContentPage(doc.element_type || "")` parity across manifest-reading and direct database fallback modes (excluding structural rows: Title, Toggle).
+  - Added `--filter-title <regex>` and `--exclude-title <regex>` options to both modes with centralized `createRegexFilter` validation and empty argument detection in `parseArgs`.
+  - Added pre-update live title re-verification in live mode so renamed Notion pages do not bypass exclusions.
+  - Documented title regex options in CLI `--help` and verified with 33 unit tests (917/917 passing across repo).
 
 - [x] **Upstream Notion Editorial Diagnostics & Linter Report** ([#20](https://github.com/digidem/comapeo-content-pipeline/pull/20)):
   - Added runtime-agnostic linter engine (`src/lib/editorial-linter.ts`), CLI command `bun src/cli/index.ts validate:editorial` (`src/cli/editorial-diagnostics.ts`), and Zod schemas (`EditorialDiagnosticItemSchema`, `EditorialDiagnosticsReportSchema`).
