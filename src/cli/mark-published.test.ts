@@ -515,4 +515,124 @@ describe("cmdMarkPublished", () => {
       publishedDate: undefined,
     });
   });
+
+  describe("queryDatabase fallback when manifest is absent", () => {
+    it("queries Notion database directly when default manifest does not exist", async () => {
+      const updatePageStatusMock = vi.fn().mockResolvedValue({});
+      const queryDatabaseMock = vi.fn().mockResolvedValue({
+        results: [
+          {
+            id: "db-p1",
+            properties: {
+              "Content elements": { title: [{ plain_text: "Live Page 1" }] },
+              Language: { select: { name: "English" } },
+              "Publish Status": { select: { name: "Draft published" } },
+            },
+          },
+          {
+            id: "db-p2",
+            properties: {
+              "Content elements": { title: [{ plain_text: "Live Page 2" }] },
+              Language: { select: { name: "Spanish" } },
+              "Publish Status": { select: { name: "Draft published" } },
+            },
+          },
+        ],
+      });
+
+      const mockClient: StatusUpdateClient = {
+        updatePageStatus: updatePageStatusMock,
+        queryDatabase: queryDatabaseMock,
+      };
+
+      const result = await markPublished(
+        {
+          outDir: tempDir, // manifest.json does not exist in tempDir
+          fromStatus: "Draft published",
+          toStatus: "Published",
+          live: true,
+        },
+        { client: mockClient },
+      );
+
+      expect(queryDatabaseMock).toHaveBeenCalledWith({
+        filter: {
+          property: "Publish Status",
+          select: { equals: "Draft published" },
+        },
+      });
+      expect(result.updatedCount).toBe(2);
+      expect(result.targetedDocs).toBe(2);
+      expect(updatePageStatusMock).toHaveBeenCalledTimes(2);
+      expect(updatePageStatusMock).toHaveBeenCalledWith("db-p1", "Published", {
+        setPublishedDate: true,
+        publishedDate: undefined,
+      });
+      expect(updatePageStatusMock).toHaveBeenCalledWith("db-p2", "Published", {
+        setPublishedDate: true,
+        publishedDate: undefined,
+      });
+    });
+
+    it("queries for is_empty when fromStatus is UNSET and manifest does not exist", async () => {
+      const updatePageStatusMock = vi.fn().mockResolvedValue({});
+      const queryDatabaseMock = vi.fn().mockResolvedValue({
+        results: [
+          {
+            id: "db-unset-1",
+            properties: {
+              "Content elements": { title: [{ plain_text: "Unset Page" }] },
+              Language: { select: { name: "Portuguese" } },
+              "Publish Status": { select: null },
+            },
+          },
+        ],
+      });
+
+      const mockClient: StatusUpdateClient = {
+        updatePageStatus: updatePageStatusMock,
+        queryDatabase: queryDatabaseMock,
+      };
+
+      const result = await markPublished(
+        {
+          outDir: tempDir,
+          fromStatus: "UNSET",
+          toStatus: "Draft published",
+          live: true,
+        },
+        { client: mockClient },
+      );
+
+      expect(queryDatabaseMock).toHaveBeenCalledWith({
+        filter: {
+          property: "Publish Status",
+          select: { is_empty: true },
+        },
+      });
+      expect(result.updatedCount).toBe(1);
+      expect(updatePageStatusMock).toHaveBeenCalledWith("db-unset-1", "Draft published", {
+        setPublishedDate: false,
+        publishedDate: undefined,
+      });
+    });
+
+    it("throws MarkPublishedError when client does not support queryDatabase and manifest is absent", async () => {
+      const mockClient: StatusUpdateClient = {
+        updatePageStatus: vi.fn(),
+      };
+
+      await expect(
+        markPublished(
+          {
+            outDir: tempDir,
+            fromStatus: "Draft published",
+            toStatus: "Published",
+          },
+          { client: mockClient },
+        ),
+      ).rejects.toThrow(MarkPublishedError);
+    });
+  });
 });
+
