@@ -81,11 +81,18 @@ Hono app. Routes: `GET /health`, `GET /health/deep` (D1+R2+Notion check), `POST 
 6. Commit with conventional commit format, push branch, and open a PR.
 
 ### Autonomous Merge & Human Escalation Policy
-- **Autonomous Merge Gate:**
-  When a PR cycle satisfies all of the following:
-  1. All deterministic CI checks pass (`lint`, `typecheck`, `test`).
-  2. Frontier model review consensus is achieved (Low/Very Low risk, High confidence 5/5).
-  3. Greptile review cycle completes with a 5/5 score and 0 unresolved comments.
-  -> **Proceed directly to merge** (`gh pr merge --squash --delete-branch`), delete the branch, mark the task as done in `TASKS.md`, and continue to the next task without waiting for manual human approval.
+- **Autonomous Merge Gate Harness (`npm run gate:verify <PR_NUMBER>`):**
+  To prevent premature merges or skipped review gates, **NEVER run `gh pr merge` manually or assume consensus**.
+  The orchestrating agent MUST run the deterministic gate verification harness:
+  ```bash
+  npm run gate:verify <PR_NUMBER>
+  ```
+  The harness programmatically enforces the complete triple-gate criteria:
+  1. **Deterministic CI & Quality Gates**: runs `npm run lint`, `npm run typecheck`, and `npm test` locally and confirms all GitHub Actions check runs are completed with `SUCCESS`.
+  2. **Greptile Review Cycle**: checks GitHub GraphQL API to verify that `greptile-apps` has completed a full review pass and that there are `0` unresolved review threads. If review threads exist, each thread must be addressed, replied to, and resolved (`resolveReviewThread`) before re-running the gate check.
+  3. **Frontier Model Review Consensus**: submits the full PR diff and PR context to independent frontier models (`DeepSeek-Reasoner R1` and `Codestral`) and asserts that all models return an explicit `APPROVE` verdict with `Low` or `Very Low` risk and high confidence (>= 4/5).
+
+  -> **Only when `npm run gate:verify` exits with code 0 and reports `ALL MERGE GATES PASSED` is the agent permitted to execute the merge (`gh pr merge <PR_NUMBER> --squash --delete-branch`)**, delete the branch, mark the task as done in `TASKS.md`, and proceed to the next item.
+
 - **Human Escalation Rule:**
   **ONLY prompt the user to approve a merge if NOT confident after all Greptile loops and frontier checks have run** (e.g., conflicting reviews, ambiguous architectural requirements, or persistent unresolved test failures). When confident, merge autonomously and proceed.

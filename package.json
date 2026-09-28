@@ -19,7 +19,8 @@
     "translations:report": "bun scripts/translation-report-html.ts",
     "translations:check": "bun scripts/translation-report-html.ts --open",
     "docs:post-editorial": "bun scripts/post-editorial-guide.ts --apply",
-    "validate:mdx": "node --experimental-strip-types scripts/validate-mdx.ts"
+    "validate:mdx": "node --experimental-strip-types scripts/validate-mdx.ts",
+    "gate:verify": "bun scripts/verify-pr-gate.ts"
   },
   "dependencies": {
     "@notionhq/client": "^5.12.0",
